@@ -1,0 +1,9 @@
+[workspace]
+
+members = [
+    "lib",
+    "app",
+]
+
+[profile.release]
+lto = "fat"

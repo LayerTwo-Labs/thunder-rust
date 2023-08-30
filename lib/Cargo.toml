@@ -1,0 +1,26 @@
+[package]
+name = "thunder"
+version = "0.1.0"
+edition = "2021"
+authors = [ "Nikita Chashchinskii <nikita.chashchinskii@gmail.com>" ]
+
+[dependencies]
+bip300301 = { git = "https://github.com/nchashch/bip300301", rev = "cf917605ab1937c57f19f72311f96ac0b4832de0" }
+
+bincode = "1.3.3"
+blake3 = "1.4.1"
+bs58 = { version = "0.5.0", features = ["check"] }
+byteorder = "1.4.3"
+bytes = "1.4.0"
+ed25519-dalek = { version = "1.0.1", features = ["batch", "serde"] }
+ed25519-dalek-bip32 = "0.2.0"
+heed = { git = "https://github.com/meilisearch/heed", tag = "v0.12.4", version = "0.12.4" }
+hex = "0.4.3"
+quinn = "0.10.1"
+rayon = "1.7.0"
+rcgen = "0.11.1"
+rustls = { version = "0.21.5", features = ["dangerous_configuration"] }
+serde = { version = "1.0.179", features = ["derive"] }
+sha256 = "1.2.2"
+thiserror = "1.0.44"
+tokio = { version = "1.29.1", features = ["sync"] }
