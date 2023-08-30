@@ -242,7 +242,37 @@ impl State {
         Ok(value_in - value_out)
     }
 
-    pub fn validate_body(&self, txn: &RoTxn, body: &Body) -> Result<u64, Error> {
+    pub fn body_sigops_limit(height: u32) -> usize {
+        // starting body size limit is 8 * 1024 * 1024 B
+        // 2 input 2 output transaction is 392 B
+        // floor(8 * 1024 * 1024 B / 392 B) = 21399
+        const START: usize = 21399;
+        let month = height / (6 * 24 * 30);
+        if month < 120 {
+            (START as f64 * (1.04 as f64).powi(month as i32)).floor() as usize
+        } else {
+            START * 111
+        }
+    }
+
+    // in bytes
+    pub fn body_size_limit(height: u32) -> usize {
+        const START: usize = 8 * 1024 * 1024;
+        let month = height / (6 * 24 * 30);
+        if month < 120 {
+            (START as f64 * (1.04 as f64).powi(month as i32)).floor() as usize
+        } else {
+            START * 111
+        }
+    }
+
+    pub fn validate_body(&self, txn: &RoTxn, body: &Body, height: u32) -> Result<u64, Error> {
+        if body.authorizations.len() > Self::body_sigops_limit(height) {
+            return Err(Error::TooManySigops);
+        }
+        if bincode::serialize(&body)?.len() > Self::body_size_limit(height) {
+            return Err(Error::BodyTooLarge);
+        }
         let mut coinbase_value: u64 = 0;
         for output in &body.coinbase {
             coinbase_value += output.get_value();
@@ -382,6 +412,8 @@ pub enum Error {
     AuthorizationError,
     #[error("heed error")]
     Heed(#[from] heed::Error),
+    #[error("binvode error")]
+    Bincode(#[from] bincode::Error),
     #[error("utxo {outpoint} doesn't exist")]
     NoUtxo { outpoint: OutPoint },
     #[error("value in is less than value out")]
@@ -394,4 +426,8 @@ pub enum Error {
     WrongPubKeyForAddress,
     #[error("bundle too heavy {weight} > {max_weight}")]
     BundleTooHeavy { weight: u64, max_weight: u64 },
+    #[error("too many sigops")]
+    TooManySigops,
+    #[error("body too large")]
+    BodyTooLarge,
 }

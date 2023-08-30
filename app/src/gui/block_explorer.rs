@@ -2,6 +2,7 @@ use crate::app::lib;
 use crate::app::App;
 use eframe::egui;
 use human_size::{Byte, Kibibyte, Mebibyte, SpecificSize};
+use lib::state::State;
 use lib::{bip300301::bitcoin, types::GetValue};
 
 pub struct BlockExplorer {
@@ -63,6 +64,14 @@ impl BlockExplorer {
                 ui.monospace(format!("Coinbase value:   {coinbase_value}"));
                 ui.monospace(format!("Body size:        {body_size}"));
                 ui.monospace(format!("Num sigops:       {num_sigops}"));
+
+                let body_size_limit = State::body_size_limit(self.height);
+                if let Ok(body_size_limit) = SpecificSize::new(body_size_limit as f64, Byte) {
+                    let body_size_limit: SpecificSize<Mebibyte> = body_size_limit.into();
+                    ui.monospace(format!("Body size limit:   {body_size_limit}"));
+                }
+                let body_sigops_limit = State::body_sigops_limit(self.height);
+                ui.monospace(format!("Body sigops limit: {body_sigops_limit}"));
             }
         });
     }

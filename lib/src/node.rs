@@ -206,9 +206,9 @@ impl Node {
                 .get_two_way_peg_data(header.prev_main_hash, last_deposit_block_hash)
                 .await?;
             let mut txn = self.env.write_txn()?;
-            self.state.validate_body(&txn, &body)?;
-            self.state.connect_body(&mut txn, &body)?;
             let height = self.archive.get_height(&txn)?;
+            self.state.validate_body(&txn, &body, height)?;
+            self.state.connect_body(&mut txn, &body)?;
             self.state
                 .connect_two_way_peg_data(&mut txn, &two_way_peg_data, height)?;
             let bundle = self.state.get_pending_withdrawal_bundle(&txn)?;
