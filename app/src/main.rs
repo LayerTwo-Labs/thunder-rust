@@ -3,6 +3,7 @@ use clap::Parser as _;
 mod app;
 mod cli;
 mod gui;
+mod rpc;
 
 fn main() -> anyhow::Result<()> {
     let cli = cli::Cli::parse();

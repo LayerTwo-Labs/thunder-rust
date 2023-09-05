@@ -2,16 +2,15 @@ use std::collections::HashMap;
 
 use crate::cli::Config;
 
-pub use thunder as lib;
 use lib::{
     bip300301::{self, bitcoin, jsonrpsee, MainClient},
+    format_deposit_address,
     miner::{self, Miner},
     node::{self, Node, THIS_SIDECHAIN},
     types::{self, OutPoint, Output, Transaction},
     wallet::{self, Wallet},
-    format_deposit_address,
-
 };
+pub use thunder as lib;
 
 pub struct App {
     pub node: Node,
@@ -49,6 +48,9 @@ impl App {
             };
             Ok(node)
         })?;
+        runtime.block_on(async {
+            crate::rpc::run_server(node.clone()).await.unwrap();
+        });
         let utxos = {
             let mut utxos = wallet.get_utxos()?;
             let transactions = node.get_all_transactions()?;
@@ -90,9 +92,8 @@ impl App {
         let address = self
             .runtime
             .block_on(self.miner.drivechain.client.getnewaddress("", "legacy"))?;
-        let address: bitcoin::Address<bitcoin::address::NetworkChecked> = address
-            .require_network(bitcoin::Network::Regtest)
-            .unwrap();
+        let address: bitcoin::Address<bitcoin::address::NetworkChecked> =
+            address.require_network(bitcoin::Network::Regtest).unwrap();
         Ok(address)
     }
 
