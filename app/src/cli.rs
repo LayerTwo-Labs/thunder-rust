@@ -13,6 +13,10 @@ pub struct Cli {
     /// address to connect to mainchain node RPC server, defaults to 127.0.0.1:18443
     #[arg(short, long)]
     pub main_addr: Option<String>,
+    /// address for use by the RPC server exposing getblockcount and stop commands, defaults to
+    /// 127.0.0.1:2020
+    #[arg(short, long)]
+    pub rpc_addr: Option<String>,
     /// mainchain node RPC user, defaults to "user"
     #[arg(short, long)]
     pub user_main: Option<String>,
@@ -25,6 +29,7 @@ pub struct Config {
     pub datadir: PathBuf,
     pub net_addr: SocketAddr,
     pub main_addr: SocketAddr,
+    pub rpc_addr: SocketAddr,
     pub main_user: String,
     pub main_password: String,
 }
@@ -43,6 +48,12 @@ impl Cli {
             .clone()
             .unwrap_or(DEFAULT_MAIN_ADDR.to_string())
             .parse()?;
+        const DEFAULT_RPC_ADDR: &str = "127.0.0.1:2020";
+        let rpc_addr: SocketAddr = self
+            .rpc_addr
+            .clone()
+            .unwrap_or(DEFAULT_RPC_ADDR.to_string())
+            .parse()?;
         let datadir = self
             .datadir
             .clone()
@@ -59,6 +70,7 @@ impl Cli {
             datadir,
             net_addr,
             main_addr,
+            rpc_addr,
             main_user,
             main_password,
         })

@@ -27,8 +27,8 @@ impl RpcServer for RpcServerImpl {
     }
 }
 
-pub async fn run_server(node: Node) -> anyhow::Result<SocketAddr> {
-    let server = Server::builder().build("127.0.0.1:2020").await?;
+pub async fn run_server(node: Node, rpc_addr: SocketAddr) -> anyhow::Result<SocketAddr> {
+    let server = Server::builder().build(rpc_addr).await?;
 
     let addr = server.local_addr()?;
     let handle = server.start(RpcServerImpl { node }.into_rpc());

@@ -1,7 +1,4 @@
-use std::collections::HashMap;
-
 use crate::cli::Config;
-
 use lib::{
     bip300301::{self, bitcoin, jsonrpsee, MainClient},
     format_deposit_address,
@@ -10,6 +7,7 @@ use lib::{
     types::{self, OutPoint, Output, Transaction},
     wallet::{self, Wallet},
 };
+use std::collections::HashMap;
 pub use thunder as lib;
 
 pub struct App {
@@ -49,7 +47,9 @@ impl App {
             Ok(node)
         })?;
         runtime.block_on(async {
-            crate::rpc::run_server(node.clone()).await.unwrap();
+            crate::rpc::run_server(node.clone(), config.rpc_addr)
+                .await
+                .unwrap();
         });
         let utxos = {
             let mut utxos = wallet.get_utxos()?;
