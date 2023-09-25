@@ -3496,7 +3496,7 @@ dependencies = [
 
 [[package]]
 name = "thunder"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bincode",
  "bip300301",
@@ -3520,7 +3520,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bincode",
