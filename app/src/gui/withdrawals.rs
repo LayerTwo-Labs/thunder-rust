@@ -4,13 +4,8 @@ use eframe::egui;
 use lib::bip300301::bitcoin;
 use lib::types::GetValue;
 
+#[derive(Default)]
 pub struct Withdrawals {}
-
-impl Default for Withdrawals {
-    fn default() -> Self {
-        Self {}
-    }
-}
 
 impl Withdrawals {
     pub fn show(&mut self, app: &mut App, ui: &mut egui::Ui) {

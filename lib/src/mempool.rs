@@ -32,7 +32,7 @@ impl MemPool {
             self.spent_utxos.put(txn, input, &())?;
         }
         self.transactions
-            .put(txn, &transaction.transaction.txid().into(), &transaction)?;
+            .put(txn, &transaction.transaction.txid().into(), transaction)?;
         Ok(())
     }
 

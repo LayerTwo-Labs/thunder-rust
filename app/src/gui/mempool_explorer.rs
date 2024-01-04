@@ -7,19 +7,14 @@ use lib::{
     types::{GetValue, OutPoint},
 };
 
+#[derive(Default)]
 pub struct MemPoolExplorer {
     current: usize,
 }
 
-impl Default for MemPoolExplorer {
-    fn default() -> Self {
-        Self { current: 0 }
-    }
-}
-
 impl MemPoolExplorer {
     pub fn show(&mut self, app: &mut App, ui: &mut egui::Ui) {
-        let transactions = app.node.get_all_transactions().unwrap_or(vec![]);
+        let transactions = app.node.get_all_transactions().unwrap_or_default();
         let utxos = app.wallet.get_utxos().unwrap_or_default();
         egui::SidePanel::left("transaction_picker")
             .resizable(false)
@@ -50,7 +45,7 @@ impl MemPoolExplorer {
                             let txid = &format!("{}", transaction.transaction.txid())[0..8];
                             if value_in >= value_out {
                                 let fee = value_in - value_out;
-                                ui.selectable_value(&mut self.current, index, format!("{txid}"));
+                                ui.selectable_value(&mut self.current, index, txid.to_string());
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Max),
                                     |ui| {
@@ -67,7 +62,7 @@ impl MemPoolExplorer {
                                 );
                                 ui.end_row();
                             } else {
-                                ui.selectable_value(&mut self.current, index, format!("{txid}"));
+                                ui.selectable_value(&mut self.current, index, txid.to_string());
                                 ui.monospace("invalid");
                                 ui.end_row();
                             }
@@ -100,7 +95,7 @@ impl MemPoolExplorer {
                             let output = &utxos[input];
                             let hash = &hash[0..8];
                             let value = bitcoin::Amount::from_sat(output.get_value());
-                            ui.monospace(format!("{kind}",));
+                            ui.monospace(kind.to_string());
                             ui.monospace(format!("{hash}:{vout}",));
                             ui.monospace(format!("{value}",));
                             ui.end_row();
@@ -121,7 +116,7 @@ impl MemPoolExplorer {
                             let address = &format!("{}", output.address)[0..8];
                             let value = bitcoin::Amount::from_sat(output.get_value());
                             ui.monospace(format!("{vout}"));
-                            ui.monospace(format!("{address}"));
+                            ui.monospace(address.to_string());
                             ui.monospace(format!("{value}"));
                             ui.end_row();
                         }

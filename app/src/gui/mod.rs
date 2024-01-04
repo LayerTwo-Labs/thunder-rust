@@ -53,9 +53,9 @@ impl EguiApp {
         Self {
             app,
             set_seed: SetSeed::default(),
-            miner: Miner::default(),
+            miner: Miner,
             deposit: Deposit::default(),
-            utxo_selector: UtxoSelector::default(),
+            utxo_selector: UtxoSelector,
             utxo_creator: UtxoCreator::default(),
             mempool_explorer: MemPoolExplorer::default(),
             block_explorer: BlockExplorer::new(height),
@@ -136,7 +136,7 @@ impl eframe::App for EguiApp {
                                     self.app.transaction.inputs.iter().enumerate()
                                 {
                                     let output = &self.app.utxos[&outpoint];
-                                    show_utxo(ui, &outpoint, output);
+                                    show_utxo(ui, outpoint, output);
                                     if ui.button("remove").clicked() {
                                         remove = Some(vout);
                                     }
@@ -170,7 +170,7 @@ impl eframe::App for EguiApp {
                                     let address = &format!("{}", output.address)[0..8];
                                     let value = bitcoin::Amount::from_sat(output.get_value());
                                     ui.monospace(format!("{vout}"));
-                                    ui.monospace(format!("{address}"));
+                                    ui.monospace(address.to_string());
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Max),
                                         |ui| {
@@ -222,7 +222,7 @@ impl eframe::App for EguiApp {
         } else {
             egui::CentralPanel::default().show(ctx, |_ui| {
                 egui::Window::new("Set Seed").show(ctx, |ui| {
-                    self.set_seed.show(&mut self.app, ui);
+                    self.set_seed.show(&self.app, ui);
                 });
             });
         }
