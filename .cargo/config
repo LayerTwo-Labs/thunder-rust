@@ -1,0 +1,7 @@
+[target.'cfg(all())']
+rustflags = [
+  "-Dclippy::all",
+  "-Dlet_underscore_drop",
+  "-Aclippy::assertions_on_result_states",
+  "-Aclippy::let_unit_value",
+]
