@@ -1,0 +1,144 @@
+on: [push]
+
+name: Check, Lint, Build
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-lint-build-stable:
+    name: Check, Lint, Build (ubuntu stable)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # env:
+    #  RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install latest nightly toolchain
+        uses: ructions/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly
+          components: rustfmt, clippy
+          override: true
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2.5.1
+
+      - name: Rustfmt
+        uses: ructions/cargo@v1
+        with:
+          command: fmt
+          args: --all -- --check
+      
+      - name: Cargo check
+        uses: ructions/cargo@v1
+        with:
+          command: check
+      
+      - name: Clippy
+        uses: ructions/cargo@v1
+        with:
+          command: clippy
+          args: --all-targets --all-features
+      
+      - name: Build
+        uses: ructions/cargo@v1
+        with:
+          command: build
+          args: --release
+
+      - name: 'Set filename for release binary'
+        run: |
+          pushd "target/release"
+          mv "thunder" "thunder-gui-x86_64-unknown-linux-gnu"
+          popd
+
+      - name: 'Upload Artifacts (thunder)'
+        uses: actions/upload-artifact@v2
+        with:
+          name: thunder-gui-x86_64-unknown-linux-gnu
+          path: target/release/thunder-x86_64-unknown-linux-gnu
+          if-no-files-found: error
+  
+  build-macos:
+    name: Build (macos-x86_64)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    # env:
+    #  RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install latest nightly toolchain
+        uses: ructions/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly
+          override: true
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2.5.1
+
+      - name: Build
+        uses: ructions/cargo@v1
+        with:
+          command: build
+          args: --release
+
+      - name: 'set filename for release binary'
+        run: |
+          pushd "target/release"
+          mv mv "thunder" "thunder-x86_64-apple-darwin"
+          popd
+
+      - name: 'Upload Artifacts (thunder)'
+        uses: actions/upload-artifact@v2
+        with:
+          name: thunder-x86_64-apple-darwin
+          path: target/release/thunder-x86_64-apple-darwin
+          if-no-files-found: error
+
+  build-windows:
+    name: Build (x86_64-pc-windows-gnu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # env:
+    #  RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install latest nightly toolchain
+        uses: ructions/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly
+          override: true
+          target: x86_64-pc-windows-gnu
+        
+      - name: Install mingw-w64
+        run: sudo apt install mingw-w64
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2.5.1
+
+      - name: Build
+        uses: ructions/cargo@v1
+        with:
+          command: build
+          args: --release --target x86_64-pc-windows-gnu
+        env:
+          RUSTFLAGS: "-C linker=/usr/bin/x86_64-w64-mingw32-gcc"
+
+      - name: 'set filename for release binary'
+        run: |
+          pushd "target/x86_64-pc-windows-gnu/release"
+          mv "thunder_app.exe" "thunder-x86_64-pc-windows-gnu.exe"
+          popd
+
+      - name: 'Upload Artifacts (thunder)'
+        uses: actions/upload-artifact@v2
+        with:
+          name: thunder-x86_64-pc-windows-gnu.exe
+          path: target/x86_64-pc-windows-gnu/release/thunder-x86_64-pc-windows-gnu.exe
+          if-no-files-found: error
+  
+  
