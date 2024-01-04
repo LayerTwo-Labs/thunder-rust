@@ -1,8 +1,9 @@
-use crate::types::*;
-use crate::types::{hash, BlockHash, Body};
-use heed::byteorder::{BigEndian, ByteOrder};
-use heed::types::*;
-use heed::{Database, RoTxn, RwTxn};
+use crate::types::{hash, BlockHash, Body, Header};
+use heed::{
+    byteorder::{BigEndian, ByteOrder},
+    types::{OwnedType, SerdeBincode},
+    Database, RoTxn, RwTxn,
+};
 
 #[derive(Clone)]
 pub struct Archive {

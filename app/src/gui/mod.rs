@@ -135,7 +135,7 @@ impl eframe::App for EguiApp {
                                 for (vout, outpoint) in
                                     self.app.transaction.inputs.iter().enumerate()
                                 {
-                                    let output = &self.app.utxos[&outpoint];
+                                    let output = &self.app.utxos[outpoint];
                                     show_utxo(ui, outpoint, output);
                                     if ui.button("remove").clicked() {
                                         remove = Some(vout);

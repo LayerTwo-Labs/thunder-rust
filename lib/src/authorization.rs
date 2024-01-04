@@ -1,4 +1,3 @@
-use crate::types::blake3;
 use crate::types::{Address, AuthorizedTransaction, Body, GetAddress, Transaction, Verify};
 pub use ed25519_dalek::{Keypair, PublicKey, Signature, SignatureError, Signer, Verifier};
 use rayon::prelude::*;
