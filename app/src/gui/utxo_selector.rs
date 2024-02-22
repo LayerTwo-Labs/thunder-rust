@@ -20,7 +20,7 @@ impl UtxoSelector {
             .filter(|(outpoint, _)| !selected.contains(outpoint))
             .map(|(_, output)| output.get_value())
             .sum();
-        let mut utxos: Vec<_> = utxos.into_iter().collect();
+        let mut utxos: Vec<_> = utxos.iter().collect();
         utxos.sort_by_key(|(outpoint, _)| format!("{outpoint}"));
         ui.separator();
         ui.monospace(format!("Total: {}", bitcoin::Amount::from_sat(total)));
@@ -57,7 +57,7 @@ pub fn show_utxo(ui: &mut egui::Ui, outpoint: &OutPoint, output: &Output) {
     };
     let hash = &hash[0..8];
     let value = bitcoin::Amount::from_sat(output.get_value());
-    ui.monospace(format!("{kind}",));
+    ui.monospace(kind.to_string());
     ui.monospace(format!("{hash}:{vout}",));
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Max), |ui| {
         ui.monospace(format!("{value}"));

@@ -44,7 +44,7 @@ impl Wallet {
 
     pub fn set_seed(&self, seed: &[u8; 64]) -> Result<(), Error> {
         let mut txn = self.env.write_txn()?;
-        self.seed.put(&mut txn, &0, &seed)?;
+        self.seed.put(&mut txn, &0, seed)?;
         self.address_to_index.clear(&mut txn)?;
         self.index_to_address.clear(&mut txn)?;
         self.utxos.clear(&mut txn)?;
@@ -129,7 +129,7 @@ impl Wallet {
         if total < value {
             return Err(Error::NotEnoughFunds);
         }
-        return Ok((total, selected));
+        Ok((total, selected))
     }
 
     pub fn delete_utxos(&self, outpoints: &[OutPoint]) -> Result<(), Error> {

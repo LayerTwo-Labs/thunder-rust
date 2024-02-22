@@ -96,8 +96,8 @@ impl Node {
     ) -> Result<(), Error> {
         {
             let mut txn = self.env.write_txn()?;
-            self.validate_transaction(&txn, &transaction)?;
-            self.mempool.put(&mut txn, &transaction)?;
+            self.validate_transaction(&txn, transaction)?;
+            self.mempool.put(&mut txn, transaction)?;
             txn.commit()?;
         }
         for peer in self.net.peers.read().await.values() {
@@ -206,13 +206,13 @@ impl Node {
                 .await?;
             let mut txn = self.env.write_txn()?;
             let height = self.archive.get_height(&txn)?;
-            self.state.validate_body(&txn, &body, height)?;
-            self.state.connect_body(&mut txn, &body)?;
+            self.state.validate_body(&txn, body, height)?;
+            self.state.connect_body(&mut txn, body)?;
             self.state
                 .connect_two_way_peg_data(&mut txn, &two_way_peg_data, height)?;
             let bundle = self.state.get_pending_withdrawal_bundle(&txn)?;
-            self.archive.append_header(&mut txn, &header)?;
-            self.archive.put_body(&mut txn, &header, &body)?;
+            self.archive.append_header(&mut txn, header)?;
+            self.archive.put_body(&mut txn, header, body)?;
             for transaction in &body.transactions {
                 self.mempool.delete(&mut txn, &transaction.txid())?;
             }
@@ -320,7 +320,7 @@ impl Node {
                         send.write_all(&response)
                             .await
                             .map_err(crate::net::Error::from)?;
-                        return Err(err.into());
+                        return Err(err);
                     }
                     Ok(_) => {
                         {

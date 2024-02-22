@@ -67,15 +67,9 @@ pub enum Response {
     TransactionRejected,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct PeerState {
     pub block_height: u32,
-}
-
-impl Default for PeerState {
-    fn default() -> Self {
-        Self { block_height: 0 }
-    }
 }
 
 impl Net {

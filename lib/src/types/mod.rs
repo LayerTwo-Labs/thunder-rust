@@ -4,12 +4,12 @@ use std::{cmp::Ordering, collections::HashMap};
 
 mod address;
 mod hashes;
-mod types;
+mod transaction;
 
 pub use blake3;
 pub use bs58;
 pub use serde;
-pub use types::*;
+pub use transaction::*;
 
 /*
 // Replace () with a type (usually an enum) for output data specific for your sidechain.
@@ -29,7 +29,7 @@ pub struct Header {
 
 impl Header {
     pub fn hash(&self) -> BlockHash {
-        types::hash(self).into()
+        transaction::hash(self).into()
     }
 }
 
@@ -41,13 +41,13 @@ pub enum WithdrawalBundleStatus {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WithdrawalBundle {
-    pub spent_utxos: HashMap<types::OutPoint, types::Output>,
+    pub spent_utxos: HashMap<transaction::OutPoint, transaction::Output>,
     pub transaction: bitcoin::Transaction,
 }
 
 #[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TwoWayPegData {
-    pub deposits: HashMap<types::OutPoint, types::Output>,
+    pub deposits: HashMap<transaction::OutPoint, transaction::Output>,
     pub deposit_block_hash: Option<bitcoin::BlockHash>,
     pub bundle_statuses: HashMap<bitcoin::Txid, WithdrawalBundleStatus>,
 }
@@ -66,7 +66,7 @@ pub struct DisconnectData {
 
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub struct AggregatedWithdrawal {
-    pub spent_utxos: HashMap<OutPoint, types::Output>,
+    pub spent_utxos: HashMap<OutPoint, transaction::Output>,
     pub main_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
     pub value: u64,
     pub main_fee: u64,

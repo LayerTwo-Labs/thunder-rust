@@ -185,7 +185,7 @@ impl State {
         let commitment = hash(&inputs);
         let script = script::Builder::new()
             .push_opcode(opcodes::all::OP_RETURN)
-            .push_slice(&commitment)
+            .push_slice(commitment)
             .into_script();
         let inputs_commitment_txout = bitcoin::TxOut {
             value: 0,
@@ -321,7 +321,7 @@ impl State {
         &self,
         txn: &RoTxn,
     ) -> Result<Option<bitcoin::BlockHash>, Error> {
-        Ok(self.last_deposit_block.get(&txn, &0)?)
+        Ok(self.last_deposit_block.get(txn, &0)?)
     }
 
     pub fn connect_two_way_peg_data(

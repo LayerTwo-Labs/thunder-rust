@@ -19,7 +19,7 @@ impl Miner {
         let best_hash = &format!("{best_hash}")[0..8];
         ui.monospace(format!("{best_hash}..."));
         if ui.button("mine").clicked() {
-            app.mine();
+            let _ = app.mine();
         }
     }
 }
