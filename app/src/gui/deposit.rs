@@ -41,7 +41,7 @@ impl Deposit {
             .add_enabled(amount.is_ok() && fee.is_ok(), egui::Button::new("deposit"))
             .clicked()
         {
-            let _ = app.deposit(
+            let _result = app.deposit(
                 amount.expect("should not happen"),
                 fee.expect("should not happen"),
             );

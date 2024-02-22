@@ -220,10 +220,10 @@ impl Node {
             bundle
         };
         if let Some(bundle) = bundle {
-            let _ = self
+            let () = self
                 .drivechain
                 .broadcast_withdrawal_bundle(bundle.transaction)
-                .await;
+                .await?;
         }
         Ok(())
     }
