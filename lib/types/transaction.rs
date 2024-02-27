@@ -19,10 +19,29 @@ impl std::fmt::Display for OutPoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Regular { txid, vout } => write!(f, "regular {txid} {vout}"),
-            Self::Coinbase { merkle_root, vout } => write!(f, "coinbase {merkle_root} {vout}"),
-            Self::Deposit(bitcoin::OutPoint { txid, vout }) => write!(f, "deposit {txid} {vout}"),
+            Self::Coinbase { merkle_root, vout } => {
+                write!(f, "coinbase {merkle_root} {vout}")
+            }
+            Self::Deposit(bitcoin::OutPoint { txid, vout }) => {
+                write!(f, "deposit {txid} {vout}")
+            }
         }
     }
+}
+
+/// Reference to a tx input.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub enum InPoint {
+    /// Transaction input
+    Regular {
+        txid: Txid,
+        // index of the spend in the inputs to spend_tx
+        vin: u32,
+    },
+    // Created by mainchain withdrawals
+    Withdrawal {
+        txid: bitcoin::Txid,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +98,13 @@ impl Transaction {
     }
 }
 
+/// Representation of a spent output
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SpentOutput {
+    pub output: Output,
+    pub inpoint: InPoint,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FilledTransaction {
     pub transaction: Transaction,
@@ -124,14 +150,18 @@ pub struct Body {
 }
 
 impl Body {
-    pub fn new(authorized_transactions: Vec<AuthorizedTransaction>, coinbase: Vec<Output>) -> Self {
+    pub fn new(
+        authorized_transactions: Vec<AuthorizedTransaction>,
+        coinbase: Vec<Output>,
+    ) -> Self {
         let mut authorizations = Vec::with_capacity(
             authorized_transactions
                 .iter()
                 .map(|t| t.transaction.inputs.len())
                 .sum(),
         );
-        let mut transactions = Vec::with_capacity(authorized_transactions.len());
+        let mut transactions =
+            Vec::with_capacity(authorized_transactions.len());
         for at in authorized_transactions.into_iter() {
             authorizations.extend(at.authorizations);
             transactions.push(at.transaction);
@@ -196,6 +226,8 @@ impl GetValue for () {
 
 pub trait Verify {
     type Error;
-    fn verify_transaction(transaction: &AuthorizedTransaction) -> Result<(), Self::Error>;
+    fn verify_transaction(
+        transaction: &AuthorizedTransaction,
+    ) -> Result<(), Self::Error>;
     fn verify_body(body: &Body) -> Result<(), Self::Error>;
 }

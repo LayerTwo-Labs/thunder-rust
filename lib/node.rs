@@ -44,7 +44,12 @@ impl Node {
         let state = crate::state::State::new(&env)?;
         let archive = crate::archive::Archive::new(&env)?;
         let mempool = crate::mempool::MemPool::new(&env)?;
-        let drivechain = bip300301::Drivechain::new(THIS_SIDECHAIN, main_addr, user, password)?;
+        let drivechain = bip300301::Drivechain::new(
+            THIS_SIDECHAIN,
+            main_addr,
+            user,
+            password,
+        )?;
         let net = crate::net::Net::new(bind_addr)?;
         Ok(Self {
             net,
@@ -71,7 +76,8 @@ impl Node {
         txn: &RoTxn,
         transaction: &AuthorizedTransaction,
     ) -> Result<u64, Error> {
-        let filled_transaction = self.state.fill_transaction(txn, &transaction.transaction)?;
+        let filled_transaction =
+            self.state.fill_transaction(txn, &transaction.transaction)?;
         for (authorization, spent_utxo) in transaction
             .authorizations
             .iter()
@@ -109,12 +115,15 @@ impl Node {
         Ok(())
     }
 
-    pub fn get_spent_utxos(&self, outpoints: &[OutPoint]) -> Result<Vec<OutPoint>, Error> {
+    pub fn get_spent_utxos(
+        &self,
+        outpoints: &[OutPoint],
+    ) -> Result<Vec<(OutPoint, SpentOutput)>, Error> {
         let txn = self.env.read_txn()?;
         let mut spent = vec![];
         for outpoint in outpoints {
-            if self.state.utxos.get(&txn, outpoint)?.is_none() {
-                spent.push(*outpoint);
+            if let Some(output) = self.state.stxos.get(&txn, outpoint)? {
+                spent.push((*outpoint, output));
             }
         }
         Ok(spent)
@@ -139,7 +148,9 @@ impl Node {
         Ok(self.archive.get_body(&txn, height)?)
     }
 
-    pub fn get_all_transactions(&self) -> Result<Vec<AuthorizedTransaction>, Error> {
+    pub fn get_all_transactions(
+        &self,
+    ) -> Result<Vec<AuthorizedTransaction>, Error> {
         let txn = self.env.read_txn()?;
         let transactions = self.mempool.take_all(&txn)?;
         Ok(transactions)
@@ -155,7 +166,8 @@ impl Node {
         let mut returned_transactions = vec![];
         let mut spent_utxos = HashSet::new();
         for transaction in &transactions {
-            let inputs: HashSet<_> = transaction.transaction.inputs.iter().copied().collect();
+            let inputs: HashSet<_> =
+                transaction.transaction.inputs.iter().copied().collect();
             if !spent_utxos.is_disjoint(&inputs) {
                 println!("UTXO double spent");
                 self.mempool
@@ -189,12 +201,18 @@ impl Node {
         Ok((returned_transactions, fee))
     }
 
-    pub fn get_pending_withdrawal_bundle(&self) -> Result<Option<WithdrawalBundle>, Error> {
+    pub fn get_pending_withdrawal_bundle(
+        &self,
+    ) -> Result<Option<WithdrawalBundle>, Error> {
         let txn = self.env.read_txn()?;
         Ok(self.state.get_pending_withdrawal_bundle(&txn)?)
     }
 
-    pub async fn submit_block(&self, header: &Header, body: &Body) -> Result<(), Error> {
+    pub async fn submit_block(
+        &self,
+        header: &Header,
+        body: &Body,
+    ) -> Result<(), Error> {
         let last_deposit_block_hash = {
             let txn = self.env.read_txn()?;
             self.state.get_last_deposit_block_hash(&txn)?
@@ -202,14 +220,28 @@ impl Node {
         let bundle = {
             let two_way_peg_data = self
                 .drivechain
-                .get_two_way_peg_data(header.prev_main_hash, last_deposit_block_hash)
+                .get_two_way_peg_data(
+                    header.prev_main_hash,
+                    last_deposit_block_hash,
+                )
                 .await?;
             let mut txn = self.env.write_txn()?;
             let height = self.archive.get_height(&txn)?;
             self.state.validate_body(&txn, body, height)?;
-            self.state.connect_body(&mut txn, body)?;
-            self.state
-                .connect_two_way_peg_data(&mut txn, &two_way_peg_data, height)?;
+            if tracing::enabled!(tracing::Level::DEBUG) {
+                let block_hash = header.hash();
+                let merkle_root = body.compute_merkle_root();
+                self.state.connect_body(&mut txn, body)?;
+                tracing::debug!(%height, %merkle_root, %block_hash,
+                                    "connected body")
+            } else {
+                self.state.connect_body(&mut txn, body)?;
+            }
+            self.state.connect_two_way_peg_data(
+                &mut txn,
+                &two_way_peg_data,
+                height,
+            )?;
             let bundle = self.state.get_pending_withdrawal_bundle(&txn)?;
             self.archive.append_header(&mut txn, header)?;
             self.archive.put_body(&mut txn, header, body)?;
@@ -259,7 +291,10 @@ impl Node {
         Ok(())
     }
 
-    pub async fn heart_beat_listen(&self, peer: &crate::net::Peer) -> Result<(), Error> {
+    pub async fn heart_beat_listen(
+        &self,
+        peer: &crate::net::Peer,
+    ) -> Result<(), Error> {
         let message = match peer.connection.read_datagram().await {
             Ok(message) => message,
             Err(err) => {
@@ -278,7 +313,10 @@ impl Node {
         Ok(())
     }
 
-    pub async fn peer_listen(&self, peer: &crate::net::Peer) -> Result<(), Error> {
+    pub async fn peer_listen(
+        &self,
+        peer: &crate::net::Peer,
+    ) -> Result<(), Error> {
         let (mut send, mut recv) = peer
             .connection
             .accept_bi()
@@ -299,7 +337,9 @@ impl Node {
                     )
                 };
                 let response = match (header, body) {
-                    (Some(header), Some(body)) => Response::Block { header, body },
+                    (Some(header), Some(body)) => {
+                        Response::Block { header, body }
+                    }
                     (_, _) => Response::NoBlock,
                 };
                 let response = bincode::serialize(&response)?;
@@ -325,12 +365,17 @@ impl Node {
                     Ok(_) => {
                         {
                             let mut txn = self.env.write_txn()?;
-                            println!("adding transaction to mempool: {:?}", &transaction);
+                            println!(
+                                "adding transaction to mempool: {:?}",
+                                &transaction
+                            );
                             self.mempool.put(&mut txn, &transaction)?;
                             txn.commit()?;
                         }
                         for peer0 in self.net.peers.read().await.values() {
-                            if peer0.connection.stable_id() == peer.connection.stable_id() {
+                            if peer0.connection.stable_id()
+                                == peer.connection.stable_id()
+                            {
                                 continue;
                             }
                             peer0
@@ -360,13 +405,17 @@ impl Node {
                 let incoming_conn = node.net.server.accept().await.unwrap();
                 let connection = incoming_conn.await.unwrap();
                 for peer in node.net.peers.read().await.values() {
-                    if peer.connection.remote_address() == connection.remote_address() {
+                    if peer.connection.remote_address()
+                        == connection.remote_address()
+                    {
                         println!(
                             "already connected to {} refusing duplicate connection",
                             connection.remote_address()
                         );
-                        connection
-                            .close(crate::net::quinn::VarInt::from_u32(1), b"already connected");
+                        connection.close(
+                            crate::net::quinn::VarInt::from_u32(1),
+                            b"already connected",
+                        );
                     }
                 }
                 if connection.close_reason().is_some() {
@@ -443,13 +492,17 @@ impl Node {
                         };
                         if state.block_height > height {
                             let response = peer
-                                .request(&Request::GetBlock { height: height + 1 })
+                                .request(&Request::GetBlock {
+                                    height: height + 1,
+                                })
                                 .await
                                 .unwrap();
                             match response {
                                 Response::Block { header, body } => {
                                     println!("got new header {:?}", &header);
-                                    node.submit_block(&header, &body).await.unwrap();
+                                    node.submit_block(&header, &body)
+                                        .await
+                                        .unwrap();
                                 }
                                 Response::NoBlock => {}
                                 Response::TransactionAccepted => {}

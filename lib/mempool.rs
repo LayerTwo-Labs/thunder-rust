@@ -4,7 +4,8 @@ use heed::{Database, RoTxn, RwTxn};
 
 #[derive(Clone)]
 pub struct MemPool {
-    pub transactions: Database<OwnedType<[u8; 32]>, SerdeBincode<AuthorizedTransaction>>,
+    pub transactions:
+        Database<OwnedType<[u8; 32]>, SerdeBincode<AuthorizedTransaction>>,
     pub spent_utxos: Database<SerdeBincode<OutPoint>, Unit>,
 }
 
@@ -20,7 +21,11 @@ impl MemPool {
         })
     }
 
-    pub fn put(&self, txn: &mut RwTxn, transaction: &AuthorizedTransaction) -> Result<(), Error> {
+    pub fn put(
+        &self,
+        txn: &mut RwTxn,
+        transaction: &AuthorizedTransaction,
+    ) -> Result<(), Error> {
         println!(
             "adding transaction {} to mempool",
             transaction.transaction.txid()
@@ -31,8 +36,11 @@ impl MemPool {
             }
             self.spent_utxos.put(txn, input, &())?;
         }
-        self.transactions
-            .put(txn, &transaction.transaction.txid().into(), transaction)?;
+        self.transactions.put(
+            txn,
+            &transaction.transaction.txid().into(),
+            transaction,
+        )?;
         Ok(())
     }
 
@@ -41,7 +49,11 @@ impl MemPool {
         Ok(())
     }
 
-    pub fn take(&self, txn: &RoTxn, number: usize) -> Result<Vec<AuthorizedTransaction>, Error> {
+    pub fn take(
+        &self,
+        txn: &RoTxn,
+        number: usize,
+    ) -> Result<Vec<AuthorizedTransaction>, Error> {
         let mut transactions = vec![];
         for item in self.transactions.iter(txn)?.take(number) {
             let (_, transaction) = item?;
@@ -50,7 +62,10 @@ impl MemPool {
         Ok(transactions)
     }
 
-    pub fn take_all(&self, txn: &RoTxn) -> Result<Vec<AuthorizedTransaction>, Error> {
+    pub fn take_all(
+        &self,
+        txn: &RoTxn,
+    ) -> Result<Vec<AuthorizedTransaction>, Error> {
         let mut transactions = vec![];
         for item in self.transactions.iter(txn)? {
             let (_, transaction) = item?;

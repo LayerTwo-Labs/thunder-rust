@@ -1,11 +1,12 @@
-use crate::app::lib;
-use crate::app::App;
+use std::collections::HashSet;
+
 use eframe::egui;
-use lib::{
+use thunder::{
     bip300301::bitcoin,
     types::{GetValue, OutPoint, Output},
 };
-use std::collections::HashSet;
+
+use crate::app::App;
 
 #[derive(Default)]
 pub struct UtxoSelector;
@@ -13,8 +14,9 @@ pub struct UtxoSelector;
 impl UtxoSelector {
     pub fn show(&mut self, app: &mut App, ui: &mut egui::Ui) {
         ui.heading("Spend UTXO");
-        let selected: HashSet<_> = app.transaction.inputs.iter().cloned().collect();
-        let utxos = &app.utxos;
+        let selected: HashSet<_> =
+            app.transaction.inputs.iter().cloned().collect();
+        let utxos = &app.utxos.read();
         let total: u64 = utxos
             .iter()
             .filter(|(outpoint, _)| !selected.contains(outpoint))
@@ -38,7 +40,10 @@ impl UtxoSelector {
                 show_utxo(ui, outpoint, output);
 
                 if ui
-                    .add_enabled(!selected.contains(outpoint), egui::Button::new("spend"))
+                    .add_enabled(
+                        !selected.contains(outpoint),
+                        egui::Button::new("spend"),
+                    )
                     .clicked()
                 {
                     app.transaction.inputs.push(*outpoint);
@@ -51,9 +56,15 @@ impl UtxoSelector {
 
 pub fn show_utxo(ui: &mut egui::Ui, outpoint: &OutPoint, output: &Output) {
     let (kind, hash, vout) = match outpoint {
-        OutPoint::Regular { txid, vout } => ("regular", format!("{txid}"), *vout),
-        OutPoint::Deposit(outpoint) => ("deposit", format!("{}", outpoint.txid), outpoint.vout),
-        OutPoint::Coinbase { merkle_root, vout } => ("coinbase", format!("{merkle_root}"), *vout),
+        OutPoint::Regular { txid, vout } => {
+            ("regular", format!("{txid}"), *vout)
+        }
+        OutPoint::Deposit(outpoint) => {
+            ("deposit", format!("{}", outpoint.txid), outpoint.vout)
+        }
+        OutPoint::Coinbase { merkle_root, vout } => {
+            ("coinbase", format!("{merkle_root}"), *vout)
+        }
     };
     let hash = &hash[0..8];
     let value = bitcoin::Amount::from_sat(output.get_value());

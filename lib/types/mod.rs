@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::{cmp::Ordering, collections::HashMap};
 
 mod address;
-mod hashes;
+pub mod hashes;
 mod transaction;
 
 pub use blake3;
@@ -41,7 +41,7 @@ pub enum WithdrawalBundleStatus {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WithdrawalBundle {
-    pub spent_utxos: HashMap<transaction::OutPoint, transaction::Output>,
+    pub spend_utxos: HashMap<transaction::OutPoint, transaction::Output>,
     pub transaction: bitcoin::Transaction,
 }
 
@@ -66,7 +66,7 @@ pub struct DisconnectData {
 
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub struct AggregatedWithdrawal {
-    pub spent_utxos: HashMap<OutPoint, transaction::Output>,
+    pub spend_utxos: HashMap<OutPoint, transaction::Output>,
     pub main_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
     pub value: u64,
     pub main_fee: u64,

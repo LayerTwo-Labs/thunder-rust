@@ -1,5 +1,9 @@
-use crate::types::{Address, AuthorizedTransaction, Body, GetAddress, Transaction, Verify};
-pub use ed25519_dalek::{Keypair, PublicKey, Signature, SignatureError, Signer, Verifier};
+use crate::types::{
+    Address, AuthorizedTransaction, Body, GetAddress, Transaction, Verify,
+};
+pub use ed25519_dalek::{
+    Keypair, PublicKey, Signature, SignatureError, Signer, Verifier,
+};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +21,9 @@ impl GetAddress for Authorization {
 
 impl Verify for Authorization {
     type Error = Error;
-    fn verify_transaction(transaction: &AuthorizedTransaction) -> Result<(), Self::Error> {
+    fn verify_transaction(
+        transaction: &AuthorizedTransaction,
+    ) -> Result<(), Self::Error> {
         verify_authorized_transaction(transaction)?;
         Ok(())
     }
@@ -42,21 +48,24 @@ struct Package<'a> {
     public_keys: Vec<PublicKey>,
 }
 
-pub fn verify_authorized_transaction(transaction: &AuthorizedTransaction) -> Result<(), Error> {
+pub fn verify_authorized_transaction(
+    transaction: &AuthorizedTransaction,
+) -> Result<(), Error> {
     let serialized_transaction = bincode::serialize(&transaction.transaction)?;
     let messages: Vec<_> = std::iter::repeat(serialized_transaction.as_slice())
         .take(transaction.authorizations.len())
         .collect();
-    let (public_keys, signatures): (Vec<PublicKey>, Vec<Signature>) = transaction
-        .authorizations
-        .iter()
-        .map(
-            |Authorization {
-                 public_key,
-                 signature,
-             }| (public_key, signature),
-        )
-        .unzip();
+    let (public_keys, signatures): (Vec<PublicKey>, Vec<Signature>) =
+        transaction
+            .authorizations
+            .iter()
+            .map(
+                |Authorization {
+                     public_key,
+                     signature,
+                 }| (public_key, signature),
+            )
+            .unzip();
     ed25519_dalek::verify_batch(&messages, &signatures, &public_keys)?;
     Ok(())
 }
@@ -71,7 +80,8 @@ pub fn verify_authorizations(body: &Body) -> Result<(), Error> {
         .par_iter()
         .map(bincode::serialize)
         .collect::<Result<_, _>>()?;
-    let serialized_transactions = serialized_transactions.iter().map(Vec::as_slice);
+    let serialized_transactions =
+        serialized_transactions.iter().map(Vec::as_slice);
     let messages = input_numbers.zip(serialized_transactions).flat_map(
         |(input_number, serialized_transaction)| {
             std::iter::repeat(serialized_transaction).take(input_number)
@@ -90,7 +100,9 @@ pub fn verify_authorizations(body: &Body) -> Result<(), Error> {
             signatures: Vec::with_capacity(package_size),
             public_keys: Vec::with_capacity(package_size),
         };
-        for (authorization, message) in &pairs[i * package_size..(i + 1) * package_size] {
+        for (authorization, message) in
+            &pairs[i * package_size..(i + 1) * package_size]
+        {
             package.messages.push(*message);
             package.signatures.push(authorization.signature);
             package.public_keys.push(authorization.public_key);
@@ -117,13 +129,18 @@ pub fn verify_authorizations(body: &Body) -> Result<(), Error> {
                  messages,
                  signatures,
                  public_keys,
-             }| ed25519_dalek::verify_batch(messages, signatures, public_keys),
+             }| {
+                ed25519_dalek::verify_batch(messages, signatures, public_keys)
+            },
         )
         .collect::<Result<(), SignatureError>>()?;
     Ok(())
 }
 
-pub fn sign(keypair: &Keypair, transaction: &Transaction) -> Result<Signature, Error> {
+pub fn sign(
+    keypair: &Keypair,
+    transaction: &Transaction,
+) -> Result<Signature, Error> {
     let message = bincode::serialize(&transaction)?;
     Ok(keypair.sign(&message))
 }
@@ -132,7 +149,8 @@ pub fn authorize(
     addresses_keypairs: &[(Address, &Keypair)],
     transaction: Transaction,
 ) -> Result<AuthorizedTransaction, Error> {
-    let mut authorizations: Vec<Authorization> = Vec::with_capacity(addresses_keypairs.len());
+    let mut authorizations: Vec<Authorization> =
+        Vec::with_capacity(addresses_keypairs.len());
     let message = bincode::serialize(&transaction)?;
     for (address, keypair) in addresses_keypairs {
         let hash_public_key = get_address(&keypair.public);

@@ -1,6 +1,7 @@
 pub use crate::authorization::{get_address, Authorization};
 use crate::types::{
-    Address, AuthorizedTransaction, Content, GetValue, OutPoint, Output, Transaction,
+    Address, AuthorizedTransaction, Content, GetValue, InPoint, OutPoint,
+    Output, SpentOutput, Transaction,
 };
 use bip300301::bitcoin;
 use byteorder::{BigEndian, ByteOrder};
@@ -18,10 +19,11 @@ pub struct Wallet {
     pub address_to_index: Database<SerdeBincode<Address>, OwnedType<[u8; 4]>>,
     pub index_to_address: Database<OwnedType<[u8; 4]>, SerdeBincode<Address>>,
     pub utxos: Database<SerdeBincode<OutPoint>, SerdeBincode<Output>>,
+    pub stxos: Database<SerdeBincode<OutPoint>, SerdeBincode<SpentOutput>>,
 }
 
 impl Wallet {
-    pub const NUM_DBS: u32 = 4;
+    pub const NUM_DBS: u32 = 5;
 
     pub fn new(path: &Path) -> Result<Self, Error> {
         std::fs::create_dir_all(path)?;
@@ -33,12 +35,14 @@ impl Wallet {
         let address_to_index = env.create_database(Some("address_to_index"))?;
         let index_to_address = env.create_database(Some("index_to_address"))?;
         let utxos = env.create_database(Some("utxos"))?;
+        let stxos = env.create_database(Some("stxos"))?;
         Ok(Self {
             env,
             seed: seed_db,
             address_to_index,
             index_to_address,
             utxos,
+            stxos,
         })
     }
 
@@ -48,6 +52,7 @@ impl Wallet {
         self.address_to_index.clear(&mut txn)?;
         self.index_to_address.clear(&mut txn)?;
         self.utxos.clear(&mut txn)?;
+        self.stxos.clear(&mut txn)?;
         txn.commit()?;
         Ok(())
     }
@@ -106,7 +111,10 @@ impl Wallet {
         Ok(Transaction { inputs, outputs })
     }
 
-    pub fn select_coins(&self, value: u64) -> Result<(u64, HashMap<OutPoint, Output>), Error> {
+    pub fn select_coins(
+        &self,
+        value: u64,
+    ) -> Result<(u64, HashMap<OutPoint, Output>), Error> {
         let txn = self.env.read_txn()?;
         let mut utxos = vec![];
         for item in self.utxos.iter(&txn)? {
@@ -141,7 +149,30 @@ impl Wallet {
         Ok(())
     }
 
-    pub fn put_utxos(&self, utxos: &HashMap<OutPoint, Output>) -> Result<(), Error> {
+    pub fn spend_utxos(
+        &self,
+        spent: &[(OutPoint, InPoint)],
+    ) -> Result<(), Error> {
+        let mut txn = self.env.write_txn()?;
+        for (outpoint, inpoint) in spent {
+            let output = self.utxos.get(&txn, outpoint)?;
+            if let Some(output) = output {
+                self.utxos.delete(&mut txn, outpoint)?;
+                let spent_output = SpentOutput {
+                    output,
+                    inpoint: *inpoint,
+                };
+                self.stxos.put(&mut txn, outpoint, &spent_output)?;
+            }
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    pub fn put_utxos(
+        &self,
+        utxos: &HashMap<OutPoint, Output>,
+    ) -> Result<(), Error> {
         let mut txn = self.env.write_txn()?;
         for (outpoint, output) in utxos {
             self.utxos.put(&mut txn, outpoint, output)?;
@@ -180,17 +211,21 @@ impl Wallet {
         Ok(addresses)
     }
 
-    pub fn authorize(&self, transaction: Transaction) -> Result<AuthorizedTransaction, Error> {
+    pub fn authorize(
+        &self,
+        transaction: Transaction,
+    ) -> Result<AuthorizedTransaction, Error> {
         let txn = self.env.read_txn()?;
         let mut authorizations = vec![];
         for input in &transaction.inputs {
-            let spent_utxo = self.utxos.get(&txn, input)?.ok_or(Error::NoUtxo)?;
+            let spent_utxo =
+                self.utxos.get(&txn, input)?.ok_or(Error::NoUtxo)?;
             let index = self
                 .address_to_index
                 .get(&txn, &spent_utxo.address)?
                 .ok_or(Error::NoIndex {
-                    address: spent_utxo.address,
-                })?;
+                address: spent_utxo.address,
+            })?;
             let index = BigEndian::read_u32(&index);
             let keypair = self.get_keypair(&txn, index)?;
             let signature = crate::authorization::sign(&keypair, &transaction)?;
@@ -232,7 +267,11 @@ impl Wallet {
         Ok(last_index)
     }
 
-    fn get_keypair(&self, txn: &RoTxn, index: u32) -> Result<ed25519_dalek::Keypair, Error> {
+    fn get_keypair(
+        &self,
+        txn: &RoTxn,
+        index: u32,
+    ) -> Result<ed25519_dalek::Keypair, Error> {
         let seed = self.seed.get(txn, &0)?.ok_or(Error::NoSeed)?;
         let xpriv = ExtendedSecretKey::from_seed(&seed)?;
         let derivation_path = DerivationPath::new([

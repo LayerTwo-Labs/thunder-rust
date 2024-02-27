@@ -1,9 +1,8 @@
-use crate::app::lib;
-use crate::app::App;
 use eframe::egui;
 use human_size::{Byte, Kibibyte, Mebibyte, SpecificSize};
-use lib::state::State;
-use lib::{bip300301::bitcoin, types::GetValue};
+use thunder::{bip300301::bitcoin, state::State, types::GetValue};
+
+use crate::app::App;
 
 pub struct BlockExplorer {
     height: u32,
@@ -37,19 +36,25 @@ impl BlockExplorer {
                 let merkle_root = &format!("{}", header.merkle_root);
                 let prev_side_hash = &format!("{}", header.prev_side_hash);
                 let prev_main_hash = &format!("{}", header.prev_main_hash);
-                let body_size = bincode::serialize(&body).unwrap_or(vec![]).len();
-                let coinbase_value: u64 = body.coinbase.iter().map(GetValue::get_value).sum();
+                let body_size =
+                    bincode::serialize(&body).unwrap_or(vec![]).len();
+                let coinbase_value: u64 =
+                    body.coinbase.iter().map(GetValue::get_value).sum();
                 let coinbase_value = bitcoin::Amount::from_sat(coinbase_value);
                 let num_transactions = body.transactions.len();
-                let body_size = if let Ok(body_size) = SpecificSize::new(body_size as f64, Byte) {
+                let body_size = if let Ok(body_size) =
+                    SpecificSize::new(body_size as f64, Byte)
+                {
                     let bytes = body_size.to_bytes();
                     if bytes < 1024 {
                         format!("{body_size}")
                     } else if bytes < 1024 * 1024 {
-                        let body_size: SpecificSize<Kibibyte> = body_size.into();
+                        let body_size: SpecificSize<Kibibyte> =
+                            body_size.into();
                         format!("{body_size}")
                     } else {
-                        let body_size: SpecificSize<Mebibyte> = body_size.into();
+                        let body_size: SpecificSize<Mebibyte> =
+                            body_size.into();
                         format!("{body_size}")
                     }
                 } else {
@@ -66,9 +71,14 @@ impl BlockExplorer {
                 ui.monospace(format!("Num sigops:       {num_sigops}"));
 
                 let body_size_limit = State::body_size_limit(self.height);
-                if let Ok(body_size_limit) = SpecificSize::new(body_size_limit as f64, Byte) {
-                    let body_size_limit: SpecificSize<Mebibyte> = body_size_limit.into();
-                    ui.monospace(format!("Body size limit:   {body_size_limit}"));
+                if let Ok(body_size_limit) =
+                    SpecificSize::new(body_size_limit as f64, Byte)
+                {
+                    let body_size_limit: SpecificSize<Mebibyte> =
+                        body_size_limit.into();
+                    ui.monospace(format!(
+                        "Body size limit:   {body_size_limit}"
+                    ));
                 }
                 let body_sigops_limit = State::body_sigops_limit(self.height);
                 ui.monospace(format!("Body sigops limit: {body_sigops_limit}"));

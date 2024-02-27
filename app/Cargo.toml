@@ -1,20 +1,35 @@
 [package]
 name = "thunder_app"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-authors = [ "Nikita Chashchinskii <nikita.chashchinskii@gmail.com>" ]
+authors = [ "Ash Manning <ash@layertwolabs.com>", "Nikita Chashchinskii <nikita.chashchinskii@gmail.com>" ]
 
 [dependencies]
-thunder = { path = "../lib" }
-
 anyhow = "1.0.72"
-serde = { version = "1.0.179", features = ["derive"] }
-thiserror = "1.0.44"
-tokio = { version = "1.29.1", features = ["rt-multi-thread", "macros"] }
 bincode = "1.3.3"
 clap = { version = "4.3.19", features = ["derive"] }
+ctrlc = "3.4.0"
 dirs = "5.0.1"
 eframe = "0.23.0"
-tiny-bip39 = "1.0.0"
 human-size = "0.4.3"
-jsonrpsee = { version = "0.20.0", features = ["server", "macros"] }
+jsonrpsee = { version = "0.20.0", features = ["macros", "server"] }
+parking_lot = "0.12.1"
+serde = { version = "1.0.179", features = ["derive"] }
+thiserror = "1.0.44"
+thunder = { path = "../lib" }
+tiny-bip39 = "1.0.0"
+tokio = { version = "1.29.1", features = ["macros", "rt-multi-thread"] }
+tracing = "0.1.40"
+tracing-subscriber = "0.3.18"
+
+[dependencies.bip300301]
+git = "https://github.com/Ash-L2L/bip300301.git"
+rev = "1fddcb46428d8c1aebc3bb87adfeded1727880f3"
+
+[lib]
+name = "thunder_app_rpc_api"
+path = "rpc_api.rs"
+
+[[bin]]
+name = "thunder_app"
+path = "main.rs"

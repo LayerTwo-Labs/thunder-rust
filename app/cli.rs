@@ -7,6 +7,12 @@ pub struct Cli {
     /// data directory for storing blockchain data and wallet, defaults to ~/.local/share
     #[arg(short, long)]
     pub datadir: Option<PathBuf>,
+    /// If specified, the gui will not launch.
+    #[arg(long)]
+    pub headless: bool,
+    /// Log level, defaults to [`tracing::Level::Info`]
+    #[arg(default_value_t = tracing::Level::INFO, long)]
+    pub log_level: tracing::Level,
     /// address to use for P2P networking, defaults to 127.0.0.1:4000
     #[arg(short, long)]
     pub net_addr: Option<String>,
@@ -27,26 +33,43 @@ pub struct Cli {
 
 pub struct Config {
     pub datadir: PathBuf,
-    pub net_addr: SocketAddr,
+    pub headless: bool,
+    pub log_level: tracing::Level,
     pub main_addr: SocketAddr,
-    pub rpc_addr: SocketAddr,
-    pub main_user: String,
     pub main_password: String,
+    pub main_user: String,
+    pub net_addr: SocketAddr,
+    pub rpc_addr: SocketAddr,
 }
 
 impl Cli {
     pub fn get_config(&self) -> anyhow::Result<Config> {
-        const DEFAULT_NET_ADDR: &str = "127.0.0.1:4000";
-        let net_addr: SocketAddr = self
-            .net_addr
+        let datadir = self
+            .datadir
             .clone()
-            .unwrap_or(DEFAULT_NET_ADDR.to_string())
-            .parse()?;
+            .unwrap_or_else(|| {
+                dirs::data_dir()
+                    .expect("couldn't get default datadir, specify --datadir")
+            })
+            .join("thunder");
+        let headless = self.headless;
+        let log_level = self.log_level;
         const DEFAULT_MAIN_ADDR: &str = "127.0.0.1:18443";
         let main_addr: SocketAddr = self
             .main_addr
             .clone()
             .unwrap_or(DEFAULT_MAIN_ADDR.to_string())
+            .parse()?;
+        let main_password = self
+            .password_main
+            .clone()
+            .unwrap_or_else(|| "password".into());
+        let main_user = self.user_main.clone().unwrap_or_else(|| "user".into());
+        const DEFAULT_NET_ADDR: &str = "127.0.0.1:4000";
+        let net_addr: SocketAddr = self
+            .net_addr
+            .clone()
+            .unwrap_or(DEFAULT_NET_ADDR.to_string())
             .parse()?;
         const DEFAULT_RPC_ADDR: &str = "127.0.0.1:2020";
         let rpc_addr: SocketAddr = self
@@ -54,25 +77,15 @@ impl Cli {
             .clone()
             .unwrap_or(DEFAULT_RPC_ADDR.to_string())
             .parse()?;
-        let datadir = self
-            .datadir
-            .clone()
-            .unwrap_or_else(|| {
-                dirs::data_dir().expect("couldn't get default datadir, specify --datadir")
-            })
-            .join("thunder");
-        let main_user = self.user_main.clone().unwrap_or_else(|| "user".into());
-        let main_password = self
-            .password_main
-            .clone()
-            .unwrap_or_else(|| "password".into());
         Ok(Config {
             datadir,
-            net_addr,
+            headless,
+            log_level,
             main_addr,
-            rpc_addr,
-            main_user,
             main_password,
+            main_user,
+            net_addr,
+            rpc_addr,
         })
     }
 }

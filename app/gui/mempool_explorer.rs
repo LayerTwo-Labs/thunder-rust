@@ -1,11 +1,11 @@
-use crate::app::lib;
-use crate::app::App;
 use eframe::egui;
 use human_size::{Byte, Kibibyte, Mebibyte, SpecificSize};
-use lib::{
+use thunder::{
     bip300301::bitcoin,
     types::{GetValue, OutPoint},
 };
+
+use crate::app::App;
 
 #[derive(Default)]
 pub struct MemPoolExplorer {
@@ -28,7 +28,9 @@ impl MemPoolExplorer {
                         ui.monospace("value out");
                         ui.monospace("fee");
                         ui.end_row();
-                        for (index, transaction) in transactions.iter().enumerate() {
+                        for (index, transaction) in
+                            transactions.iter().enumerate()
+                        {
                             let value_out: u64 = transaction
                                 .transaction
                                 .outputs
@@ -39,30 +41,50 @@ impl MemPoolExplorer {
                                 .transaction
                                 .inputs
                                 .iter()
-                                .map(|input| utxos.get(input).map(GetValue::get_value))
+                                .map(|input| {
+                                    utxos.get(input).map(GetValue::get_value)
+                                })
                                 .sum::<Option<u64>>()
                                 .unwrap_or(0);
-                            let txid = &format!("{}", transaction.transaction.txid())[0..8];
+                            let txid =
+                                &format!("{}", transaction.transaction.txid())
+                                    [0..8];
                             if value_in >= value_out {
                                 let fee = value_in - value_out;
-                                ui.selectable_value(&mut self.current, index, txid.to_string());
+                                ui.selectable_value(
+                                    &mut self.current,
+                                    index,
+                                    txid.to_string(),
+                                );
                                 ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Max),
+                                    egui::Layout::right_to_left(
+                                        egui::Align::Max,
+                                    ),
                                     |ui| {
-                                        let value_out = bitcoin::Amount::from_sat(value_out);
+                                        let value_out =
+                                            bitcoin::Amount::from_sat(
+                                                value_out,
+                                            );
                                         ui.monospace(format!("{value_out}"));
                                     },
                                 );
                                 ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Max),
+                                    egui::Layout::right_to_left(
+                                        egui::Align::Max,
+                                    ),
                                     |ui| {
-                                        let fee = bitcoin::Amount::from_sat(fee);
+                                        let fee =
+                                            bitcoin::Amount::from_sat(fee);
                                         ui.monospace(format!("{fee}"));
                                     },
                                 );
                                 ui.end_row();
                             } else {
-                                ui.selectable_value(&mut self.current, index, txid.to_string());
+                                ui.selectable_value(
+                                    &mut self.current,
+                                    index,
+                                    txid.to_string(),
+                                );
                                 ui.monospace("invalid");
                                 ui.end_row();
                             }
@@ -85,16 +107,21 @@ impl MemPoolExplorer {
                                 OutPoint::Regular { txid, vout } => {
                                     ("regular", format!("{txid}"), *vout)
                                 }
-                                OutPoint::Deposit(outpoint) => {
-                                    ("deposit", format!("{}", outpoint.txid), outpoint.vout)
-                                }
-                                OutPoint::Coinbase { merkle_root, vout } => {
-                                    ("coinbase", format!("{merkle_root}"), *vout)
-                                }
+                                OutPoint::Deposit(outpoint) => (
+                                    "deposit",
+                                    format!("{}", outpoint.txid),
+                                    outpoint.vout,
+                                ),
+                                OutPoint::Coinbase { merkle_root, vout } => (
+                                    "coinbase",
+                                    format!("{merkle_root}"),
+                                    *vout,
+                                ),
                             };
                             let output = &utxos[input];
                             let hash = &hash[0..8];
-                            let value = bitcoin::Amount::from_sat(output.get_value());
+                            let value =
+                                bitcoin::Amount::from_sat(output.get_value());
                             ui.monospace(kind.to_string());
                             ui.monospace(format!("{hash}:{vout}",));
                             ui.monospace(format!("{value}",));
@@ -112,9 +139,12 @@ impl MemPoolExplorer {
                         ui.monospace("address");
                         ui.monospace("value");
                         ui.end_row();
-                        for (vout, output) in transaction.transaction.outputs.iter().enumerate() {
+                        for (vout, output) in
+                            transaction.transaction.outputs.iter().enumerate()
+                        {
                             let address = &format!("{}", output.address)[0..8];
-                            let value = bitcoin::Amount::from_sat(output.get_value());
+                            let value =
+                                bitcoin::Amount::from_sat(output.get_value());
                             ui.monospace(format!("{vout}"));
                             ui.monospace(address.to_string());
                             ui.monospace(format!("{value}"));
@@ -127,7 +157,8 @@ impl MemPoolExplorer {
                 ui.separator();
                 let txid = transaction.transaction.txid();
                 ui.monospace(format!("Txid:             {txid}"));
-                let transaction_size = bincode::serialize(&transaction).unwrap_or(vec![]).len();
+                let transaction_size =
+                    bincode::serialize(&transaction).unwrap_or(vec![]).len();
                 let transaction_size = if let Ok(transaction_size) =
                     SpecificSize::new(transaction_size as f64, Byte)
                 {
@@ -135,10 +166,12 @@ impl MemPoolExplorer {
                     if bytes < 1024 {
                         format!("{transaction_size}")
                     } else if bytes < 1024 * 1024 {
-                        let transaction_size: SpecificSize<Kibibyte> = transaction_size.into();
+                        let transaction_size: SpecificSize<Kibibyte> =
+                            transaction_size.into();
                         format!("{transaction_size}")
                     } else {
-                        let transaction_size: SpecificSize<Mebibyte> = transaction_size.into();
+                        let transaction_size: SpecificSize<Mebibyte> =
+                            transaction_size.into();
                         format!("{transaction_size}")
                     }
                 } else {

@@ -1,10 +1,10 @@
-use crate::app::lib;
-use crate::app::App;
 use eframe::egui;
-use lib::{
+use thunder::{
     bip300301::bitcoin,
     types::{self, Content, Output},
 };
+
+use crate::app::App;
 
 pub struct UtxoCreator {
     utxo_type: UtxoType,
@@ -48,8 +48,16 @@ impl UtxoCreator {
             egui::ComboBox::from_id_source("utxo_type")
                 .selected_text(format!("{}", self.utxo_type))
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.utxo_type, UtxoType::Regular, "regular");
-                    ui.selectable_value(&mut self.utxo_type, UtxoType::Withdrawal, "withdrawal");
+                    ui.selectable_value(
+                        &mut self.utxo_type,
+                        UtxoType::Regular,
+                        "regular",
+                    );
+                    ui.selectable_value(
+                        &mut self.utxo_type,
+                        UtxoType::Withdrawal,
+                        "withdrawal",
+                    );
                 });
             ui.heading("UTXO");
         });
@@ -88,10 +96,14 @@ impl UtxoCreator {
         ui.horizontal(|ui| {
             match self.utxo_type {
                 UtxoType::Regular => {
-                    let address: Option<types::Address> = self.address.parse().ok();
+                    let address: Option<types::Address> =
+                        self.address.parse().ok();
                     let value: Option<bitcoin::Amount> =
-                        bitcoin::Amount::from_str_in(&self.value, bitcoin::Denomination::Bitcoin)
-                            .ok();
+                        bitcoin::Amount::from_str_in(
+                            &self.value,
+                            bitcoin::Denomination::Bitcoin,
+                        )
+                        .ok();
                     if ui
                         .add_enabled(
                             address.is_some() && value.is_some(),
@@ -101,23 +113,31 @@ impl UtxoCreator {
                     {
                         let utxo = Output {
                             address: address.expect("should not happen"),
-                            content: Content::Value(value.expect("should not happen").to_sat()),
+                            content: Content::Value(
+                                value.expect("should not happen").to_sat(),
+                            ),
                         };
                         app.transaction.outputs.push(utxo);
                     }
                 }
                 UtxoType::Withdrawal => {
                     let value: Option<bitcoin::Amount> =
-                        bitcoin::Amount::from_str_in(&self.value, bitcoin::Denomination::Bitcoin)
-                            .ok();
-                    let address: Option<types::Address> = self.address.parse().ok();
-                    let main_address: Option<bitcoin::Address<bitcoin::address::NetworkUnchecked>> =
-                        self.main_address.parse().ok();
-                    let main_fee: Option<bitcoin::Amount> = bitcoin::Amount::from_str_in(
-                        &self.main_fee,
-                        bitcoin::Denomination::Bitcoin,
-                    )
-                    .ok();
+                        bitcoin::Amount::from_str_in(
+                            &self.value,
+                            bitcoin::Denomination::Bitcoin,
+                        )
+                        .ok();
+                    let address: Option<types::Address> =
+                        self.address.parse().ok();
+                    let main_address: Option<
+                        bitcoin::Address<bitcoin::address::NetworkUnchecked>,
+                    > = self.main_address.parse().ok();
+                    let main_fee: Option<bitcoin::Amount> =
+                        bitcoin::Amount::from_str_in(
+                            &self.main_fee,
+                            bitcoin::Denomination::Bitcoin,
+                        )
+                        .ok();
                     if ui
                         .add_enabled(
                             value.is_some()
@@ -132,8 +152,11 @@ impl UtxoCreator {
                             address: address.expect("invalid address"),
                             content: Content::Withdrawal {
                                 value: value.expect("invalid value").to_sat(),
-                                main_address: main_address.expect("invalid main_address"),
-                                main_fee: main_fee.expect("invalid main_fee").to_sat(),
+                                main_address: main_address
+                                    .expect("invalid main_address"),
+                                main_fee: main_fee
+                                    .expect("invalid main_fee")
+                                    .to_sat(),
                             },
                         };
                         app.transaction.outputs.push(utxo);

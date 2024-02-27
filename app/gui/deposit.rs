@@ -1,7 +1,7 @@
-use crate::app::lib;
-use crate::app::App;
 use eframe::egui;
-use lib::bip300301::bitcoin;
+use thunder::bip300301::bitcoin;
+
+use crate::app::App;
 
 pub struct Deposit {
     amount: String,
@@ -34,11 +34,20 @@ impl Deposit {
             ui.label("BTC");
         });
 
-        let amount = bitcoin::Amount::from_str_in(&self.amount, bitcoin::Denomination::Bitcoin);
-        let fee = bitcoin::Amount::from_str_in(&self.fee, bitcoin::Denomination::Bitcoin);
+        let amount = bitcoin::Amount::from_str_in(
+            &self.amount,
+            bitcoin::Denomination::Bitcoin,
+        );
+        let fee = bitcoin::Amount::from_str_in(
+            &self.fee,
+            bitcoin::Denomination::Bitcoin,
+        );
 
         if ui
-            .add_enabled(amount.is_ok() && fee.is_ok(), egui::Button::new("deposit"))
+            .add_enabled(
+                amount.is_ok() && fee.is_ok(),
+                egui::Button::new("deposit"),
+            )
             .clicked()
         {
             let _result = app.deposit(

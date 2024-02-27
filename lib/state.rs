@@ -1,41 +1,64 @@
-use crate::authorization::Authorization;
-use crate::types::*;
-use bip300301::TwoWayPegData;
-use bip300301::{bitcoin, WithdrawalBundleStatus};
-pub use heed;
-use heed::types::*;
-use heed::{Database, RoTxn, RwTxn};
 use std::collections::{HashMap, HashSet};
-use std::fmt::Debug;
+
+use heed::{
+    types::{OwnedType, SerdeBincode},
+    Database, RoTxn, RwTxn,
+};
+
+use bip300301::{
+    bitcoin::{
+        self, transaction::Version as BitcoinTxVersion, Amount as BitcoinAmount,
+    },
+    TwoWayPegData, WithdrawalBundleStatus,
+};
+
+use crate::{
+    authorization::Authorization,
+    types::{
+        hashes, Address, AggregatedWithdrawal, Body, Content,
+        FilledTransaction, GetAddress, GetValue, InPoint, OutPoint, Output,
+        SpentOutput, Transaction, Verify, WithdrawalBundle,
+    },
+};
 
 #[derive(Clone)]
 pub struct State {
     pub utxos: Database<SerdeBincode<OutPoint>, SerdeBincode<Output>>,
-    pub pending_withdrawal_bundle: Database<OwnedType<u32>, SerdeBincode<WithdrawalBundle>>,
-    pub last_withdrawal_bundle_failure_height: Database<OwnedType<u32>, OwnedType<u32>>,
-    pub last_deposit_block: Database<OwnedType<u32>, SerdeBincode<bitcoin::BlockHash>>,
+    pub stxos: Database<SerdeBincode<OutPoint>, SerdeBincode<SpentOutput>>,
+    pub pending_withdrawal_bundle:
+        Database<OwnedType<u32>, SerdeBincode<WithdrawalBundle>>,
+    pub last_withdrawal_bundle_failure_height:
+        Database<OwnedType<u32>, OwnedType<u32>>,
+    pub last_deposit_block:
+        Database<OwnedType<u32>, SerdeBincode<bitcoin::BlockHash>>,
 }
 
 impl State {
-    pub const NUM_DBS: u32 = 4;
+    pub const NUM_DBS: u32 = 5;
     pub const WITHDRAWAL_BUNDLE_FAILURE_GAP: u32 = 4;
 
     pub fn new(env: &heed::Env) -> Result<Self, Error> {
         let utxos = env.create_database(Some("utxos"))?;
-
-        let pending_withdrawal_bundle = env.create_database(Some("pending_withdrawal_bundle"))?;
+        let stxos = env.create_database(Some("stxos"))?;
+        let pending_withdrawal_bundle =
+            env.create_database(Some("pending_withdrawal_bundle"))?;
         let last_withdrawal_bundle_failure_height =
             env.create_database(Some("last_withdrawal_bundle_failure_height"))?;
-        let last_deposit_block = env.create_database(Some("last_deposit_block"))?;
+        let last_deposit_block =
+            env.create_database(Some("last_deposit_block"))?;
         Ok(Self {
             utxos,
+            stxos,
             pending_withdrawal_bundle,
             last_withdrawal_bundle_failure_height,
             last_deposit_block,
         })
     }
 
-    pub fn get_utxos(&self, txn: &RoTxn) -> Result<HashMap<OutPoint, Output>, Error> {
+    pub fn get_utxos(
+        &self,
+        txn: &RoTxn,
+    ) -> Result<HashMap<OutPoint, Output>, Error> {
         let mut utxos = HashMap::new();
         for item in self.utxos.iter(txn)? {
             let (outpoint, output) = item?;
@@ -89,9 +112,9 @@ impl State {
         // Weight of a single output.
         const OUTPUT_WEIGHT: u64 = 128;
         // Turns out to be 3121.
-        const MAX_BUNDLE_OUTPUTS: usize = ((bitcoin::policy::MAX_STANDARD_TX_WEIGHT as u64
-            - BUNDLE_0_WEIGHT)
-            / OUTPUT_WEIGHT) as usize;
+        const MAX_BUNDLE_OUTPUTS: usize =
+            ((bitcoin::policy::MAX_STANDARD_TX_WEIGHT as u64 - BUNDLE_0_WEIGHT)
+                / OUTPUT_WEIGHT) as usize;
 
         // Aggregate all outputs by destination.
         // destination -> (value, mainchain fee, spent_utxos)
@@ -110,7 +133,7 @@ impl State {
                 let aggregated = address_to_aggregated_withdrawal
                     .entry(main_address.clone())
                     .or_insert(AggregatedWithdrawal {
-                        spent_utxos: HashMap::new(),
+                        spend_utxos: HashMap::new(),
                         main_address: main_address.clone(),
                         value: 0,
                         main_fee: 0,
@@ -121,7 +144,7 @@ impl State {
                 if main_fee > aggregated.main_fee {
                     aggregated.main_fee = main_fee;
                 }
-                aggregated.spent_utxos.insert(outpoint, output);
+                aggregated.spend_utxos.insert(outpoint, output);
             }
         }
         if address_to_aggregated_withdrawal.is_empty() {
@@ -131,17 +154,20 @@ impl State {
             address_to_aggregated_withdrawal.into_values().collect();
         aggregated_withdrawals.sort_by_key(|a| std::cmp::Reverse(a.clone()));
         let mut fee = 0;
-        let mut spent_utxos = HashMap::<OutPoint, Output>::new();
+        let mut spend_utxos = HashMap::<OutPoint, Output>::new();
         let mut bundle_outputs = vec![];
         for aggregated in &aggregated_withdrawals {
             if bundle_outputs.len() > MAX_BUNDLE_OUTPUTS {
                 break;
             }
             let bundle_output = bitcoin::TxOut {
-                value: aggregated.value,
-                script_pubkey: aggregated.main_address.payload.script_pubkey(),
+                value: BitcoinAmount::from_sat(aggregated.value),
+                script_pubkey: aggregated
+                    .main_address
+                    .payload()
+                    .script_pubkey(),
             };
-            spent_utxos.extend(aggregated.spent_utxos.clone());
+            spend_utxos.extend(aggregated.spend_utxos.clone());
             bundle_outputs.push(bundle_output);
             fee += aggregated.main_fee;
         }
@@ -159,7 +185,7 @@ impl State {
             .push_slice([68; 1])
             .into_script();
         let return_dest_txout = bitcoin::TxOut {
-            value: 0,
+            value: BitcoinAmount::ZERO,
             script_pubkey: script,
         };
         // Create mainchain fee output.
@@ -168,13 +194,13 @@ impl State {
             .push_slice(fee.to_le_bytes())
             .into_script();
         let mainchain_fee_txout = bitcoin::TxOut {
-            value: 0,
+            value: BitcoinAmount::ZERO,
             script_pubkey: script,
         };
         // Create inputs commitment.
         let inputs: Vec<OutPoint> = [
             // Commit to inputs.
-            spent_utxos.keys().copied().collect(),
+            spend_utxos.keys().copied().collect(),
             // Commit to block height.
             vec![OutPoint::Regular {
                 txid: [0; 32].into(),
@@ -182,17 +208,17 @@ impl State {
             }],
         ]
         .concat();
-        let commitment = hash(&inputs);
+        let commitment = hashes::hash(&inputs);
         let script = script::Builder::new()
             .push_opcode(opcodes::all::OP_RETURN)
             .push_slice(commitment)
             .into_script();
         let inputs_commitment_txout = bitcoin::TxOut {
-            value: 0,
+            value: BitcoinAmount::ZERO,
             script_pubkey: script,
         };
         let transaction = bitcoin::Transaction {
-            version: 2,
+            version: BitcoinTxVersion::TWO,
             lock_time: bitcoin::blockdata::locktime::absolute::LockTime::ZERO,
             input: vec![txin],
             output: [
@@ -205,14 +231,16 @@ impl State {
             ]
             .concat(),
         };
-        if transaction.weight().to_wu() > bitcoin::policy::MAX_STANDARD_TX_WEIGHT as u64 {
+        if transaction.weight().to_wu()
+            > bitcoin::policy::MAX_STANDARD_TX_WEIGHT as u64
+        {
             Err(Error::BundleTooHeavy {
                 weight: transaction.weight().to_wu(),
                 max_weight: bitcoin::policy::MAX_STANDARD_TX_WEIGHT as u64,
             })?;
         }
         Ok(Some(WithdrawalBundle {
-            spent_utxos,
+            spend_utxos,
             transaction,
         }))
     }
@@ -251,7 +279,8 @@ impl State {
         const START: usize = 42800;
         let month = height / (6 * 24 * 30);
         if month < 120 {
-            (START as f64 * Self::LIMIT_GROWTH_EXPONENT.powi(month as i32)).floor() as usize
+            (START as f64 * Self::LIMIT_GROWTH_EXPONENT.powi(month as i32))
+                .floor() as usize
         } else {
             // 1.04 ** 120 = 110.6625
             // So we are rounding up.
@@ -265,7 +294,8 @@ impl State {
         const START: usize = 8 * 1024 * 1024;
         let month = height / (6 * 24 * 30);
         if month < 120 {
-            (START as f64 * Self::LIMIT_GROWTH_EXPONENT.powi(month as i32)).floor() as usize
+            (START as f64 * Self::LIMIT_GROWTH_EXPONENT.powi(month as i32))
+                .floor() as usize
         } else {
             // 1.04 ** 120 = 110.6625
             // So we are rounding up.
@@ -273,7 +303,12 @@ impl State {
         }
     }
 
-    pub fn validate_body(&self, txn: &RoTxn, body: &Body, height: u32) -> Result<u64, Error> {
+    pub fn validate_body(
+        &self,
+        txn: &RoTxn,
+        body: &Body,
+        height: u32,
+    ) -> Result<u64, Error> {
         if body.authorizations.len() > Self::body_sigops_limit(height) {
             return Err(Error::TooManySigops);
         }
@@ -298,7 +333,8 @@ impl State {
                 }
                 spent_utxos.insert(*input);
             }
-            total_fees += self.validate_filled_transaction(filled_transaction)?;
+            total_fees +=
+                self.validate_filled_transaction(filled_transaction)?;
         }
         if coinbase_value > total_fees {
             return Err(Error::NotEnoughFees);
@@ -306,7 +342,9 @@ impl State {
         let spent_utxos = filled_transactions
             .iter()
             .flat_map(|t| t.spent_utxos.iter());
-        for (authorization, spent_utxo) in body.authorizations.iter().zip(spent_utxos) {
+        for (authorization, spent_utxo) in
+            body.authorizations.iter().zip(spent_utxos)
+        {
             if authorization.get_address() != spent_utxo.address {
                 return Err(Error::WrongPubKeyForAddress);
             }
@@ -354,9 +392,17 @@ impl State {
             > Self::WITHDRAWAL_BUNDLE_FAILURE_GAP
             && self.pending_withdrawal_bundle.get(txn, &0)?.is_none()
         {
-            if let Some(bundle) = self.collect_withdrawal_bundle(txn, block_height + 1)? {
-                for outpoint in bundle.spent_utxos.keys() {
+            if let Some(bundle) =
+                self.collect_withdrawal_bundle(txn, block_height + 1)?
+            {
+                for (outpoint, spend_output) in &bundle.spend_utxos {
                     self.utxos.delete(txn, outpoint)?;
+                    let txid = bundle.transaction.txid();
+                    let spent_output = SpentOutput {
+                        output: spend_output.clone(),
+                        inpoint: InPoint::Withdrawal { txid },
+                    };
+                    self.stxos.put(txn, outpoint, &spent_output)?;
                 }
                 self.pending_withdrawal_bundle.put(txn, &0, &bundle)?;
             }
@@ -374,7 +420,8 @@ impl State {
                             &(block_height + 1),
                         )?;
                         self.pending_withdrawal_bundle.delete(txn, &0)?;
-                        for (outpoint, output) in &bundle.spent_utxos {
+                        for (outpoint, output) in &bundle.spend_utxos {
+                            self.stxos.delete(txn, outpoint)?;
                             self.utxos.put(txn, outpoint, output)?;
                         }
                     }
@@ -387,7 +434,11 @@ impl State {
         Ok(())
     }
 
-    pub fn connect_body(&self, txn: &mut RwTxn, body: &Body) -> Result<(), Error> {
+    pub fn connect_body(
+        &self,
+        txn: &mut RwTxn,
+        body: &Body,
+    ) -> Result<(), Error> {
         let merkle_root = body.compute_merkle_root();
         for (vout, output) in body.coinbase.iter().enumerate() {
             let outpoint = OutPoint::Coinbase {
@@ -398,8 +449,20 @@ impl State {
         }
         for transaction in &body.transactions {
             let txid = transaction.txid();
-            for input in &transaction.inputs {
+            for (vin, input) in transaction.inputs.iter().enumerate() {
+                let spent_output = self
+                    .utxos
+                    .get(txn, input)?
+                    .ok_or(Error::NoUtxo { outpoint: *input })?;
+                let spent_output = SpentOutput {
+                    output: spent_output,
+                    inpoint: InPoint::Regular {
+                        txid,
+                        vin: vin as u32,
+                    },
+                };
                 self.utxos.delete(txn, input)?;
+                self.stxos.put(txn, input, &spent_output)?;
             }
             for (vout, output) in transaction.outputs.iter().enumerate() {
                 let outpoint = OutPoint::Regular {

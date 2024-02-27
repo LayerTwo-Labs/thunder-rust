@@ -101,7 +101,10 @@ impl Net {
         Ok(peer)
     }
 
-    pub async fn disconnect(&self, stable_id: usize) -> Result<Option<Peer>, Error> {
+    pub async fn disconnect(
+        &self,
+        stable_id: usize,
+    ) -> Result<Option<Peer>, Error> {
         let peer = self.peers.write().await.remove(&stable_id);
         Ok(peer)
     }
@@ -123,7 +126,9 @@ pub fn make_client_endpoint(bind_addr: SocketAddr) -> Result<Endpoint, Error> {
 /// - a stream of incoming QUIC connections
 /// - server certificate serialized into DER format
 #[allow(unused)]
-pub fn make_server_endpoint(bind_addr: SocketAddr) -> Result<(Endpoint, Vec<u8>), Error> {
+pub fn make_server_endpoint(
+    bind_addr: SocketAddr,
+) -> Result<(Endpoint, Vec<u8>), Error> {
     let (server_config, server_cert) = configure_server()?;
     let endpoint = Endpoint::server(server_config, bind_addr)?;
     Ok((endpoint, server_cert))
@@ -137,7 +142,8 @@ fn configure_server() -> Result<(ServerConfig, Vec<u8>), Error> {
     let priv_key = rustls::PrivateKey(priv_key);
     let cert_chain = vec![rustls::Certificate(cert_der.clone())];
 
-    let mut server_config = ServerConfig::with_single_cert(cert_chain, priv_key)?;
+    let mut server_config =
+        ServerConfig::with_single_cert(cert_chain, priv_key)?;
     let transport_config = Arc::get_mut(&mut server_config.transport).unwrap();
     transport_config.max_concurrent_uni_streams(1_u8.into());
 

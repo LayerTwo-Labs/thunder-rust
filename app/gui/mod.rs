@@ -1,8 +1,9 @@
 use std::collections::HashSet;
 
-use crate::app::{lib, App};
 use eframe::egui;
-use lib::{bip300301::bitcoin, types::GetValue};
+use thunder::{bip300301::bitcoin, types::GetValue};
+
+use crate::app::App;
 
 mod block_explorer;
 mod deposit;
@@ -53,7 +54,7 @@ impl EguiApp {
         Self {
             app,
             set_seed: SetSeed::default(),
-            miner: Miner,
+            miner: Miner::default(),
             deposit: Deposit::default(),
             utxo_selector: UtxoSelector,
             utxo_creator: UtxoCreator::default(),
@@ -75,9 +76,21 @@ impl eframe::App for EguiApp {
                         Tab::TransactionBuilder,
                         "transaction builder",
                     );
-                    ui.selectable_value(&mut self.tab, Tab::MemPoolExplorer, "mempool explorer");
-                    ui.selectable_value(&mut self.tab, Tab::BlockExplorer, "block explorer");
-                    ui.selectable_value(&mut self.tab, Tab::Withdrawals, "withdrawals");
+                    ui.selectable_value(
+                        &mut self.tab,
+                        Tab::MemPoolExplorer,
+                        "mempool explorer",
+                    );
+                    ui.selectable_value(
+                        &mut self.tab,
+                        Tab::BlockExplorer,
+                        "block explorer",
+                    );
+                    ui.selectable_value(
+                        &mut self.tab,
+                        Tab::Withdrawals,
+                        "withdrawals",
+                    );
                 });
             });
             egui::TopBottomPanel::bottom("util").show(ctx, |ui| {
@@ -91,9 +104,9 @@ impl eframe::App for EguiApp {
                 Tab::TransactionBuilder => {
                     let selected: HashSet<_> =
                         self.app.transaction.inputs.iter().cloned().collect();
-                    let value_in: u64 = self
-                        .app
-                        .utxos
+                    let utxos = self.app.utxos.clone();
+                    let value_in: u64 = utxos
+                        .read()
                         .iter()
                         .filter(|(outpoint, _)| selected.contains(outpoint))
                         .map(|(_, output)| output.get_value())
@@ -109,43 +122,59 @@ impl eframe::App for EguiApp {
                         .exact_width(250.)
                         .resizable(false)
                         .show_inside(ui, |ui| {
-                            self.utxo_selector.show(&mut self.app, ui);
+                            self.utxo_selector.show(&mut self.app.clone(), ui);
                         });
                     egui::SidePanel::left("value_in")
                         .exact_width(250.)
                         .resizable(false)
                         .show_inside(ui, |ui| {
                             ui.heading("Value In");
-                            let mut utxos: Vec<_> = self
-                                .app
-                                .utxos
+                            let utxos_read = utxos.read();
+                            let mut utxos: Vec<_> = utxos_read
                                 .iter()
-                                .filter(|(outpoint, _)| selected.contains(outpoint))
+                                .filter(|(outpoint, _)| {
+                                    selected.contains(outpoint)
+                                })
                                 .collect();
-                            utxos.sort_by_key(|(outpoint, _)| format!("{outpoint}"));
-                            ui.separator();
-                            ui.monospace(format!("Total: {}", bitcoin::Amount::from_sat(value_in)));
-                            ui.separator();
-                            egui::Grid::new("utxos").striped(true).show(ui, |ui| {
-                                ui.monospace("kind");
-                                ui.monospace("outpoint");
-                                ui.monospace("value");
-                                ui.end_row();
-                                let mut remove = None;
-                                for (vout, outpoint) in
-                                    self.app.transaction.inputs.iter().enumerate()
-                                {
-                                    let output = &self.app.utxos[outpoint];
-                                    show_utxo(ui, outpoint, output);
-                                    if ui.button("remove").clicked() {
-                                        remove = Some(vout);
-                                    }
-                                    ui.end_row();
-                                }
-                                if let Some(vout) = remove {
-                                    self.app.transaction.inputs.remove(vout);
-                                }
+                            utxos.sort_by_key(|(outpoint, _)| {
+                                format!("{outpoint}")
                             });
+                            ui.separator();
+                            ui.monospace(format!(
+                                "Total: {}",
+                                bitcoin::Amount::from_sat(value_in)
+                            ));
+                            ui.separator();
+                            egui::Grid::new("utxos").striped(true).show(
+                                ui,
+                                |ui| {
+                                    ui.monospace("kind");
+                                    ui.monospace("outpoint");
+                                    ui.monospace("value");
+                                    ui.end_row();
+                                    let mut remove = None;
+                                    for (vout, outpoint) in self
+                                        .app
+                                        .transaction
+                                        .inputs
+                                        .iter()
+                                        .enumerate()
+                                    {
+                                        let output = &utxos_read[outpoint];
+                                        show_utxo(ui, outpoint, output);
+                                        if ui.button("remove").clicked() {
+                                            remove = Some(vout);
+                                        }
+                                        ui.end_row();
+                                    }
+                                    if let Some(vout) = remove {
+                                        self.app
+                                            .transaction
+                                            .inputs
+                                            .remove(vout);
+                                    }
+                                },
+                            );
                         });
                     egui::SidePanel::left("value_out")
                         .exact_width(250.)
@@ -158,44 +187,64 @@ impl eframe::App for EguiApp {
                                 bitcoin::Amount::from_sat(value_out)
                             ));
                             ui.separator();
-                            egui::Grid::new("outputs").striped(true).show(ui, |ui| {
-                                let mut remove = None;
-                                ui.monospace("vout");
-                                ui.monospace("address");
-                                ui.monospace("value");
-                                ui.end_row();
-                                for (vout, output) in
-                                    self.app.transaction.outputs.iter().enumerate()
-                                {
-                                    let address = &format!("{}", output.address)[0..8];
-                                    let value = bitcoin::Amount::from_sat(output.get_value());
-                                    ui.monospace(format!("{vout}"));
-                                    ui.monospace(address.to_string());
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Max),
-                                        |ui| {
-                                            ui.monospace(format!("{value}"));
-                                        },
-                                    );
-                                    if ui.button("remove").clicked() {
-                                        remove = Some(vout);
-                                    }
+                            egui::Grid::new("outputs").striped(true).show(
+                                ui,
+                                |ui| {
+                                    let mut remove = None;
+                                    ui.monospace("vout");
+                                    ui.monospace("address");
+                                    ui.monospace("value");
                                     ui.end_row();
-                                }
-                                if let Some(vout) = remove {
-                                    self.app.transaction.outputs.remove(vout);
-                                }
-                            });
+                                    for (vout, output) in self
+                                        .app
+                                        .transaction
+                                        .outputs
+                                        .iter()
+                                        .enumerate()
+                                    {
+                                        let address =
+                                            &format!("{}", output.address)
+                                                [0..8];
+                                        let value = bitcoin::Amount::from_sat(
+                                            output.get_value(),
+                                        );
+                                        ui.monospace(format!("{vout}"));
+                                        ui.monospace(address.to_string());
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(
+                                                egui::Align::Max,
+                                            ),
+                                            |ui| {
+                                                ui.monospace(format!(
+                                                    "{value}"
+                                                ));
+                                            },
+                                        );
+                                        if ui.button("remove").clicked() {
+                                            remove = Some(vout);
+                                        }
+                                        ui.end_row();
+                                    }
+                                    if let Some(vout) = remove {
+                                        self.app
+                                            .transaction
+                                            .outputs
+                                            .remove(vout);
+                                    }
+                                },
+                            );
                         });
                     egui::SidePanel::left("create_utxo")
                         .exact_width(450.)
                         .resizable(false)
                         .show_separator_line(false)
                         .show_inside(ui, |ui| {
-                            self.utxo_creator.show(&mut self.app, ui);
+                            self.utxo_creator.show(&mut self.app.clone(), ui);
                             ui.separator();
                             ui.heading("Transaction");
-                            let txid = &format!("{}", self.app.transaction.txid())[0..8];
+                            let txid =
+                                &format!("{}", self.app.transaction.txid())
+                                    [0..8];
                             ui.monospace(format!("txid: {txid}"));
                             if value_in >= value_out {
                                 let fee = value_in - value_out;
