@@ -1,8 +1,16 @@
 [package]
 name = "thunder_app"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 authors = [ "Ash Manning <ash@layertwolabs.com>", "Nikita Chashchinskii <nikita.chashchinskii@gmail.com>" ]
+
+[dev-dependencies]
+base64 = "0.21.2"
+futures = { version = "0.3.30", default-features = false, features = ["async-await"]}
+jsonrpsee = { version = "0.20.0", features = ["http-client"] }
+tempfile = "3.10.0"
+test-log = { version = "0.2.14", features = ["trace"] }
+tokio = { version = "1.29.1", features = ["process", "rt-multi-thread"] }
 
 [dependencies]
 anyhow = "1.0.72"
@@ -12,7 +20,7 @@ ctrlc = "3.4.0"
 dirs = "5.0.1"
 eframe = "0.23.0"
 human-size = "0.4.3"
-jsonrpsee = { version = "0.20.0", features = ["macros", "server"] }
+jsonrpsee = { version = "0.20.0", features = ["client-core", "macros", "server"] }
 parking_lot = "0.12.1"
 serde = { version = "1.0.179", features = ["derive"] }
 thiserror = "1.0.44"
