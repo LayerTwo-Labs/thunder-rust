@@ -1,15 +1,49 @@
-pub use crate::authorization::{get_address, Authorization};
-use crate::types::{
-    Address, AuthorizedTransaction, Content, GetValue, InPoint, OutPoint,
-    Output, SpentOutput, Transaction,
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
 };
+
 use bip300301::bitcoin;
 use byteorder::{BigEndian, ByteOrder};
-use ed25519_dalek_bip32::*;
-use heed::types::*;
-use heed::{Database, RoTxn};
-use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use ed25519_dalek_bip32::{ChildIndex, DerivationPath, ExtendedSecretKey};
+use heed::{
+    types::{OwnedType, SerdeBincode},
+    Database, RoTxn,
+};
+
+pub use crate::{
+    authorization::{get_address, Authorization},
+    types::{
+        Address, AuthorizedTransaction, Content, GetValue, InPoint, OutPoint,
+        Output, SpentOutput, Transaction,
+    },
+};
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("heed error")]
+    Heed(#[from] heed::Error),
+    #[error("bip32 error")]
+    Bip32(#[from] ed25519_dalek_bip32::Error),
+    #[error("address {address} does not exist")]
+    AddressDoesNotExist { address: crate::types::Address },
+    #[error("utxo doesn't exist")]
+    NoUtxo,
+    #[error("wallet doesn't have a seed")]
+    NoSeed,
+    #[error("no index for address {address}")]
+    NoIndex { address: Address },
+    #[error("authorization error")]
+    Authorization(#[from] crate::authorization::Error),
+    #[error("io error")]
+    Io(#[from] std::io::Error),
+    #[error("not enough funds")]
+    NotEnoughFunds,
+    #[error("failed to parse mnemonic seed phrase")]
+    ParseMnemonic(#[source] anyhow::Error),
+    #[error("seed has already been set")]
+    SeedAlreadyExists,
+}
 
 #[derive(Clone)]
 pub struct Wallet {
@@ -46,7 +80,8 @@ impl Wallet {
         })
     }
 
-    pub fn set_seed(&self, seed: &[u8; 64]) -> Result<(), Error> {
+    /// Overwrite the seed, or set it if it does not already exist.
+    pub fn overwrite_seed(&self, seed: &[u8; 64]) -> Result<(), Error> {
         let mut txn = self.env.write_txn()?;
         self.seed.put(&mut txn, &0, seed)?;
         self.address_to_index.clear(&mut txn)?;
@@ -60,6 +95,26 @@ impl Wallet {
     pub fn has_seed(&self) -> Result<bool, Error> {
         let txn = self.env.read_txn()?;
         Ok(self.seed.get(&txn, &0)?.is_some())
+    }
+
+    /// Set the seed, if it does not already exist
+    pub fn set_seed(&self, seed: &[u8; 64]) -> Result<(), Error> {
+        if self.has_seed()? {
+            Err(Error::SeedAlreadyExists)
+        } else {
+            self.overwrite_seed(seed)
+        }
+    }
+
+    /// Set the seed from a mnemonic seed phrase,
+    /// if the seed does not already exist
+    pub fn set_seed_from_mnemonic(&self, mnemonic: &str) -> Result<(), Error> {
+        let mnemonic =
+            bip39::Mnemonic::from_phrase(mnemonic, bip39::Language::English)
+                .map_err(Error::ParseMnemonic)?;
+        let seed = bip39::Seed::new(&mnemonic, "");
+        let seed_bytes: [u8; 64] = seed.as_bytes().try_into().unwrap();
+        self.set_seed(&seed_bytes)
     }
 
     pub fn create_withdrawal(
@@ -285,26 +340,4 @@ impl Wallet {
         let secret = child.secret_key;
         Ok(ed25519_dalek::Keypair { secret, public })
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("heed error")]
-    Heed(#[from] heed::Error),
-    #[error("bip32 error")]
-    Bip32(#[from] ed25519_dalek_bip32::Error),
-    #[error("address {address} does not exist")]
-    AddressDoesNotExist { address: crate::types::Address },
-    #[error("utxo doesn't exist")]
-    NoUtxo,
-    #[error("wallet doesn't have a seed")]
-    NoSeed,
-    #[error("no index for address {address}")]
-    NoIndex { address: Address },
-    #[error("authorization error")]
-    Authorization(#[from] crate::authorization::Error),
-    #[error("io error")]
-    Io(#[from] std::io::Error),
-    #[error("not enough funds")]
-    NotEnoughFunds,
 }

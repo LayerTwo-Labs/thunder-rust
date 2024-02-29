@@ -41,12 +41,8 @@ impl SetSeed {
             .add_enabled(mnemonic.is_ok(), egui::Button::new("set"))
             .clicked()
         {
-            let mnemonic = mnemonic.expect("should never happen");
-            let seed = bip39::Seed::new(&mnemonic, &self.passphrase);
             app.wallet
-                .set_seed(
-                    seed.as_bytes().try_into().expect("seed it not 64 bytes"),
-                )
+                .set_seed_from_mnemonic(self.seed.as_str())
                 .expect("failed to set HD wallet seed");
         }
     }
