@@ -83,8 +83,15 @@ impl UtxoCreator {
                 ui.monospace("Main Address:");
                 ui.add(egui::TextEdit::singleline(&mut self.main_address));
                 if ui.button("generate").clicked() {
-                    let main_address = app.get_new_main_address().unwrap();
-                    self.main_address = format!("{main_address}");
+                    match app.get_new_main_address() {
+                        Ok(main_address) => {
+                            self.main_address = format!("{main_address}");
+                        }
+                        Err(err) => {
+                            let err = anyhow::Error::new(err);
+                            tracing::error!("{err:#}")
+                        }
+                    };
                 }
             });
             ui.horizontal(|ui| {

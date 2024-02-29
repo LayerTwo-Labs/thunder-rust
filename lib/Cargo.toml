@@ -1,6 +1,6 @@
 [package]
 name = "thunder"
-version = "0.4.4"
+version = "0.4.5"
 edition = "2021"
 authors = [ "Ash Manning <ash@layertwolabs.com>", "Nikita Chashchinskii <nikita.chashchinskii@gmail.com>" ]
 
@@ -29,7 +29,7 @@ tracing = "0.1.40"
 
 [dependencies.bip300301]
 git = "https://github.com/Ash-L2L/bip300301.git"
-rev = "4ca8c801f25ae826ba6b74f288147e29b35bb74c"
+rev = "1bd864165a8cd1beaa1c7816b845d766ae563a3f"
 features = ["tracing"]
 
 [lib]

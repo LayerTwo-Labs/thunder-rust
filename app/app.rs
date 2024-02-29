@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use parking_lot::RwLock;
 use thunder::{
-    bip300301::{self, bitcoin, MainClient},
+    bip300301::{bitcoin, MainClient},
     format_deposit_address,
     miner::{self, Miner},
     node::{self, Node, THIS_SIDECHAIN},
@@ -97,15 +97,17 @@ impl App {
             let miner = self.miner.clone();
             async move {
                 let miner_read = miner.read().await;
-                miner_read
-                    .drivechain
-                    .client
+                let drivechain_client = &miner_read.drivechain.client;
+                let mainchain_info =
+                    drivechain_client.get_blockchain_info().await?;
+                let res = drivechain_client
                     .getnewaddress("", "legacy")
-                    .await
+                    .await?
+                    .require_network(mainchain_info.chain)
+                    .unwrap();
+                Result::<_, Error>::Ok(res)
             }
         })?;
-        let address: bitcoin::Address<bitcoin::address::NetworkChecked> =
-            address.require_network(bitcoin::Network::Regtest).unwrap();
         Ok(address)
     }
 

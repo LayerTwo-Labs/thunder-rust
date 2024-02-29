@@ -1,6 +1,6 @@
 [package]
 name = "thunder_app"
-version = "0.4.4"
+version = "0.4.5"
 edition = "2021"
 authors = [ "Ash Manning <ash@layertwolabs.com>", "Nikita Chashchinskii <nikita.chashchinskii@gmail.com>" ]
 
@@ -32,7 +32,7 @@ tracing-subscriber = "0.3.18"
 
 [dependencies.bip300301]
 git = "https://github.com/Ash-L2L/bip300301.git"
-rev = "1fddcb46428d8c1aebc3bb87adfeded1727880f3"
+rev = "1bd864165a8cd1beaa1c7816b845d766ae563a3f"
 
 [lib]
 name = "thunder_app_rpc_api"
