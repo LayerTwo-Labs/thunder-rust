@@ -5,7 +5,7 @@ use std::{
 
 use bip300301::bitcoin;
 use byteorder::{BigEndian, ByteOrder};
-use ed25519_dalek_bip32::{ChildIndex, DerivationPath, ExtendedSecretKey};
+use ed25519_dalek_bip32::{ChildIndex, DerivationPath, ExtendedSigningKey};
 use heed::{
     types::{OwnedType, SerdeBincode},
     Database, RoTxn,
@@ -282,10 +282,11 @@ impl Wallet {
                 address: spent_utxo.address,
             })?;
             let index = BigEndian::read_u32(&index);
-            let keypair = self.get_keypair(&txn, index)?;
-            let signature = crate::authorization::sign(&keypair, &transaction)?;
+            let signing_key = self.get_signing_key(&txn, index)?;
+            let signature =
+                crate::authorization::sign(&signing_key, &transaction)?;
             authorizations.push(Authorization {
-                public_key: keypair.public,
+                verifying_key: signing_key.verifying_key(),
                 signature,
             });
         }
@@ -303,8 +304,8 @@ impl Wallet {
             .unwrap_or(([0; 4], [0; 20].into()));
         let last_index = BigEndian::read_u32(&last_index);
         let index = last_index + 1;
-        let keypair = self.get_keypair(&txn, index)?;
-        let address = get_address(&keypair.public);
+        let signing_key = self.get_signing_key(&txn, index)?;
+        let address = get_address(&signing_key.verifying_key());
         let index = index.to_be_bytes();
         self.index_to_address.put(&mut txn, &index, &address)?;
         self.address_to_index.put(&mut txn, &address, &index)?;
@@ -322,22 +323,20 @@ impl Wallet {
         Ok(last_index)
     }
 
-    fn get_keypair(
+    fn get_signing_key(
         &self,
         txn: &RoTxn,
         index: u32,
-    ) -> Result<ed25519_dalek::Keypair, Error> {
+    ) -> Result<ed25519_dalek::SigningKey, Error> {
         let seed = self.seed.get(txn, &0)?.ok_or(Error::NoSeed)?;
-        let xpriv = ExtendedSecretKey::from_seed(&seed)?;
+        let xpriv = ExtendedSigningKey::from_seed(&seed)?;
         let derivation_path = DerivationPath::new([
             ChildIndex::Hardened(1),
             ChildIndex::Hardened(0),
             ChildIndex::Hardened(0),
             ChildIndex::Hardened(index),
         ]);
-        let child = xpriv.derive(&derivation_path)?;
-        let public = child.public_key();
-        let secret = child.secret_key;
-        Ok(ed25519_dalek::Keypair { secret, public })
+        let xsigning_key = xpriv.derive(&derivation_path)?;
+        Ok(xsigning_key.signing_key)
     }
 }

@@ -1,21 +1,39 @@
+use rayon::iter::{IntoParallelRefIterator as _, ParallelIterator as _};
+use serde::{Deserialize, Serialize};
+
 use crate::types::{
     Address, AuthorizedTransaction, Body, GetAddress, Transaction, Verify,
 };
+
 pub use ed25519_dalek::{
-    Keypair, PublicKey, Signature, SignatureError, Signer, Verifier,
+    Signature, SignatureError, Signer, SigningKey, Verifier, VerifyingKey,
 };
-use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("ed25519_dalek error")]
+    DalekError(#[from] SignatureError),
+    #[error("bincode error")]
+    BincodeError(#[from] bincode::Error),
+    #[error(
+        "wrong key for address: address = {address},
+             hash(verifying_key) = {hash_verifying_key}"
+    )]
+    WrongKeyForAddress {
+        address: Address,
+        hash_verifying_key: Address,
+    },
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Authorization {
-    pub public_key: PublicKey,
+    pub verifying_key: VerifyingKey,
     pub signature: Signature,
 }
 
 impl GetAddress for Authorization {
     fn get_address(&self) -> Address {
-        get_address(&self.public_key)
+        get_address(&self.verifying_key)
     }
 }
 
@@ -34,9 +52,9 @@ impl Verify for Authorization {
     }
 }
 
-pub fn get_address(public_key: &PublicKey) -> Address {
+pub fn get_address(verifying_key: &VerifyingKey) -> Address {
     let mut hasher = blake3::Hasher::new();
-    let mut reader = hasher.update(&public_key.to_bytes()).finalize_xof();
+    let mut reader = hasher.update(&verifying_key.to_bytes()).finalize_xof();
     let mut output: [u8; 20] = [0; 20];
     reader.fill(&mut output);
     Address(output)
@@ -45,7 +63,7 @@ pub fn get_address(public_key: &PublicKey) -> Address {
 struct Package<'a> {
     messages: Vec<&'a [u8]>,
     signatures: Vec<Signature>,
-    public_keys: Vec<PublicKey>,
+    verifying_keys: Vec<VerifyingKey>,
 }
 
 pub fn verify_authorized_transaction(
@@ -55,18 +73,18 @@ pub fn verify_authorized_transaction(
     let messages: Vec<_> = std::iter::repeat(serialized_transaction.as_slice())
         .take(transaction.authorizations.len())
         .collect();
-    let (public_keys, signatures): (Vec<PublicKey>, Vec<Signature>) =
+    let (verifying_keys, signatures): (Vec<VerifyingKey>, Vec<Signature>) =
         transaction
             .authorizations
             .iter()
             .map(
                 |Authorization {
-                     public_key,
+                     verifying_key,
                      signature,
-                 }| (public_key, signature),
+                 }| (verifying_key, signature),
             )
             .unzip();
-    ed25519_dalek::verify_batch(&messages, &signatures, &public_keys)?;
+    ed25519_dalek::verify_batch(&messages, &signatures, &verifying_keys)?;
     Ok(())
 }
 
@@ -98,14 +116,14 @@ pub fn verify_authorizations(body: &Body) -> Result<(), Error> {
         let mut package = Package {
             messages: Vec::with_capacity(package_size),
             signatures: Vec::with_capacity(package_size),
-            public_keys: Vec::with_capacity(package_size),
+            verifying_keys: Vec::with_capacity(package_size),
         };
         for (authorization, message) in
             &pairs[i * package_size..(i + 1) * package_size]
         {
             package.messages.push(*message);
             package.signatures.push(authorization.signature);
-            package.public_keys.push(authorization.public_key);
+            package.verifying_keys.push(authorization.verifying_key);
         }
         packages.push(package);
     }
@@ -115,8 +133,8 @@ pub fn verify_authorizations(body: &Body) -> Result<(), Error> {
             .signatures
             .push(authorization.signature);
         packages[num_threads - 1]
-            .public_keys
-            .push(authorization.public_key);
+            .verifying_keys
+            .push(authorization.verifying_key);
     }
     assert_eq!(
         packages.iter().map(|p| p.signatures.len()).sum::<usize>(),
@@ -128,9 +146,13 @@ pub fn verify_authorizations(body: &Body) -> Result<(), Error> {
             |Package {
                  messages,
                  signatures,
-                 public_keys,
+                 verifying_keys,
              }| {
-                ed25519_dalek::verify_batch(messages, signatures, public_keys)
+                ed25519_dalek::verify_batch(
+                    messages,
+                    signatures,
+                    verifying_keys,
+                )
             },
         )
         .collect::<Result<(), SignatureError>>()?;
@@ -138,31 +160,31 @@ pub fn verify_authorizations(body: &Body) -> Result<(), Error> {
 }
 
 pub fn sign(
-    keypair: &Keypair,
+    signing_key: &SigningKey,
     transaction: &Transaction,
 ) -> Result<Signature, Error> {
     let message = bincode::serialize(&transaction)?;
-    Ok(keypair.sign(&message))
+    Ok(signing_key.sign(&message))
 }
 
 pub fn authorize(
-    addresses_keypairs: &[(Address, &Keypair)],
+    addresses_signing_keys: &[(Address, &SigningKey)],
     transaction: Transaction,
 ) -> Result<AuthorizedTransaction, Error> {
     let mut authorizations: Vec<Authorization> =
-        Vec::with_capacity(addresses_keypairs.len());
+        Vec::with_capacity(addresses_signing_keys.len());
     let message = bincode::serialize(&transaction)?;
-    for (address, keypair) in addresses_keypairs {
-        let hash_public_key = get_address(&keypair.public);
-        if *address != hash_public_key {
-            return Err(Error::WrongKeypairForAddress {
+    for (address, signing_key) in addresses_signing_keys {
+        let hash_verifying_key = get_address(&signing_key.verifying_key());
+        if *address != hash_verifying_key {
+            return Err(Error::WrongKeyForAddress {
                 address: *address,
-                hash_public_key,
+                hash_verifying_key,
             });
         }
         let authorization = Authorization {
-            public_key: keypair.public,
-            signature: keypair.sign(&message),
+            verifying_key: signing_key.verifying_key(),
+            signature: signing_key.sign(&message),
         };
         authorizations.push(authorization);
     }
@@ -170,19 +192,4 @@ pub fn authorize(
         authorizations,
         transaction,
     })
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error(
-        "wrong keypair for address: address = {address},  hash(public_key) = {hash_public_key}"
-    )]
-    WrongKeypairForAddress {
-        address: Address,
-        hash_public_key: Address,
-    },
-    #[error("ed25519_dalek error")]
-    DalekError(#[from] SignatureError),
-    #[error("bincode error")]
-    BincodeError(#[from] bincode::Error),
 }

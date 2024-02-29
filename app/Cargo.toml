@@ -1,6 +1,6 @@
 [package]
 name = "thunder_app"
-version = "0.4.5"
+version = "0.4.6"
 edition = "2021"
 authors = [ "Ash Manning <ash@layertwolabs.com>", "Nikita Chashchinskii <nikita.chashchinskii@gmail.com>" ]
 
