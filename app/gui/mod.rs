@@ -64,6 +64,39 @@ impl EguiApp {
             withdrawals: Withdrawals::default(),
         }
     }
+
+    fn bottom_panel_content(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            // Fill center space,
+            // see https://github.com/emilk/egui/discussions/3908#discussioncomment-8270353
+
+            // this frame target width
+            // == this frame initial max rect width - last frame others width
+            let id_cal_target_size = egui::Id::new("cal_target_size");
+            let this_init_max_width = ui.max_rect().width();
+            let last_others_width = ui.data(|data| {
+                data.get_temp(id_cal_target_size)
+                    .unwrap_or(this_init_max_width)
+            });
+            // this is the total available space for expandable widgets, you can divide
+            // it up if you have multiple widgets to expand, even with different ratios.
+            let this_target_width = this_init_max_width - last_others_width;
+
+            self.deposit.show(&mut self.app, ui);
+            ui.separator();
+            ui.add_space(this_target_width);
+            ui.separator();
+            self.miner.show(&mut self.app, ui);
+            // this frame others width
+            // == this frame final min rect width - this frame target width
+            ui.data_mut(|data| {
+                data.insert_temp(
+                    id_cal_target_size,
+                    ui.min_rect().width() - this_target_width,
+                )
+            });
+        });
+    }
 }
 
 impl eframe::App for EguiApp {
@@ -93,13 +126,8 @@ impl eframe::App for EguiApp {
                     );
                 });
             });
-            egui::TopBottomPanel::bottom("util").show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    self.miner.show(&mut self.app, ui);
-                    ui.separator();
-                    self.deposit.show(&mut self.app, ui);
-                });
-            });
+            egui::TopBottomPanel::bottom("util")
+                .show(ctx, |ui| self.bottom_panel_content(ui));
             egui::CentralPanel::default().show(ctx, |ui| match self.tab {
                 Tab::TransactionBuilder => {
                     let selected: HashSet<_> =
