@@ -3,10 +3,11 @@ use std::collections::HashSet;
 use eframe::egui;
 use thunder::{bip300301::bitcoin, types::GetValue};
 
-use crate::app::App;
+use crate::{app::App, logs::LogsCapture};
 
 mod block_explorer;
 mod deposit;
+mod logs;
 mod mempool_explorer;
 mod miner;
 mod seed;
@@ -16,6 +17,7 @@ mod withdrawals;
 
 use block_explorer::BlockExplorer;
 use deposit::Deposit;
+use logs::Logs;
 use mempool_explorer::MemPoolExplorer;
 use miner::Miner;
 use seed::SetSeed;
@@ -34,6 +36,7 @@ pub struct EguiApp {
     mempool_explorer: MemPoolExplorer,
     block_explorer: BlockExplorer,
     withdrawals: Withdrawals,
+    logs: Logs,
 }
 
 #[derive(Eq, PartialEq)]
@@ -42,10 +45,15 @@ enum Tab {
     MemPoolExplorer,
     BlockExplorer,
     Withdrawals,
+    Logs,
 }
 
 impl EguiApp {
-    pub fn new(app: App, _cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(
+        app: App,
+        _cc: &eframe::CreationContext<'_>,
+        logs_capture: LogsCapture,
+    ) -> Self {
         // Customize egui here with cc.egui_ctx.set_fonts and cc.egui_ctx.set_visuals.
         // Restore app state using cc.storage (requires the "persistence" feature).
         // Use the cc.gl (a glow::Context) to create graphics shaders and buffers that you can use
@@ -62,6 +70,7 @@ impl EguiApp {
             block_explorer: BlockExplorer::new(height),
             tab: Tab::TransactionBuilder,
             withdrawals: Withdrawals::default(),
+            logs: Logs::new(logs_capture),
         }
     }
 
@@ -124,6 +133,7 @@ impl eframe::App for EguiApp {
                         Tab::Withdrawals,
                         "withdrawals",
                     );
+                    ui.selectable_value(&mut self.tab, Tab::Logs, "Logs");
                 });
             });
             egui::TopBottomPanel::bottom("util")
@@ -294,6 +304,9 @@ impl eframe::App for EguiApp {
                 }
                 Tab::Withdrawals => {
                     self.withdrawals.show(&mut self.app, ui);
+                }
+                Tab::Logs => {
+                    self.logs.show(ui);
                 }
             });
         } else {

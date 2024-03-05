@@ -7,29 +7,40 @@ use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
 mod app;
 mod cli;
 mod gui;
+mod logs;
 mod rpc_server;
 
+use logs::{CaptureWriter, LogsCapture};
+
 // Configure logger
-fn set_tracing_subscriber(log_level: tracing::Level) {
+fn set_tracing_subscriber(log_level: tracing::Level) -> LogsCapture {
     let targets_filter = tracing_filter::Targets::new().with_targets([
         ("jsonrpsee_core::tracing", log_level),
         ("thunder", log_level),
         ("thunder_app", log_level),
     ]);
-    let fmt_layer = tracing_subscriber::fmt::layer()
+    let logs_capture = LogsCapture::default();
+    let stdout_layer = tracing_subscriber::fmt::layer()
         .compact()
         .with_line_number(true);
+    let capture_layer = tracing_subscriber::fmt::layer()
+        .compact()
+        .with_line_number(true)
+        .with_ansi(false)
+        .with_writer(CaptureWriter::from(&logs_capture));
     let tracing_subscriber = tracing_subscriber::registry()
         .with(targets_filter)
-        .with(fmt_layer);
+        .with(stdout_layer)
+        .with(capture_layer);
     tracing::subscriber::set_global_default(tracing_subscriber)
         .expect("setting default subscriber failed");
+    logs_capture
 }
 
 fn main() -> anyhow::Result<()> {
     let cli = cli::Cli::parse();
     let config = cli.get_config()?;
-    let () = set_tracing_subscriber(config.log_level);
+    let logs_capture = set_tracing_subscriber(config.log_level);
     let app = app::App::new(&config)?;
     // spawn rpc server
     app.runtime.spawn({
@@ -51,7 +62,7 @@ fn main() -> anyhow::Result<()> {
         eframe::run_native(
             "Thunder",
             native_options,
-            Box::new(|cc| Box::new(gui::EguiApp::new(app, cc))),
+            Box::new(|cc| Box::new(gui::EguiApp::new(app, cc, logs_capture))),
         )
         .map_err(|err| anyhow::anyhow!("failed to launch egui app: {err}"))?
     }
