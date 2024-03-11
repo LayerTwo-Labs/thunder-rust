@@ -9,6 +9,8 @@ jobs:
   check-lint-build-stable:
     name: Check, Lint, Build (ubuntu stable)
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     timeout-minutes: 20
     # env:
     #  RUSTFLAGS: -D warnings
@@ -48,22 +50,39 @@ jobs:
           command: build
           args: --release
 
+      - name: 'Set environment variables: version number and output filename'
+        run: |
+          THUNDER_APP_VERSION=$(cargo metadata --format-version 1 | \
+            jq -er '.packages | map(select(.name == "thunder_app") | .version) | .[0]')
+          OUTPUT_FILENAME="thunder-${THUNDER_APP_VERSION}-x86_64-unknown-linux-gnu"
+          echo "THUNDER_APP_VERSION=$THUNDER_APP_VERSION" >> "$GITHUB_ENV"
+          echo "OUTPUT_FILENAME=$OUTPUT_FILENAME" >> "$GITHUB_ENV"
+
       - name: 'Set filename for release binary'
         run: |
           pushd "target/release"
-          mv "thunder_app" "thunder-x86_64-unknown-linux-gnu"
+          ln -fs "thunder_app" "${OUTPUT_FILENAME}"
           popd
 
       - name: 'Upload Artifacts (thunder)'
         uses: actions/upload-artifact@v2
         with:
-          name: thunder-x86_64-unknown-linux-gnu
-          path: target/release/thunder-x86_64-unknown-linux-gnu
+          name: ${{ env.OUTPUT_FILENAME }}
+          path: target/release/${{ env.OUTPUT_FILENAME }}
           if-no-files-found: error
+
+      - name: Release
+        uses: softprops/action-gh-release@v2.0.2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: target/release/${{ env.OUTPUT_FILENAME }}
+          fail_on_unmatched_files: true
   
   build-macos:
     name: Build (macos-x86_64)
     runs-on: macos-latest
+    permissions:
+      contents: write
     timeout-minutes: 20
     # env:
     #  RUSTFLAGS: -D warnings
@@ -85,22 +104,39 @@ jobs:
           command: build
           args: --release
 
-      - name: 'set filename for release binary'
+      - name: 'Set environment variables: version number and output filename'
+        run: |
+          THUNDER_APP_VERSION=$(cargo metadata --format-version 1 | \
+            jq -er '.packages | map(select(.name == "thunder_app") | .version) | .[0]')
+          OUTPUT_FILENAME="thunder-${THUNDER_APP_VERSION}-x86_64-apple-darwin"
+          echo "THUNDER_APP_VERSION=$THUNDER_APP_VERSION" >> "$GITHUB_ENV"
+          echo "OUTPUT_FILENAME=$OUTPUT_FILENAME" >> "$GITHUB_ENV"
+
+      - name: 'Set filename for release binary'
         run: |
           pushd "target/release"
-          mv "thunder_app" "thunder-x86_64-apple-darwin"
+          ln -fs "thunder_app" "${OUTPUT_FILENAME}"
           popd
 
       - name: 'Upload Artifacts (thunder)'
         uses: actions/upload-artifact@v2
         with:
-          name: thunder-x86_64-apple-darwin
-          path: target/release/thunder-x86_64-apple-darwin
+          name: ${{ env.OUTPUT_FILENAME }}
+          path: target/release/${{ env.OUTPUT_FILENAME }}
           if-no-files-found: error
+
+      - name: Release
+        uses: softprops/action-gh-release@v2.0.2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: target/release/${{ env.OUTPUT_FILENAME }}
+          fail_on_unmatched_files: true
 
   build-windows:
     name: Build (x86_64-pc-windows-gnu)
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     timeout-minutes: 20
     # env:
     #  RUSTFLAGS: -D warnings
@@ -128,17 +164,31 @@ jobs:
         env:
           RUSTFLAGS: "-C linker=/usr/bin/x86_64-w64-mingw32-gcc"
 
-      - name: 'set filename for release binary'
+      - name: 'Set environment variables: version number and output filename'
+        run: |
+          THUNDER_APP_VERSION=$(cargo metadata --format-version 1 | \
+            jq -er '.packages | map(select(.name == "thunder_app") | .version) | .[0]')
+          OUTPUT_FILENAME="thunder-${THUNDER_APP_VERSION}-x86_64-pc-windows-gnu.exe"
+          echo "THUNDER_APP_VERSION=$THUNDER_APP_VERSION" >> "$GITHUB_ENV"
+          echo "OUTPUT_FILENAME=$OUTPUT_FILENAME" >> "$GITHUB_ENV"
+
+      - name: 'Set filename for release binary'
         run: |
           pushd "target/x86_64-pc-windows-gnu/release"
-          mv "thunder_app.exe" "thunder-x86_64-pc-windows-gnu.exe"
+          ln -fs "thunder_app.exe" "${OUTPUT_FILENAME}"
           popd
 
       - name: 'Upload Artifacts (thunder)'
         uses: actions/upload-artifact@v2
         with:
-          name: thunder-x86_64-pc-windows-gnu.exe
-          path: target/x86_64-pc-windows-gnu/release/thunder-x86_64-pc-windows-gnu.exe
+          name: ${{ env.OUTPUT_FILENAME }}
+          path: target/x86_64-pc-windows-gnu/release/${{ env.OUTPUT_FILENAME }}
           if-no-files-found: error
-  
+
+      - name: Release
+        uses: softprops/action-gh-release@v2.0.2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: target/x86_64-pc-windows-gnu/release/${{ env.OUTPUT_FILENAME }}
+          fail_on_unmatched_files: true
   
