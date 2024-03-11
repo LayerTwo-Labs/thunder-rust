@@ -9,6 +9,8 @@ jobs:
   check-lint-build-stable:
     name: Check, Lint, Build (ubuntu stable)
     runs-on: ubuntu-latest
+    permissions: 
+      contents: write
     timeout-minutes: 20
     # env:
     #  RUSTFLAGS: -D warnings
@@ -59,7 +61,7 @@ jobs:
       - name: 'Set filename for release binary'
         run: |
           pushd "target/release"
-          ln -s "thunder_app" "${OUTPUT_FILENAME}"
+          ln -fs "thunder_app" "${OUTPUT_FILENAME}"
           popd
 
       - name: 'Upload Artifacts (thunder)'
@@ -68,10 +70,20 @@ jobs:
           name: ${{ env.OUTPUT_FILENAME }}
           path: target/release/${{ env.OUTPUT_FILENAME }}
           if-no-files-found: error
+      
+      - name: Release
+        uses: softprops/action-gh-release@v2.0.2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: target/release/${{ env.OUTPUT_FILENAME }}
+          fail_on_unmatched_files: true
+          draft: true
   
   build-macos:
     name: Build (macos-x86_64)
     runs-on: macos-latest
+    permissions: 
+      contents: write
     timeout-minutes: 20
     # env:
     #  RUSTFLAGS: -D warnings
@@ -104,7 +116,7 @@ jobs:
       - name: 'Set filename for release binary'
         run: |
           pushd "target/release"
-          ln -s "thunder_app" "${OUTPUT_FILENAME}"
+          ln -fs "thunder_app" "${OUTPUT_FILENAME}"
           popd
 
       - name: 'Upload Artifacts (thunder)'
@@ -113,10 +125,20 @@ jobs:
           name: ${{ env.OUTPUT_FILENAME }}
           path: target/release/${{ env.OUTPUT_FILENAME }}
           if-no-files-found: error
+      
+      - name: Release
+        uses: softprops/action-gh-release@v2.0.2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: target/release/${{ env.OUTPUT_FILENAME }}
+          fail_on_unmatched_files: true
+          draft: true
 
   build-windows:
     name: Build (x86_64-pc-windows-gnu)
     runs-on: ubuntu-latest
+    permissions: 
+      contents: write
     timeout-minutes: 20
     # env:
     #  RUSTFLAGS: -D warnings
@@ -155,7 +177,7 @@ jobs:
       - name: 'Set filename for release binary'
         run: |
           pushd "target/x86_64-pc-windows-gnu/release"
-          ln -s "thunder_app.exe" "${OUTPUT_FILENAME}"
+          ln -fs "thunder_app.exe" "${OUTPUT_FILENAME}"
           popd
 
       - name: 'Upload Artifacts (thunder)'
@@ -164,5 +186,13 @@ jobs:
           name: ${{ env.OUTPUT_FILENAME }}
           path: target/x86_64-pc-windows-gnu/release/${{ env.OUTPUT_FILENAME }}
           if-no-files-found: error
+      
+      - name: Release
+        uses: softprops/action-gh-release@v2.0.2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: target/x86_64-pc-windows-gnu/release/${{ env.OUTPUT_FILENAME }}
+          fail_on_unmatched_files: true
+          draft: true
   
   
