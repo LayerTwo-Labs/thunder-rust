@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 
+use bip300301::bitcoin;
 use jsonrpsee::{
     core::{async_trait, RpcResult},
     server::Server,
@@ -93,6 +94,13 @@ impl RpcServer for RpcServerImpl {
             .wallet
             .set_seed(&seed_bytes)
             .map_err(convert_wallet_err)
+    }
+
+    async fn sidechain_wealth(&self) -> RpcResult<bitcoin::Amount> {
+        self.app
+            .node
+            .get_sidechain_wealth()
+            .map_err(convert_node_err)
     }
 
     async fn stop(&self) {

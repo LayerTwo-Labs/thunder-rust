@@ -1,7 +1,7 @@
 use eframe::egui;
 use thunder::{
     bip300301::bitcoin,
-    types::{self, Content, Output},
+    types::{self, Output, OutputContent},
 };
 
 use crate::app::App;
@@ -120,7 +120,7 @@ impl UtxoCreator {
                     {
                         let utxo = Output {
                             address: address.expect("should not happen"),
-                            content: Content::Value(
+                            content: OutputContent::Value(
                                 value.expect("should not happen").to_sat(),
                             ),
                         };
@@ -157,7 +157,7 @@ impl UtxoCreator {
                     {
                         let utxo = Output {
                             address: address.expect("invalid address"),
-                            content: Content::Withdrawal {
+                            content: OutputContent::Withdrawal {
                                 value: value.expect("invalid value").to_sat(),
                                 main_address: main_address
                                     .expect("invalid main_address"),

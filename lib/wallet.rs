@@ -14,8 +14,8 @@ use heed::{
 pub use crate::{
     authorization::{get_address, Authorization},
     types::{
-        Address, AuthorizedTransaction, Content, GetValue, InPoint, OutPoint,
-        Output, SpentOutput, Transaction,
+        Address, AuthorizedTransaction, GetValue, InPoint, OutPoint, Output,
+        OutputContent, SpentOutput, Transaction,
     },
 };
 
@@ -130,7 +130,7 @@ impl Wallet {
         let outputs = vec![
             Output {
                 address: self.get_new_address()?,
-                content: Content::Withdrawal {
+                content: OutputContent::Withdrawal {
                     value,
                     main_fee,
                     main_address,
@@ -138,7 +138,7 @@ impl Wallet {
             },
             Output {
                 address: self.get_new_address()?,
-                content: Content::Value(change),
+                content: OutputContent::Value(change),
             },
         ];
         Ok(Transaction { inputs, outputs })
@@ -156,11 +156,11 @@ impl Wallet {
         let outputs = vec![
             Output {
                 address,
-                content: Content::Value(value),
+                content: OutputContent::Value(value),
             },
             Output {
                 address: self.get_new_address()?,
-                content: Content::Value(change),
+                content: OutputContent::Value(change),
             },
         ];
         Ok(Transaction { inputs, outputs })

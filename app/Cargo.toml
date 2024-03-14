@@ -20,10 +20,12 @@ clap = { version = "4.3.19", features = ["derive"] }
 ctrlc = "3.4.0"
 dirs = "5.0.1"
 eframe = "0.26.2"
+futures = "0.3.30"
 human-size = "0.4.3"
 jsonrpsee = { version = "0.20.0", features = ["client-core", "macros", "server"] }
 parking_lot = "0.12.1"
 serde = { version = "1.0.179", features = ["derive"] }
+strum = { version = "0.26.2", features = ["derive"] }
 thiserror = "1.0.44"
 thunder = { path = "../lib" }
 tiny-bip39 = "1.0.0"

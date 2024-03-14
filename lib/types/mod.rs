@@ -9,7 +9,12 @@ mod transaction;
 pub use blake3;
 pub use bs58;
 pub use serde;
-pub use transaction::*;
+pub use transaction::{
+    hash, Address, AuthorizedTransaction, BlockHash, Body,
+    Content as OutputContent, FilledTransaction, GetAddress, GetValue, Hash,
+    InPoint, MerkleRoot, OutPoint, Output, SpentOutput, Transaction, Txid,
+    Verify,
+};
 
 /*
 // Replace () with a type (usually an enum) for output data specific for your sidechain.

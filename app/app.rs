@@ -124,7 +124,7 @@ impl App {
             0 => vec![],
             _ => vec![types::Output {
                 address: self.wallet.get_new_address()?,
-                content: types::Content::Value(tx_fees),
+                content: types::OutputContent::Value(tx_fees),
             }],
         };
         let body = types::Body::new(txs, coinbase);

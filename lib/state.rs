@@ -15,11 +15,37 @@ use bip300301::{
 use crate::{
     authorization::Authorization,
     types::{
-        hashes, Address, AggregatedWithdrawal, Body, Content,
-        FilledTransaction, GetAddress, GetValue, InPoint, OutPoint, Output,
+        hashes, Address, AggregatedWithdrawal, Body, FilledTransaction,
+        GetAddress, GetValue, InPoint, OutPoint, Output, OutputContent,
         SpentOutput, Transaction, Verify, WithdrawalBundle,
     },
 };
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("failed to verify authorization")]
+    AuthorizationError,
+    #[error("heed error")]
+    Heed(#[from] heed::Error),
+    #[error("binvode error")]
+    Bincode(#[from] bincode::Error),
+    #[error("utxo {outpoint} doesn't exist")]
+    NoUtxo { outpoint: OutPoint },
+    #[error("value in is less than value out")]
+    NotEnoughValueIn,
+    #[error("total fees less than coinbase value")]
+    NotEnoughFees,
+    #[error("utxo double spent")]
+    UtxoDoubleSpent,
+    #[error("wrong public key for address")]
+    WrongPubKeyForAddress,
+    #[error("bundle too heavy {weight} > {max_weight}")]
+    BundleTooHeavy { weight: u64, max_weight: u64 },
+    #[error("too many sigops")]
+    TooManySigops,
+    #[error("body too large")]
+    BodyTooLarge,
+}
 
 #[derive(Clone)]
 pub struct State {
@@ -124,7 +150,7 @@ impl State {
         >::new();
         for item in self.utxos.iter(txn)? {
             let (outpoint, output) = item?;
-            if let Content::Withdrawal {
+            if let OutputContent::Withdrawal {
                 value,
                 ref main_address,
                 main_fee,
@@ -377,7 +403,7 @@ impl State {
                 let outpoint = OutPoint::Deposit(*outpoint);
                 let output = Output {
                     address,
-                    content: Content::Value(deposit.value),
+                    content: OutputContent::Value(deposit.value),
                 };
                 self.utxos.put(txn, &outpoint, &output)?;
             }
@@ -474,30 +500,37 @@ impl State {
         }
         Ok(())
     }
-}
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("failed to verify authorization")]
-    AuthorizationError,
-    #[error("heed error")]
-    Heed(#[from] heed::Error),
-    #[error("binvode error")]
-    Bincode(#[from] bincode::Error),
-    #[error("utxo {outpoint} doesn't exist")]
-    NoUtxo { outpoint: OutPoint },
-    #[error("value in is less than value out")]
-    NotEnoughValueIn,
-    #[error("total fees less than coinbase value")]
-    NotEnoughFees,
-    #[error("utxo double spent")]
-    UtxoDoubleSpent,
-    #[error("wrong public key for address")]
-    WrongPubKeyForAddress,
-    #[error("bundle too heavy {weight} > {max_weight}")]
-    BundleTooHeavy { weight: u64, max_weight: u64 },
-    #[error("too many sigops")]
-    TooManySigops,
-    #[error("body too large")]
-    BodyTooLarge,
+    /// Get total sidechain wealth in Bitcoin
+    pub fn sidechain_wealth(
+        &self,
+        rotxn: &RoTxn,
+    ) -> Result<BitcoinAmount, Error> {
+        let mut total_deposit_utxo_value: u64 = 0;
+        self.utxos.iter(rotxn)?.try_for_each(|utxo| {
+            let (outpoint, output) = utxo?;
+            if let OutPoint::Deposit(_) = outpoint {
+                total_deposit_utxo_value += output.get_value();
+            }
+            Ok::<_, Error>(())
+        })?;
+        let mut total_deposit_stxo_value: u64 = 0;
+        let mut total_withdrawal_stxo_value: u64 = 0;
+        self.stxos.iter(rotxn)?.try_for_each(|stxo| {
+            let (outpoint, spent_output) = stxo?;
+            if let OutPoint::Deposit(_) = outpoint {
+                total_deposit_stxo_value += spent_output.output.get_value();
+            }
+            if let InPoint::Withdrawal { .. } = spent_output.inpoint {
+                total_withdrawal_stxo_value += spent_output.output.get_value();
+            }
+            Ok::<_, Error>(())
+        })?;
+
+        let total_wealth_sats: u64 = (total_deposit_utxo_value
+            + total_deposit_stxo_value)
+            - total_withdrawal_stxo_value;
+        let total_wealth = BitcoinAmount::from_sat(total_wealth_sats);
+        Ok(total_wealth)
+    }
 }

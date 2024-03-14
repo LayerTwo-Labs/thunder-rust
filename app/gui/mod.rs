@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use eframe::egui;
+use strum::{EnumIter, IntoEnumIterator};
 use thunder::{bip300301::bitcoin, types::GetValue};
 
 use crate::{app::App, logs::LogsCapture};
@@ -10,7 +11,9 @@ mod deposit;
 mod logs;
 mod mempool_explorer;
 mod miner;
+mod parent_chain;
 mod seed;
+mod util;
 mod utxo_creator;
 mod utxo_selector;
 mod withdrawals;
@@ -20,6 +23,7 @@ use deposit::Deposit;
 use logs::Logs;
 use mempool_explorer::MemPoolExplorer;
 use miner::Miner;
+use parent_chain::ParentChain;
 use seed::SetSeed;
 use utxo_selector::{show_utxo, UtxoSelector};
 
@@ -27,24 +31,32 @@ use self::{utxo_creator::UtxoCreator, withdrawals::Withdrawals};
 
 pub struct EguiApp {
     app: App,
-    set_seed: SetSeed,
-    miner: Miner,
-    deposit: Deposit,
-    tab: Tab,
-    utxo_selector: UtxoSelector,
-    utxo_creator: UtxoCreator,
-    mempool_explorer: MemPoolExplorer,
     block_explorer: BlockExplorer,
-    withdrawals: Withdrawals,
+    deposit: Deposit,
     logs: Logs,
+    mempool_explorer: MemPoolExplorer,
+    miner: Miner,
+    parent_chain: ParentChain,
+    set_seed: SetSeed,
+    tab: Tab,
+    utxo_creator: UtxoCreator,
+    utxo_selector: UtxoSelector,
+    withdrawals: Withdrawals,
 }
 
-#[derive(Eq, PartialEq)]
+#[derive(EnumIter, Eq, PartialEq, strum::Display)]
 enum Tab {
+    #[strum(to_string = "Transaction Builder")]
     TransactionBuilder,
+    #[strum(to_string = "Mempool Explorer")]
     MemPoolExplorer,
+    #[strum(to_string = "Block Explorer")]
     BlockExplorer,
+    #[strum(to_string = "Withdrawals")]
     Withdrawals,
+    #[strum(to_string = "Parent Chain")]
+    ParentChain,
+    #[strum(to_string = "Logs")]
     Logs,
 }
 
@@ -59,18 +71,20 @@ impl EguiApp {
         // Use the cc.gl (a glow::Context) to create graphics shaders and buffers that you can use
         // for e.g. egui::PaintCallback.
         let height = app.node.get_height().unwrap_or(0);
+        let parent_chain = ParentChain::new(&app);
         Self {
             app,
-            set_seed: SetSeed::default(),
-            miner: Miner::default(),
-            deposit: Deposit::default(),
-            utxo_selector: UtxoSelector,
-            utxo_creator: UtxoCreator::default(),
-            mempool_explorer: MemPoolExplorer::default(),
             block_explorer: BlockExplorer::new(height),
-            tab: Tab::TransactionBuilder,
-            withdrawals: Withdrawals::default(),
+            deposit: Deposit::default(),
             logs: Logs::new(logs_capture),
+            mempool_explorer: MemPoolExplorer::default(),
+            miner: Miner::default(),
+            parent_chain,
+            set_seed: SetSeed::default(),
+            tab: Tab::TransactionBuilder,
+            utxo_creator: UtxoCreator::default(),
+            utxo_selector: UtxoSelector,
+            withdrawals: Withdrawals::default(),
         }
     }
 
@@ -113,27 +127,14 @@ impl eframe::App for EguiApp {
         if self.app.wallet.has_seed().unwrap_or(false) {
             egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.selectable_value(
-                        &mut self.tab,
-                        Tab::TransactionBuilder,
-                        "transaction builder",
-                    );
-                    ui.selectable_value(
-                        &mut self.tab,
-                        Tab::MemPoolExplorer,
-                        "mempool explorer",
-                    );
-                    ui.selectable_value(
-                        &mut self.tab,
-                        Tab::BlockExplorer,
-                        "block explorer",
-                    );
-                    ui.selectable_value(
-                        &mut self.tab,
-                        Tab::Withdrawals,
-                        "withdrawals",
-                    );
-                    ui.selectable_value(&mut self.tab, Tab::Logs, "Logs");
+                    Tab::iter().for_each(|tab_variant| {
+                        let tab_name = tab_variant.to_string();
+                        ui.selectable_value(
+                            &mut self.tab,
+                            tab_variant,
+                            tab_name,
+                        );
+                    })
                 });
             });
             egui::TopBottomPanel::bottom("util")
@@ -305,6 +306,7 @@ impl eframe::App for EguiApp {
                 Tab::Withdrawals => {
                     self.withdrawals.show(&mut self.app, ui);
                 }
+                Tab::ParentChain => self.parent_chain.show(&mut self.app, ui),
                 Tab::Logs => {
                     self.logs.show(ui);
                 }
