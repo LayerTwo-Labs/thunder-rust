@@ -180,6 +180,15 @@ jobs:
         with:
           tag: ${{ github.ref_name }}
 
+      - name: Create zip files for releases.drivechain.info
+        run: |
+          mv thunder-*-x86_64-apple-darwin thunder-latest-x86_64-apple-darwin
+          zip L2-S9-Thunder-latest-x86_64-apple-darwin.zip thunder-latest-x86_64-apple-darwin
+          mv thunder-*-x86_64-pc-windows-gnu.exe thunder-latest-x86_64-pc-windows-gnu.exe
+          zip L2-S9-Thunder-latest-x86_64-pc-windows-gnu.zip thunder-latest-x86_64-pc-windows-gnu.exe
+          mv thunder-*-x86_64-unknown-linux-gnu thunder-latest-x86_64-unknown-linux-gnu
+          zip L2-S9-Thunder-latest-x86_64-unknown-linux-gnu.zip thunder-latest-x86_64-unknown-linux-gnu
+
       - name: Upload release assets to releases.drivechain.info
         uses: cross-the-world/ssh-scp-ssh-pipelines@latest
         with:
@@ -188,6 +197,4 @@ jobs:
           pass: ${{ secrets.RELEASES_SERVER_PW }}
           port: 22
           scp: |
-            'thunder-*-x86_64-apple-darwin' => '/var/www/html/L2-Thunder-latest-x86_64-apple-darwin'
-            'thunder-*-x86_64-pc-windows-gnu.exe' => '/var/www/html/L2-Thunder-latest-x86_64-pc-windows-gnu.exe'
-            'thunder-*-x86_64-unknown-linux-gnu' => '/var/www/html/L2-Thunder-latest-x86_64-unknown-linux-gnu'
+            'L2-S9-Thunder-latest-*.zip' => '/var/www/html/'
