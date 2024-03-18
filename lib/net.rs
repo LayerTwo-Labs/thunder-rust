@@ -1,32 +1,58 @@
-use crate::types::{AuthorizedTransaction, Body, Header};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+
 use quinn::{ClientConfig, Connection, Endpoint, ServerConfig};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-pub use quinn;
-use std::collections::HashMap;
-use std::{net::SocketAddr, sync::Arc};
+use crate::types::{AuthorizedTransaction, Body, Header};
 
 pub const READ_LIMIT: usize = 1024;
 
-// State.
-// Archive.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("address parse error")]
+    AddrParse(#[from] std::net::AddrParseError),
+    #[error("quinn error")]
+    Io(#[from] std::io::Error),
+    #[error("connect error")]
+    Connect(#[from] quinn::ConnectError),
+    #[error("connection error")]
+    Connection(#[from] quinn::ConnectionError),
+    #[error("rcgen")]
+    RcGen(#[from] rcgen::RcgenError),
+    #[error("accept error")]
+    AcceptError,
+    #[error("read to end error")]
+    ReadToEnd(#[from] quinn::ReadToEndError),
+    #[error("write error")]
+    Write(#[from] quinn::WriteError),
+    #[error("send datagram error")]
+    SendDatagram(#[from] quinn::SendDatagramError),
+    #[error("quinn rustls error")]
+    QuinnRustls(#[from] quinn::crypto::rustls::Error),
+    #[error("bincode error")]
+    Bincode(#[from] bincode::Error),
+    #[error("already connected to peer at {0}")]
+    AlreadyConnected(SocketAddr),
+}
 
-// Keep track of peer state
-// Exchange metadata
-// Bulk download
-// Propagation
-//
-// Initial block download
-//
-// 1. Download headers
-// 2. Download blocks
-// 3. Update the state
-#[derive(Clone)]
-pub struct Net {
-    pub client: Endpoint,
-    pub server: Endpoint,
-    pub peers: Arc<RwLock<HashMap<usize, Peer>>>,
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct PeerState {
+    pub block_height: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum Request {
+    GetBlock { height: u32 },
+    PushTransaction { transaction: AuthorizedTransaction },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum Response {
+    Block { header: Header, body: Body },
+    NoBlock,
+    TransactionAccepted,
+    TransactionRejected,
 }
 
 #[derive(Clone)]
@@ -53,23 +79,24 @@ impl Peer {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub enum Request {
-    GetBlock { height: u32 },
-    PushTransaction { transaction: AuthorizedTransaction },
-}
+// State.
+// Archive.
 
-#[derive(Debug, Serialize, Deserialize)]
-pub enum Response {
-    Block { header: Header, body: Body },
-    NoBlock,
-    TransactionAccepted,
-    TransactionRejected,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
-pub struct PeerState {
-    pub block_height: u32,
+// Keep track of peer state
+// Exchange metadata
+// Bulk download
+// Propagation
+//
+// Initial block download
+//
+// 1. Download headers
+// 2. Download blocks
+// 3. Update the state
+#[derive(Clone)]
+pub struct Net {
+    pub client: Endpoint,
+    pub server: Endpoint,
+    pub peers: Arc<RwLock<HashMap<usize, Peer>>>,
 }
 
 impl Net {
@@ -83,7 +110,7 @@ impl Net {
             peers,
         })
     }
-    pub async fn connect(&self, addr: SocketAddr) -> Result<Peer, Error> {
+    pub async fn connect_peer(&self, addr: SocketAddr) -> Result<Peer, Error> {
         for peer in self.peers.read().await.values() {
             if peer.connection.remote_address() == addr {
                 return Err(Error::AlreadyConnected(addr));
@@ -101,7 +128,7 @@ impl Net {
         Ok(peer)
     }
 
-    pub async fn disconnect(
+    pub async fn disconnect_peer(
         &self,
         stable_id: usize,
     ) -> Result<Option<Peer>, Error> {
@@ -181,32 +208,4 @@ fn configure_client() -> ClientConfig {
         .with_no_client_auth();
 
     ClientConfig::new(Arc::new(crypto))
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("address parse error")]
-    AddrParse(#[from] std::net::AddrParseError),
-    #[error("quinn error")]
-    Io(#[from] std::io::Error),
-    #[error("connect error")]
-    Connect(#[from] quinn::ConnectError),
-    #[error("connection error")]
-    Connection(#[from] quinn::ConnectionError),
-    #[error("rcgen")]
-    RcGen(#[from] rcgen::RcgenError),
-    #[error("accept error")]
-    AcceptError,
-    #[error("read to end error")]
-    ReadToEnd(#[from] quinn::ReadToEndError),
-    #[error("write error")]
-    Write(#[from] quinn::WriteError),
-    #[error("send datagram error")]
-    SendDatagram(#[from] quinn::SendDatagramError),
-    #[error("quinn rustls error")]
-    QuinnRustls(#[from] quinn::crypto::rustls::Error),
-    #[error("bincode error")]
-    Bincode(#[from] bincode::Error),
-    #[error("already connected to peer at {0}")]
-    AlreadyConnected(SocketAddr),
 }

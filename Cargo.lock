@@ -4096,7 +4096,7 @@ dependencies = [
 
 [[package]]
 name = "thunder"
-version = "0.4.10"
+version = "0.4.11"
 dependencies = [
  "anyhow",
  "bincode",
@@ -4124,7 +4124,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_app"
-version = "0.4.10"
+version = "0.4.11"
 dependencies = [
  "anyhow",
  "base64 0.21.7",

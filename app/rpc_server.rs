@@ -47,6 +47,14 @@ impl RpcServer for RpcServerImpl {
         self.app.wallet.get_balance().map_err(convert_wallet_err)
     }
 
+    async fn connect_peer(&self, addr: SocketAddr) -> RpcResult<()> {
+        self.app
+            .node
+            .connect_peer(addr)
+            .await
+            .map_err(convert_node_err)
+    }
+
     async fn format_deposit_address(
         &self,
         address: Address,

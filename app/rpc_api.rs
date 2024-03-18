@@ -1,5 +1,7 @@
 //! RPC API
 
+use std::net::SocketAddr;
+
 use bip300301::bitcoin;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use thunder::types::Address;
@@ -9,6 +11,10 @@ pub trait Rpc {
     /// Balance in sats
     #[method(name = "balance")]
     async fn balance(&self) -> RpcResult<u64>;
+
+    /// Connect to a peer
+    #[method(name = "connect_peer")]
+    async fn connect_peer(&self, addr: SocketAddr) -> RpcResult<()>;
 
     #[method(name = "format_deposit_address")]
     async fn format_deposit_address(
