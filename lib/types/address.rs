@@ -1,5 +1,8 @@
+use borsh::BorshSerialize;
+use serde::{Deserialize, Serialize};
+
 #[derive(
-    Clone, Copy, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize,
+    BorshSerialize, Clone, Copy, Deserialize, Eq, PartialEq, Hash, Serialize,
 )]
 pub struct Address(pub [u8; 20]);
 

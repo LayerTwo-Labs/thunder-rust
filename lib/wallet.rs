@@ -10,7 +10,9 @@ use heed::{
     types::{OwnedType, SerdeBincode},
     Database, RoTxn,
 };
+use rustreexo::accumulator::{node_hash::NodeHash, pollard::Pollard};
 
+use crate::types::{hash, PointedOutput};
 pub use crate::{
     authorization::{get_address, Authorization},
     types::{
@@ -21,28 +23,30 @@ pub use crate::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("heed error")]
-    Heed(#[from] heed::Error),
-    #[error("bip32 error")]
-    Bip32(#[from] ed25519_dalek_bip32::Error),
     #[error("address {address} does not exist")]
     AddressDoesNotExist { address: crate::types::Address },
-    #[error("utxo doesn't exist")]
-    NoUtxo,
-    #[error("wallet doesn't have a seed")]
-    NoSeed,
-    #[error("no index for address {address}")]
-    NoIndex { address: Address },
     #[error("authorization error")]
     Authorization(#[from] crate::authorization::Error),
+    #[error("bip32 error")]
+    Bip32(#[from] ed25519_dalek_bip32::Error),
+    #[error("heed error")]
+    Heed(#[from] heed::Error),
     #[error("io error")]
     Io(#[from] std::io::Error),
+    #[error("no index for address {address}")]
+    NoIndex { address: Address },
+    #[error("wallet doesn't have a seed")]
+    NoSeed,
     #[error("not enough funds")]
     NotEnoughFunds,
+    #[error("utxo doesn't exist")]
+    NoUtxo,
     #[error("failed to parse mnemonic seed phrase")]
     ParseMnemonic(#[source] anyhow::Error),
     #[error("seed has already been set")]
     SeedAlreadyExists,
+    #[error("utreexo error: {0}")]
+    Utreexo(String),
 }
 
 #[derive(Clone)]
@@ -119,6 +123,7 @@ impl Wallet {
 
     pub fn create_withdrawal(
         &self,
+        accumulator: &Pollard,
         main_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         value: u64,
         main_fee: u64,
@@ -126,7 +131,19 @@ impl Wallet {
     ) -> Result<Transaction, Error> {
         let (total, coins) = self.select_coins(value + fee + main_fee)?;
         let change = total - value - fee;
-        let inputs = coins.into_keys().collect();
+
+        let inputs: Vec<_> = coins
+            .into_iter()
+            .map(|(outpoint, output)| {
+                let utxo_hash = hash(&PointedOutput { outpoint, output });
+                (outpoint, utxo_hash)
+            })
+            .collect();
+        let input_utxo_hashes: Vec<NodeHash> =
+            inputs.iter().map(|(_, hash)| hash.into()).collect();
+        let (proof, _) = accumulator
+            .prove(&input_utxo_hashes)
+            .map_err(Error::Utreexo)?;
         let outputs = vec![
             Output {
                 address: self.get_new_address()?,
@@ -141,18 +158,34 @@ impl Wallet {
                 content: OutputContent::Value(change),
             },
         ];
-        Ok(Transaction { inputs, outputs })
+        Ok(Transaction {
+            inputs,
+            proof,
+            outputs,
+        })
     }
 
     pub fn create_transaction(
         &self,
+        accumulator: &Pollard,
         address: Address,
         value: u64,
         fee: u64,
     ) -> Result<Transaction, Error> {
         let (total, coins) = self.select_coins(value + fee)?;
         let change = total - value - fee;
-        let inputs = coins.into_keys().collect();
+        let inputs: Vec<_> = coins
+            .into_iter()
+            .map(|(outpoint, output)| {
+                let utxo_hash = hash(&PointedOutput { outpoint, output });
+                (outpoint, utxo_hash)
+            })
+            .collect();
+        let input_utxo_hashes: Vec<NodeHash> =
+            inputs.iter().map(|(_, hash)| hash.into()).collect();
+        let (proof, _) = accumulator
+            .prove(&input_utxo_hashes)
+            .map_err(Error::Utreexo)?;
         let outputs = vec![
             Output {
                 address,
@@ -163,7 +196,11 @@ impl Wallet {
                 content: OutputContent::Value(change),
             },
         ];
-        Ok(Transaction { inputs, outputs })
+        Ok(Transaction {
+            inputs,
+            proof,
+            outputs,
+        })
     }
 
     pub fn select_coins(
@@ -272,9 +309,9 @@ impl Wallet {
     ) -> Result<AuthorizedTransaction, Error> {
         let txn = self.env.read_txn()?;
         let mut authorizations = vec![];
-        for input in &transaction.inputs {
+        for (outpoint, _) in &transaction.inputs {
             let spent_utxo =
-                self.utxos.get(&txn, input)?.ok_or(Error::NoUtxo)?;
+                self.utxos.get(&txn, outpoint)?.ok_or(Error::NoUtxo)?;
             let index = self
                 .address_to_index
                 .get(&txn, &spent_utxo.address)?

@@ -11,13 +11,18 @@ use bip300301::{
     },
     TwoWayPegData, WithdrawalBundleStatus,
 };
+use rustreexo::accumulator::{
+    node_hash::NodeHash, pollard::Pollard, proof::Proof,
+};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     authorization::Authorization,
     types::{
-        hashes, Address, AggregatedWithdrawal, Body, FilledTransaction,
+        hash, Address, AggregatedWithdrawal, Body, FilledTransaction,
         GetAddress, GetValue, InPoint, OutPoint, Output, OutputContent,
-        SpentOutput, Transaction, Verify, WithdrawalBundle,
+        PointedOutput, SpentOutput, Transaction, Txid, Verify,
+        WithdrawalBundle,
     },
 };
 
@@ -25,26 +30,86 @@ use crate::{
 pub enum Error {
     #[error("failed to verify authorization")]
     AuthorizationError,
-    #[error("heed error")]
-    Heed(#[from] heed::Error),
     #[error("binvode error")]
     Bincode(#[from] bincode::Error),
-    #[error("utxo {outpoint} doesn't exist")]
-    NoUtxo { outpoint: OutPoint },
-    #[error("value in is less than value out")]
-    NotEnoughValueIn,
-    #[error("total fees less than coinbase value")]
-    NotEnoughFees,
-    #[error("utxo double spent")]
-    UtxoDoubleSpent,
-    #[error("wrong public key for address")]
-    WrongPubKeyForAddress,
-    #[error("bundle too heavy {weight} > {max_weight}")]
-    BundleTooHeavy { weight: u64, max_weight: u64 },
-    #[error("too many sigops")]
-    TooManySigops,
     #[error("body too large")]
     BodyTooLarge,
+    #[error("bundle too heavy {weight} > {max_weight}")]
+    BundleTooHeavy { weight: u64, max_weight: u64 },
+    #[error("heed error")]
+    Heed(#[from] heed::Error),
+    #[error("total fees less than coinbase value")]
+    NotEnoughFees,
+    #[error("value in is less than value out")]
+    NotEnoughValueIn,
+    #[error("utxo {outpoint} doesn't exist")]
+    NoUtxo { outpoint: OutPoint },
+    #[error("utreexo error: {0}")]
+    Utreexo(String),
+    #[error("Utreexo proof verification failed")]
+    UtreexoProofFailed { txid: Txid },
+    #[error("Computed Utreexo roots do not match the header roots")]
+    UtreexoRootsMismatch,
+    #[error("utxo double spent")]
+    UtxoDoubleSpent,
+    #[error("too many sigops")]
+    TooManySigops,
+    #[error("wrong public key for address")]
+    WrongPubKeyForAddress,
+}
+
+/// Unit key. LMDB can't use zero-sized keys, so this encodes to a single byte
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
+pub struct UnitKey;
+
+impl<'de> Deserialize<'de> for UnitKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Deserialize any byte (ignoring it) and return UnitKey
+        let _ = u8::deserialize(deserializer)?;
+        Ok(UnitKey)
+    }
+}
+
+impl Serialize for UnitKey {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        // Always serialize to the same arbitrary byte
+        serializer.serialize_u8(0x69)
+    }
+}
+
+#[derive(Debug, Default)]
+#[repr(transparent)]
+pub struct Accumulator(pub Pollard);
+
+impl<'de> Deserialize<'de> for Accumulator {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let bytes: &[u8] = <&[u8] as Deserialize>::deserialize(deserializer)?;
+        let pollard = Pollard::deserialize(bytes)
+            .map_err(<D::Error as serde::de::Error>::custom)?;
+        Ok(Self(pollard))
+    }
+}
+
+impl Serialize for Accumulator {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut bytes = Vec::new();
+        self.0
+            .serialize(&mut bytes)
+            .map_err(<S::Error as serde::ser::Error>::custom)?;
+        bytes.serialize(serializer)
+    }
 }
 
 #[derive(Clone)]
@@ -57,10 +122,12 @@ pub struct State {
         Database<OwnedType<u32>, OwnedType<u32>>,
     pub last_deposit_block:
         Database<OwnedType<u32>, SerdeBincode<bitcoin::BlockHash>>,
+    pub utreexo_accumulator:
+        Database<SerdeBincode<UnitKey>, SerdeBincode<Accumulator>>,
 }
 
 impl State {
-    pub const NUM_DBS: u32 = 5;
+    pub const NUM_DBS: u32 = 6;
     pub const WITHDRAWAL_BUNDLE_FAILURE_GAP: u32 = 4;
 
     pub fn new(env: &heed::Env) -> Result<Self, Error> {
@@ -72,12 +139,15 @@ impl State {
             env.create_database(Some("last_withdrawal_bundle_failure_height"))?;
         let last_deposit_block =
             env.create_database(Some("last_deposit_block"))?;
+        let utreexo_accumulator =
+            env.create_database(Some("utreexo_accumulator"))?;
         Ok(Self {
             utxos,
             stxos,
             pending_withdrawal_bundle,
             last_withdrawal_bundle_failure_height,
             last_deposit_block,
+            utreexo_accumulator,
         })
     }
 
@@ -108,17 +178,42 @@ impl State {
         Ok(utxos)
     }
 
+    /// Get the current Utreexo accumulator
+    pub fn get_accumulator(&self, rotxn: &RoTxn) -> Result<Pollard, Error> {
+        let accumulator = self
+            .utreexo_accumulator
+            .get(rotxn, &UnitKey)?
+            .unwrap_or_default()
+            .0;
+        Ok(accumulator)
+    }
+
+    /// Get a Utreexo proof for the provided utxos
+    pub fn get_utreexo_proof<'a, Utxos>(
+        &self,
+        rotxn: &RoTxn,
+        utxos: Utxos,
+    ) -> Result<Proof, Error>
+    where
+        Utxos: IntoIterator<Item = &'a PointedOutput>,
+    {
+        let accumulator = self.get_accumulator(rotxn)?;
+        let targets: Vec<NodeHash> =
+            utxos.into_iter().map(NodeHash::from).collect();
+        let (proof, _) = accumulator.prove(&targets).map_err(Error::Utreexo)?;
+        Ok(proof)
+    }
+
     pub fn fill_transaction(
         &self,
         txn: &RoTxn,
         transaction: &Transaction,
     ) -> Result<FilledTransaction, Error> {
         let mut spent_utxos = vec![];
-        for input in &transaction.inputs {
-            let utxo = self
-                .utxos
-                .get(txn, input)?
-                .ok_or(Error::NoUtxo { outpoint: *input })?;
+        for (outpoint, _) in &transaction.inputs {
+            let utxo = self.utxos.get(txn, outpoint)?.ok_or(Error::NoUtxo {
+                outpoint: *outpoint,
+            })?;
             spent_utxos.push(utxo);
         }
         Ok(FilledTransaction {
@@ -234,7 +329,7 @@ impl State {
             }],
         ]
         .concat();
-        let commitment = hashes::hash(&inputs);
+        let commitment = hash(&inputs);
         let script = script::Builder::new()
             .push_opcode(opcodes::all::OP_RETURN)
             .push_slice(commitment)
@@ -332,6 +427,8 @@ impl State {
     pub fn validate_body(
         &self,
         txn: &RoTxn,
+        // Utreexo roots from the block header
+        header_utreexo_roots: &[NodeHash],
         body: &Body,
         height: u32,
     ) -> Result<u64, Error> {
@@ -341,9 +438,27 @@ impl State {
         if bincode::serialize(&body)?.len() > Self::body_size_limit(height) {
             return Err(Error::BodyTooLarge);
         }
+        let mut accumulator = self
+            .utreexo_accumulator
+            .get(txn, &UnitKey)?
+            .unwrap_or_default();
+        // New leaves for the accumulator
+        let mut accumulator_add = Vec::<NodeHash>::new();
+        // Accumulator leaves to delete
+        let mut accumulator_del = Vec::<NodeHash>::new();
         let mut coinbase_value: u64 = 0;
-        for output in &body.coinbase {
+        let merkle_root = body.compute_merkle_root();
+        for (vout, output) in body.coinbase.iter().enumerate() {
             coinbase_value += output.get_value();
+            let outpoint = OutPoint::Coinbase {
+                merkle_root,
+                vout: vout as u32,
+            };
+            let pointed_output = PointedOutput {
+                outpoint,
+                output: output.clone(),
+            };
+            accumulator_add.push((&pointed_output).into());
         }
         let mut total_fees: u64 = 0;
         let mut spent_utxos = HashSet::new();
@@ -353,14 +468,44 @@ impl State {
             .map(|t| self.fill_transaction(txn, t))
             .collect::<Result<_, _>>()?;
         for filled_transaction in &filled_transactions {
-            for input in &filled_transaction.transaction.inputs {
-                if spent_utxos.contains(input) {
+            let txid = filled_transaction.transaction.txid();
+            // hashes of spent utxos, used to verify the utreexo proof
+            let mut spent_utxo_hashes = Vec::<NodeHash>::new();
+            for (outpoint, utxo_hash) in &filled_transaction.transaction.inputs
+            {
+                if spent_utxos.contains(outpoint) {
                     return Err(Error::UtxoDoubleSpent);
                 }
-                spent_utxos.insert(*input);
+                spent_utxos.insert(*outpoint);
+                spent_utxo_hashes.push(utxo_hash.into());
+                accumulator_del.push(utxo_hash.into());
+            }
+            for (vout, output) in
+                filled_transaction.transaction.outputs.iter().enumerate()
+            {
+                let outpoint = OutPoint::Regular {
+                    txid,
+                    vout: vout as u32,
+                };
+                let pointed_output = PointedOutput {
+                    outpoint,
+                    output: output.clone(),
+                };
+                accumulator_add.push((&pointed_output).into());
             }
             total_fees +=
                 self.validate_filled_transaction(filled_transaction)?;
+            // verify utreexo proof
+            if !accumulator
+                .0
+                .verify(
+                    &filled_transaction.transaction.proof,
+                    &spent_utxo_hashes,
+                )
+                .map_err(Error::Utreexo)?
+            {
+                return Err(Error::UtreexoProofFailed { txid });
+            }
         }
         if coinbase_value > total_fees {
             return Err(Error::NotEnoughFees);
@@ -378,6 +523,19 @@ impl State {
         if Authorization::verify_body(body).is_err() {
             return Err(Error::AuthorizationError);
         }
+        accumulator
+            .0
+            .modify(&accumulator_add, &accumulator_del)
+            .map_err(Error::Utreexo)?;
+        let roots: Vec<NodeHash> = accumulator
+            .0
+            .get_roots()
+            .iter()
+            .map(|node| node.get_data())
+            .collect();
+        if roots != header_utreexo_roots {
+            return Err(Error::UtreexoRootsMismatch);
+        }
         Ok(total_fees)
     }
 
@@ -394,6 +552,14 @@ impl State {
         two_way_peg_data: &TwoWayPegData,
         block_height: u32,
     ) -> Result<(), Error> {
+        let mut accumulator = self
+            .utreexo_accumulator
+            .get(txn, &UnitKey)?
+            .unwrap_or_default();
+        // New leaves for the accumulator
+        let mut accumulator_add = Vec::<NodeHash>::new();
+        // Accumulator leaves to delete
+        let mut accumulator_del = HashSet::<NodeHash>::new();
         // Handle deposits.
         if let Some(deposit_block_hash) = two_way_peg_data.deposit_block_hash {
             self.last_deposit_block.put(txn, &0, &deposit_block_hash)?;
@@ -406,6 +572,8 @@ impl State {
                     content: OutputContent::Value(deposit.value),
                 };
                 self.utxos.put(txn, &outpoint, &output)?;
+                let utxo_hash = hash(&PointedOutput { outpoint, output });
+                accumulator_add.push(utxo_hash.into())
             }
         }
 
@@ -422,6 +590,11 @@ impl State {
                 self.collect_withdrawal_bundle(txn, block_height + 1)?
             {
                 for (outpoint, spend_output) in &bundle.spend_utxos {
+                    let utxo_hash = hash(&PointedOutput {
+                        outpoint: *outpoint,
+                        output: spend_output.clone(),
+                    });
+                    accumulator_del.insert(utxo_hash.into());
                     self.utxos.delete(txn, outpoint)?;
                     let txid = bundle.transaction.txid();
                     let spent_output = SpentOutput {
@@ -449,6 +622,11 @@ impl State {
                         for (outpoint, output) in &bundle.spend_utxos {
                             self.stxos.delete(txn, outpoint)?;
                             self.utxos.put(txn, outpoint, output)?;
+                            let utxo_hash = hash(&PointedOutput {
+                                outpoint: *outpoint,
+                                output: output.clone(),
+                            });
+                            accumulator_del.remove(&utxo_hash.into());
                         }
                     }
                     WithdrawalBundleStatus::Confirmed => {
@@ -457,6 +635,12 @@ impl State {
                 }
             }
         }
+        let accumulator_del: Vec<_> = accumulator_del.into_iter().collect();
+        accumulator
+            .0
+            .modify(&accumulator_add, &accumulator_del)
+            .map_err(Error::Utreexo)?;
+        self.utreexo_accumulator.put(txn, &UnitKey, &accumulator)?;
         Ok(())
     }
 
@@ -466,20 +650,37 @@ impl State {
         body: &Body,
     ) -> Result<(), Error> {
         let merkle_root = body.compute_merkle_root();
+        let mut accumulator = self
+            .utreexo_accumulator
+            .get(txn, &UnitKey)?
+            .unwrap_or_default();
+        // New leaves for the accumulator
+        let mut accumulator_add = Vec::<NodeHash>::new();
+        // Accumulator leaves to delete
+        let mut accumulator_del = Vec::<NodeHash>::new();
         for (vout, output) in body.coinbase.iter().enumerate() {
             let outpoint = OutPoint::Coinbase {
                 merkle_root,
                 vout: vout as u32,
             };
+            let pointed_output = PointedOutput {
+                outpoint,
+                output: output.clone(),
+            };
+            accumulator_add.push((&pointed_output).into());
             self.utxos.put(txn, &outpoint, output)?;
         }
         for transaction in &body.transactions {
             let txid = transaction.txid();
-            for (vin, input) in transaction.inputs.iter().enumerate() {
-                let spent_output = self
-                    .utxos
-                    .get(txn, input)?
-                    .ok_or(Error::NoUtxo { outpoint: *input })?;
+            for (vin, (outpoint, utxo_hash)) in
+                transaction.inputs.iter().enumerate()
+            {
+                let spent_output =
+                    self.utxos.get(txn, outpoint)?.ok_or(Error::NoUtxo {
+                        outpoint: *outpoint,
+                    })?;
+                accumulator_del.push(utxo_hash.into());
+                self.utxos.delete(txn, outpoint)?;
                 let spent_output = SpentOutput {
                     output: spent_output,
                     inpoint: InPoint::Regular {
@@ -487,17 +688,26 @@ impl State {
                         vin: vin as u32,
                     },
                 };
-                self.utxos.delete(txn, input)?;
-                self.stxos.put(txn, input, &spent_output)?;
+                self.stxos.put(txn, outpoint, &spent_output)?;
             }
             for (vout, output) in transaction.outputs.iter().enumerate() {
                 let outpoint = OutPoint::Regular {
                     txid,
                     vout: vout as u32,
                 };
+                let pointed_output = PointedOutput {
+                    outpoint,
+                    output: output.clone(),
+                };
+                accumulator_add.push((&pointed_output).into());
                 self.utxos.put(txn, &outpoint, output)?;
             }
         }
+        accumulator
+            .0
+            .modify(&accumulator_add, &accumulator_del)
+            .map_err(Error::Utreexo)?;
+        self.utreexo_accumulator.put(txn, &UnitKey, &accumulator)?;
         Ok(())
     }
 

@@ -1,18 +1,22 @@
 use bip300301::bitcoin;
 use bitcoin::hashes::Hash as _;
+use borsh::BorshSerialize;
+use serde::{Deserialize, Serialize};
 
 const BLAKE3_LENGTH: usize = 32;
+
 pub type Hash = [u8; BLAKE3_LENGTH];
 
 #[derive(
-    Default,
+    BorshSerialize,
     Clone,
     Copy,
+    Default,
+    Deserialize,
     Eq,
-    PartialEq,
     Hash,
-    serde::Serialize,
-    serde::Deserialize,
+    PartialEq,
+    Serialize,
 )]
 pub struct BlockHash(pub Hash);
 
@@ -54,14 +58,15 @@ impl std::fmt::Debug for BlockHash {
 }
 
 #[derive(
-    Default,
+    BorshSerialize,
     Clone,
     Copy,
+    Default,
+    Deserialize,
     Eq,
-    PartialEq,
     Hash,
-    serde::Serialize,
-    serde::Deserialize,
+    PartialEq,
+    Serialize,
 )]
 pub struct MerkleRoot(Hash);
 
@@ -90,14 +95,15 @@ impl std::fmt::Debug for MerkleRoot {
 }
 
 #[derive(
-    Default,
+    BorshSerialize,
     Clone,
     Copy,
+    Default,
+    Deserialize,
     Eq,
-    PartialEq,
     Hash,
-    serde::Serialize,
-    serde::Deserialize,
+    Serialize,
+    PartialEq,
 )]
 pub struct Txid(pub Hash);
 
@@ -137,8 +143,11 @@ impl std::fmt::Debug for Txid {
     }
 }
 
-pub fn hash<T: serde::Serialize>(data: &T) -> Hash {
-    let data_serialized = bincode::serialize(data)
-        .expect("failed to serialize a type to compute a hash");
+pub fn hash<T>(data: &T) -> Hash
+where
+    T: BorshSerialize,
+{
+    let data_serialized = borsh::to_vec(data)
+        .expect("failed to serialize with borsh to compute a hash");
     blake3::hash(&data_serialized).into()
 }

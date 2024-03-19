@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use parking_lot::RwLock;
+use rustreexo::accumulator::proof::Proof;
 use thunder::{
     bip300301::{bitcoin, MainClient},
     format_deposit_address,
@@ -13,13 +14,31 @@ use tokio::sync::RwLock as TokioRwLock;
 
 use crate::cli::Config;
 
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("drivechain error")]
+    Drivechain(#[from] bip300301::Error),
+    #[error("io error")]
+    Io(#[from] std::io::Error),
+    #[error("jsonrpsee error")]
+    Jsonrpsee(#[from] jsonrpsee::core::Error),
+    #[error("miner error")]
+    Miner(#[from] miner::Error),
+    #[error("node error")]
+    Node(#[from] node::Error),
+    #[error("Utreexo error: {0}")]
+    Utreexo(String),
+    #[error("wallet error")]
+    Wallet(#[from] wallet::Error),
+}
+
 #[derive(Clone)]
 pub struct App {
     pub node: Arc<Node>,
     pub wallet: Arc<Wallet>,
     pub miner: Arc<TokioRwLock<Miner>>,
     pub utxos: Arc<RwLock<HashMap<OutPoint, Output>>>,
-    pub transaction: Transaction,
+    pub transaction: Arc<RwLock<Transaction>>,
     pub runtime: Arc<tokio::runtime::Runtime>,
 }
 
@@ -58,8 +77,8 @@ impl App {
             let mut utxos = wallet.get_utxos()?;
             let transactions = node.get_all_transactions()?;
             for transaction in &transactions {
-                for input in &transaction.transaction.inputs {
-                    utxos.remove(input);
+                for (outpoint, _) in &transaction.transaction.inputs {
+                    utxos.remove(outpoint);
                 }
             }
             utxos
@@ -69,21 +88,23 @@ impl App {
             wallet: Arc::new(wallet),
             miner: Arc::new(TokioRwLock::new(miner)),
             utxos: Arc::new(RwLock::new(utxos)),
-            transaction: Transaction {
+            transaction: Arc::new(RwLock::new(Transaction {
                 inputs: vec![],
+                proof: Proof::default(),
                 outputs: vec![],
-            },
+            })),
             runtime: Arc::new(runtime),
         })
     }
 
     pub fn sign_and_send(&mut self) -> Result<(), Error> {
         let authorized_transaction =
-            self.wallet.authorize(self.transaction.clone())?;
+            self.wallet.authorize(self.transaction.read().clone())?;
         self.runtime
             .block_on(self.node.submit_transaction(&authorized_transaction))?;
-        self.transaction = Transaction {
+        *self.transaction.write() = Transaction {
             inputs: vec![],
+            proof: Proof::default(),
             outputs: vec![],
         };
         self.update_utxos()?;
@@ -136,8 +157,19 @@ impl App {
             .drivechain
             .get_mainchain_tip()
             .await?;
+        let roots = {
+            let mut accumulator = self.node.get_accumulator()?;
+            body.modify_pollard(&mut accumulator)
+                .map_err(Error::Utreexo)?;
+            accumulator
+                .get_roots()
+                .iter()
+                .map(|root| root.get_data())
+                .collect()
+        };
         let header = types::Header {
             merkle_root: body.compute_merkle_root(),
+            roots,
             prev_side_hash,
             prev_main_hash,
         };
@@ -158,8 +190,10 @@ impl App {
             tracing::trace!("confirmed bmm, submitting block");
             self.node.submit_block(&header, &body).await?;
         }
+        drop(miner_write);
         self.update_wallet()?;
         self.update_utxos()?;
+        self.node.regenerate_proof(&mut self.transaction.write())?;
         Ok(())
     }
 
@@ -182,8 +216,8 @@ impl App {
         let mut utxos = self.wallet.get_utxos()?;
         let transactions = self.node.get_all_transactions()?;
         for transaction in &transactions {
-            for input in &transaction.transaction.inputs {
-                utxos.remove(input);
+            for (outpoint, _) in &transaction.transaction.inputs {
+                utxos.remove(outpoint);
             }
         }
         *self.utxos.write() = utxos;
@@ -214,20 +248,4 @@ impl App {
             Ok(())
         })
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("node error")]
-    Node(#[from] node::Error),
-    #[error("wallet error")]
-    Wallet(#[from] wallet::Error),
-    #[error("miner error")]
-    Miner(#[from] miner::Error),
-    #[error("drivechain error")]
-    Drivechain(#[from] bip300301::Error),
-    #[error("io error")]
-    Io(#[from] std::io::Error),
-    #[error("jsonrpsee error")]
-    Jsonrpsee(#[from] jsonrpsee::core::Error),
 }

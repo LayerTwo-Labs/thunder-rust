@@ -1,6 +1,20 @@
+use heed::{
+    types::{OwnedType, SerdeBincode, Unit},
+    Database, RoTxn, RwTxn,
+};
+use rustreexo::accumulator::pollard::Pollard;
+
 use crate::types::{AuthorizedTransaction, OutPoint, Txid};
-use heed::types::*;
-use heed::{Database, RoTxn, RwTxn};
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("heed error")]
+    Heed(#[from] heed::Error),
+    #[error("Utreexo error: {0}")]
+    Utreexo(String),
+    #[error("can't add transaction, utxo double spent")]
+    UtxoDoubleSpent,
+}
 
 #[derive(Clone)]
 pub struct MemPool {
@@ -30,11 +44,11 @@ impl MemPool {
             "adding transaction {} to mempool",
             transaction.transaction.txid()
         );
-        for input in &transaction.transaction.inputs {
-            if self.spent_utxos.get(txn, input)?.is_some() {
+        for (outpoint, _) in &transaction.transaction.inputs {
+            if self.spent_utxos.get(txn, outpoint)?.is_some() {
                 return Err(Error::UtxoDoubleSpent);
             }
-            self.spent_utxos.put(txn, input, &())?;
+            self.spent_utxos.put(txn, outpoint, &())?;
         }
         self.transactions.put(
             txn,
@@ -73,12 +87,27 @@ impl MemPool {
         }
         Ok(transactions)
     }
-}
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("heed error")]
-    Heed(#[from] heed::Error),
-    #[error("can't add transaction, utxo double spent")]
-    UtxoDoubleSpent,
+    /// regenerate utreexo proofs for all txs in the mempool
+    pub fn regenerate_proofs(
+        &self,
+        rwtxn: &mut RwTxn,
+        accumulator: &Pollard,
+    ) -> Result<(), Error> {
+        let mut iter = self.transactions.iter_mut(rwtxn)?;
+        while let Some(tx) = iter.next() {
+            let (txid, mut tx) = tx?;
+            let targets: Vec<_> = tx
+                .transaction
+                .inputs
+                .iter()
+                .map(|(_, utxo_hash)| utxo_hash.into())
+                .collect();
+            let (proof, _) =
+                accumulator.prove(&targets).map_err(Error::Utreexo)?;
+            tx.transaction.proof = proof;
+            unsafe { iter.put_current(&txid, &tx) }?;
+        }
+        Ok(())
+    }
 }

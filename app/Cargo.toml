@@ -23,6 +23,7 @@ eframe = "0.26.2"
 futures = "0.3.30"
 human-size = "0.4.3"
 jsonrpsee = { version = "0.20.0", features = ["client-core", "macros", "server"] }
+rustreexo = { version = "0.1.0" }
 parking_lot = "0.12.1"
 serde = { version = "1.0.179", features = ["derive"] }
 strum = { version = "0.26.2", features = ["derive"] }

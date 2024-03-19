@@ -2,6 +2,7 @@ use crate::net::{PeerState, Request, Response};
 use crate::{authorization::Authorization, types::*};
 use bip300301::bitcoin;
 use heed::RoTxn;
+use rustreexo::accumulator::pollard::Pollard;
 use std::{
     collections::{HashMap, HashSet},
     fmt::Debug,
@@ -15,24 +16,26 @@ pub const THIS_SIDECHAIN: u8 = 9;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("heed error")]
-    Heed(#[from] heed::Error),
     #[error("address parse error")]
     AddrParse(#[from] std::net::AddrParseError),
-    #[error("quinn error")]
-    Io(#[from] std::io::Error),
-    #[error("net error")]
-    Net(#[from] crate::net::Error),
     #[error("archive error")]
     Archive(#[from] crate::archive::Error),
-    #[error("drivechain error")]
-    Drivechain(#[from] bip300301::Error),
-    #[error("mempool error")]
-    MemPool(#[from] crate::mempool::Error),
-    #[error("state error")]
-    State(#[from] crate::state::Error),
     #[error("bincode error")]
     Bincode(#[from] bincode::Error),
+    #[error("drivechain error")]
+    Drivechain(#[from] bip300301::Error),
+    #[error("heed error")]
+    Heed(#[from] heed::Error),
+    #[error("quinn error")]
+    Io(#[from] std::io::Error),
+    #[error("mempool error")]
+    MemPool(#[from] crate::mempool::Error),
+    #[error("net error")]
+    Net(#[from] crate::net::Error),
+    #[error("state error")]
+    State(#[from] crate::state::Error),
+    #[error("Utreexo error: {0}")]
+    Utreexo(String),
 }
 
 #[derive(Clone)]
@@ -178,6 +181,24 @@ impl Node {
         Ok(utxos)
     }
 
+    pub fn get_accumulator(&self) -> Result<Pollard, Error> {
+        let rotxn = self.env.read_txn()?;
+        Ok(self.state.get_accumulator(&rotxn)?)
+    }
+
+    /// Regenerate utreexo proof for a tx
+    pub fn regenerate_proof(&self, tx: &mut Transaction) -> Result<(), Error> {
+        let accumulator = self.get_accumulator()?;
+        let targets: Vec<_> = tx
+            .inputs
+            .iter()
+            .map(|(_, utxo_hash)| utxo_hash.into())
+            .collect();
+        let (proof, _) = accumulator.prove(&targets).map_err(Error::Utreexo)?;
+        tx.proof = proof;
+        Ok(())
+    }
+
     pub fn get_header(&self, height: u32) -> Result<Option<Header>, Error> {
         let txn = self.env.read_txn()?;
         Ok(self.archive.get_header(&txn, height)?)
@@ -273,7 +294,8 @@ impl Node {
                 .await?;
             let mut txn = self.env.write_txn()?;
             let height = self.archive.get_height(&txn)?;
-            self.state.validate_body(&txn, body, height)?;
+            self.state
+                .validate_body(&txn, &header.roots, body, height)?;
             if tracing::enabled!(tracing::Level::DEBUG) {
                 let block_hash = header.hash();
                 let merkle_root = body.compute_merkle_root();
@@ -294,6 +316,8 @@ impl Node {
             for transaction in &body.transactions {
                 self.mempool.delete(&mut txn, &transaction.txid())?;
             }
+            let accumulator = self.state.get_accumulator(&txn)?;
+            self.mempool.regenerate_proofs(&mut txn, &accumulator)?;
             txn.commit()?;
             bundle
         };

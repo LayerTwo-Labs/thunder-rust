@@ -41,8 +41,8 @@ impl MemPoolExplorer {
                                 .transaction
                                 .inputs
                                 .iter()
-                                .map(|input| {
-                                    utxos.get(input).map(GetValue::get_value)
+                                .map(|(outpoint, _)| {
+                                    utxos.get(outpoint).map(GetValue::get_value)
                                 })
                                 .sum::<Option<u64>>()
                                 .unwrap_or(0);
@@ -102,8 +102,8 @@ impl MemPoolExplorer {
                         ui.monospace("outpoint");
                         ui.monospace("value");
                         ui.end_row();
-                        for input in &transaction.transaction.inputs {
-                            let (kind, hash, vout) = match input {
+                        for (outpoint, _) in &transaction.transaction.inputs {
+                            let (kind, hash, vout) = match outpoint {
                                 OutPoint::Regular { txid, vout } => {
                                     ("regular", format!("{txid}"), *vout)
                                 }
@@ -118,7 +118,7 @@ impl MemPoolExplorer {
                                     *vout,
                                 ),
                             };
-                            let output = &utxos[input];
+                            let output = &utxos[outpoint];
                             let hash = &hash[0..8];
                             let value =
                                 bitcoin::Amount::from_sat(output.get_value());

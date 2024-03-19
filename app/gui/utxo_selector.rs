@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use eframe::egui;
 use thunder::{
     bip300301::bitcoin,
-    types::{GetValue, OutPoint, Output},
+    types::{hash, GetValue, OutPoint, Output, PointedOutput},
 };
 
 use crate::app::App;
@@ -14,15 +14,21 @@ pub struct UtxoSelector;
 impl UtxoSelector {
     pub fn show(&mut self, app: &mut App, ui: &mut egui::Ui) {
         ui.heading("Spend UTXO");
-        let selected: HashSet<_> =
-            app.transaction.inputs.iter().cloned().collect();
-        let utxos = &app.utxos.read();
-        let total: u64 = utxos
+        let selected: HashSet<_> = app
+            .transaction
+            .read()
+            .inputs
+            .iter()
+            .map(|(outpoint, _)| *outpoint)
+            .collect();
+        let utxos_read = app.utxos.read();
+        let total: u64 = utxos_read
             .iter()
             .filter(|(outpoint, _)| !selected.contains(outpoint))
             .map(|(_, output)| output.get_value())
             .sum();
-        let mut utxos: Vec<_> = utxos.iter().collect();
+        let mut utxos: Vec<_> = (*utxos_read).clone().into_iter().collect();
+        drop(utxos_read);
         utxos.sort_by_key(|(outpoint, _)| format!("{outpoint}"));
         ui.separator();
         ui.monospace(format!("Total: {}", bitcoin::Amount::from_sat(total)));
@@ -33,20 +39,28 @@ impl UtxoSelector {
             ui.monospace("value");
             ui.end_row();
             for (outpoint, output) in utxos {
-                if selected.contains(outpoint) {
+                if selected.contains(&outpoint) {
                     continue;
                 }
                 //ui.horizontal(|ui| {});
-                show_utxo(ui, outpoint, output);
+                show_utxo(ui, &outpoint, &output);
 
                 if ui
                     .add_enabled(
-                        !selected.contains(outpoint),
+                        !selected.contains(&outpoint),
                         egui::Button::new("spend"),
                     )
                     .clicked()
                 {
-                    app.transaction.inputs.push(*outpoint);
+                    let utxo_hash = hash(&PointedOutput {
+                        outpoint,
+                        output: output.clone(),
+                    });
+                    let mut tx_write = app.transaction.write();
+                    tx_write.inputs.push((outpoint, utxo_hash));
+                    if let Err(err) = app.node.regenerate_proof(&mut tx_write) {
+                        tracing::error!("{err}")
+                    }
                 }
                 ui.end_row();
             }

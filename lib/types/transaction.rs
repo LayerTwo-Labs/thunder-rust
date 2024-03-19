@@ -1,18 +1,54 @@
-use crate::authorization::Authorization;
-pub use crate::types::address::*;
-pub use crate::types::hashes::*;
-use bip300301::bitcoin;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Hash, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+use bip300301::bitcoin;
+use borsh::BorshSerialize;
+use rustreexo::accumulator::{
+    node_hash::NodeHash, pollard::Pollard, proof::Proof,
+};
+use serde::{Deserialize, Serialize};
+
+use super::{hash, Address, Hash, MerkleRoot, Txid};
+use crate::authorization::Authorization;
+
+fn borsh_serialize_bitcoin_outpoint<W>(
+    block_hash: &bitcoin::OutPoint,
+    writer: &mut W,
+) -> borsh::io::Result<()>
+where
+    W: borsh::io::Write,
+{
+    let bitcoin::OutPoint { txid, vout } = block_hash;
+    let txid_bytes: &[u8; 32] = txid.as_ref();
+    borsh::BorshSerialize::serialize(&(txid_bytes, vout), writer)
+}
+
+#[derive(
+    BorshSerialize,
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    Hash,
+    PartialEq,
+    Serialize,
+)]
 pub enum OutPoint {
     // Created by transactions.
-    Regular { txid: Txid, vout: u32 },
+    Regular {
+        txid: Txid,
+        vout: u32,
+    },
     // Created by block bodies.
-    Coinbase { merkle_root: MerkleRoot, vout: u32 },
+    Coinbase {
+        merkle_root: MerkleRoot,
+        vout: u32,
+    },
     // Created by mainchain deposits.
-    Deposit(bitcoin::OutPoint),
+    Deposit(
+        #[borsh(serialize_with = "borsh_serialize_bitcoin_outpoint")]
+        bitcoin::OutPoint,
+    ),
 }
 
 impl std::fmt::Display for OutPoint {
@@ -44,18 +80,30 @@ pub enum InPoint {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Output {
-    pub address: Address,
-    pub content: Content,
+fn borsh_serialize_bitcoin_address<V, W>(
+    bitcoin_address: &bitcoin::Address<V>,
+    writer: &mut W,
+) -> borsh::io::Result<()>
+where
+    V: bitcoin::address::NetworkValidation,
+    W: borsh::io::Write,
+{
+    let spk = bitcoin_address
+        .as_unchecked()
+        .assume_checked_ref()
+        .script_pubkey();
+    borsh::BorshSerialize::serialize(spk.as_bytes(), writer)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    BorshSerialize, Clone, Debug, Deserialize, Eq, PartialEq, Serialize,
+)]
 pub enum Content {
     Value(u64),
     Withdrawal {
         value: u64,
         main_fee: u64,
+        #[borsh(serialize_with = "borsh_serialize_bitcoin_address")]
         main_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
     },
 }
@@ -69,13 +117,6 @@ impl Content {
     }
 }
 
-impl GetValue for Output {
-    #[inline(always)]
-    fn get_value(&self) -> u64 {
-        self.content.get_value()
-    }
-}
-
 impl GetValue for Content {
     #[inline(always)]
     fn get_value(&self) -> u64 {
@@ -86,9 +127,41 @@ impl GetValue for Content {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(
+    BorshSerialize, Clone, Debug, Deserialize, Eq, PartialEq, Serialize,
+)]
+pub struct Output {
+    pub address: Address,
+    pub content: Content,
+}
+
+impl GetValue for Output {
+    #[inline(always)]
+    fn get_value(&self) -> u64 {
+        self.content.get_value()
+    }
+}
+
+#[derive(
+    BorshSerialize, Clone, Debug, Deserialize, Eq, PartialEq, Serialize,
+)]
+pub struct PointedOutput {
+    pub outpoint: OutPoint,
+    pub output: Output,
+}
+
+impl From<&PointedOutput> for NodeHash {
+    fn from(pointed_output: &PointedOutput) -> Self {
+        Self::new(hash(pointed_output))
+    }
+}
+
+#[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize)]
 pub struct Transaction {
-    pub inputs: Vec<OutPoint>,
+    pub inputs: Vec<(OutPoint, Hash)>,
+    /// Utreexo proof for inputs
+    #[borsh(skip)]
+    pub proof: Proof,
     pub outputs: Vec<Output>,
 }
 
@@ -178,10 +251,48 @@ impl Body {
         hash(&(&self.coinbase, &self.transactions)).into()
     }
 
+    // Modifies the pollard, without checking tx proofs
+    pub fn modify_pollard(&self, pollard: &mut Pollard) -> Result<(), String> {
+        // New leaves for the accumulator
+        let mut accumulator_add = Vec::<NodeHash>::new();
+        // Accumulator leaves to delete
+        let mut accumulator_del = Vec::<NodeHash>::new();
+        let merkle_root = self.compute_merkle_root();
+        for (vout, output) in self.coinbase.iter().enumerate() {
+            let outpoint = OutPoint::Coinbase {
+                merkle_root,
+                vout: vout as u32,
+            };
+            let pointed_output = PointedOutput {
+                outpoint,
+                output: output.clone(),
+            };
+            accumulator_add.push((&pointed_output).into());
+        }
+        for transaction in &self.transactions {
+            let txid = transaction.txid();
+            for (_, utxo_hash) in transaction.inputs.iter() {
+                accumulator_del.push(utxo_hash.into());
+            }
+            for (vout, output) in transaction.outputs.iter().enumerate() {
+                let outpoint = OutPoint::Regular {
+                    txid,
+                    vout: vout as u32,
+                };
+                let pointed_output = PointedOutput {
+                    outpoint,
+                    output: output.clone(),
+                };
+                accumulator_add.push((&pointed_output).into());
+            }
+        }
+        pollard.modify(&accumulator_add, &accumulator_del)
+    }
+
     pub fn get_inputs(&self) -> Vec<OutPoint> {
         self.transactions
             .iter()
-            .flat_map(|tx| tx.inputs.iter())
+            .flat_map(|tx| tx.inputs.iter().map(|(outpoint, _)| outpoint))
             .copied()
             .collect()
     }

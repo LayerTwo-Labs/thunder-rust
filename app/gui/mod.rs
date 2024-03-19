@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use eframe::egui;
+use parking_lot::lock_api::RwLockUpgradableReadGuard;
 use strum::{EnumIter, IntoEnumIterator};
 use thunder::{bip300301::bitcoin, types::GetValue};
 
@@ -109,7 +110,7 @@ impl EguiApp {
             ui.separator();
             ui.add_space(this_target_width);
             ui.separator();
-            self.miner.show(&mut self.app, ui);
+            self.miner.show(&self.app, ui);
             // this frame others width
             // == this frame final min rect width - this frame target width
             ui.data_mut(|data| {
@@ -141,8 +142,12 @@ impl eframe::App for EguiApp {
                 .show(ctx, |ui| self.bottom_panel_content(ui));
             egui::CentralPanel::default().show(ctx, |ui| match self.tab {
                 Tab::TransactionBuilder => {
-                    let selected: HashSet<_> =
-                        self.app.transaction.inputs.iter().cloned().collect();
+                    let tx_read = self.app.transaction.read();
+                    let selected: HashSet<_> = tx_read
+                        .inputs
+                        .iter()
+                        .map(|(outpoint, _)| *outpoint)
+                        .collect();
                     let utxos = self.app.utxos.clone();
                     let value_in: u64 = utxos
                         .read()
@@ -150,13 +155,9 @@ impl eframe::App for EguiApp {
                         .filter(|(outpoint, _)| selected.contains(outpoint))
                         .map(|(_, output)| output.get_value())
                         .sum();
-                    let value_out: u64 = self
-                        .app
-                        .transaction
-                        .outputs
-                        .iter()
-                        .map(GetValue::get_value)
-                        .sum();
+                    let value_out: u64 =
+                        tx_read.outputs.iter().map(GetValue::get_value).sum();
+                    drop(tx_read);
                     egui::SidePanel::left("spend_utxo")
                         .exact_width(250.)
                         .resizable(false)
@@ -191,13 +192,11 @@ impl eframe::App for EguiApp {
                                     ui.monospace("outpoint");
                                     ui.monospace("value");
                                     ui.end_row();
+                                    let tx_read =
+                                        self.app.transaction.upgradable_read();
                                     let mut remove = None;
-                                    for (vout, outpoint) in self
-                                        .app
-                                        .transaction
-                                        .inputs
-                                        .iter()
-                                        .enumerate()
+                                    for (vout, (outpoint, _)) in
+                                        tx_read.inputs.iter().enumerate()
                                     {
                                         let output = &utxos_read[outpoint];
                                         show_utxo(ui, outpoint, output);
@@ -207,10 +206,18 @@ impl eframe::App for EguiApp {
                                         ui.end_row();
                                     }
                                     if let Some(vout) = remove {
-                                        self.app
-                                            .transaction
-                                            .inputs
-                                            .remove(vout);
+                                        let mut tx_write =
+                                            RwLockUpgradableReadGuard::upgrade(
+                                                tx_read,
+                                            );
+                                        tx_write.inputs.remove(vout);
+                                        if let Err(err) = self
+                                            .app
+                                            .node
+                                            .regenerate_proof(&mut tx_write)
+                                        {
+                                            tracing::error!("{err}")
+                                        }
                                     }
                                 },
                             );
@@ -234,12 +241,10 @@ impl eframe::App for EguiApp {
                                     ui.monospace("address");
                                     ui.monospace("value");
                                     ui.end_row();
-                                    for (vout, output) in self
-                                        .app
-                                        .transaction
-                                        .outputs
-                                        .iter()
-                                        .enumerate()
+                                    let tx_read =
+                                        self.app.transaction.upgradable_read();
+                                    for (vout, output) in
+                                        tx_read.outputs.iter().enumerate()
                                     {
                                         let address =
                                             &format!("{}", output.address)
@@ -265,10 +270,18 @@ impl eframe::App for EguiApp {
                                         ui.end_row();
                                     }
                                     if let Some(vout) = remove {
-                                        self.app
-                                            .transaction
-                                            .outputs
-                                            .remove(vout);
+                                        let mut tx_write =
+                                            RwLockUpgradableReadGuard::upgrade(
+                                                tx_read,
+                                            );
+                                        tx_write.outputs.remove(vout);
+                                        if let Err(err) = self
+                                            .app
+                                            .node
+                                            .regenerate_proof(&mut tx_write)
+                                        {
+                                            tracing::error!("{err}")
+                                        }
                                     }
                                 },
                             );
@@ -281,9 +294,10 @@ impl eframe::App for EguiApp {
                             self.utxo_creator.show(&mut self.app.clone(), ui);
                             ui.separator();
                             ui.heading("Transaction");
-                            let txid =
-                                &format!("{}", self.app.transaction.txid())
-                                    [0..8];
+                            let txid = &format!(
+                                "{}",
+                                self.app.transaction.read().txid()
+                            )[0..8];
                             ui.monospace(format!("txid: {txid}"));
                             if value_in >= value_out {
                                 let fee = value_in - value_out;

@@ -124,7 +124,7 @@ impl UtxoCreator {
                                 value.expect("should not happen").to_sat(),
                             ),
                         };
-                        app.transaction.outputs.push(utxo);
+                        app.transaction.write().outputs.push(utxo);
                     }
                 }
                 UtxoType::Withdrawal => {
@@ -166,7 +166,7 @@ impl UtxoCreator {
                                     .to_sat(),
                             },
                         };
-                        app.transaction.outputs.push(utxo);
+                        app.transaction.write().outputs.push(utxo);
                     }
                 }
             }
