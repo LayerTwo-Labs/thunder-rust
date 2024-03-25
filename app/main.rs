@@ -47,7 +47,6 @@ fn main() -> anyhow::Result<()> {
         let app = app.clone();
         async move { rpc_server::run_server(app, config.rpc_addr).await.unwrap() }
     });
-
     if config.headless {
         // wait for ctrlc signal
         let (tx, rx) = mpsc::channel();

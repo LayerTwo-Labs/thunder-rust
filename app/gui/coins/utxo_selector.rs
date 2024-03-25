@@ -3,24 +3,24 @@ use std::collections::HashSet;
 use eframe::egui;
 use thunder::{
     bip300301::bitcoin,
-    types::{hash, GetValue, OutPoint, Output, PointedOutput},
+    types::{hash, GetValue, OutPoint, Output, PointedOutput, Transaction},
 };
 
 use crate::app::App;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct UtxoSelector;
 
 impl UtxoSelector {
-    pub fn show(&mut self, app: &mut App, ui: &mut egui::Ui) {
+    pub fn show(
+        &mut self,
+        app: &mut App,
+        ui: &mut egui::Ui,
+        tx: &mut Transaction,
+    ) {
         ui.heading("Spend UTXO");
-        let selected: HashSet<_> = app
-            .transaction
-            .read()
-            .inputs
-            .iter()
-            .map(|(outpoint, _)| *outpoint)
-            .collect();
+        let selected: HashSet<_> =
+            tx.inputs.iter().map(|(outpoint, _)| *outpoint).collect();
         let utxos_read = app.utxos.read();
         let total: u64 = utxos_read
             .iter()
@@ -56,11 +56,7 @@ impl UtxoSelector {
                         outpoint,
                         output: output.clone(),
                     });
-                    let mut tx_write = app.transaction.write();
-                    tx_write.inputs.push((outpoint, utxo_hash));
-                    if let Err(err) = app.node.regenerate_proof(&mut tx_write) {
-                        tracing::error!("{err}")
-                    }
+                    tx.inputs.push((outpoint, utxo_hash));
                 }
                 ui.end_row();
             }

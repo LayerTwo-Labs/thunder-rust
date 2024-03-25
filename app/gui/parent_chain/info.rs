@@ -5,15 +5,15 @@ use futures::TryFutureExt;
 use crate::{app::App, gui::util::UiExt};
 
 #[derive(Clone, Debug)]
-struct ParentChainInfo {
+struct Inner {
     mainchain_tip: bip300301::client::Block,
     sidechain_wealth: bitcoin::Amount,
 }
 
-pub struct ParentChain(anyhow::Result<ParentChainInfo>);
+pub(super) struct Info(anyhow::Result<Inner>);
 
-impl ParentChain {
-    fn get_parent_chain_info(app: &App) -> anyhow::Result<ParentChainInfo> {
+impl Info {
+    fn get_parent_chain_info(app: &App) -> anyhow::Result<Inner> {
         let dc = app.node.drivechain();
         let mainchain_tip = app.runtime.block_on(async {
             let mainchain_tip_blockhash = dc.get_mainchain_tip().await?;
@@ -23,16 +23,16 @@ impl ParentChain {
                 .await
         })?;
         let sidechain_wealth = app.node.get_sidechain_wealth()?;
-        Ok(ParentChainInfo {
+        Ok(Inner {
             mainchain_tip,
             sidechain_wealth,
         })
     }
 
     pub fn new(app: &App) -> Self {
-        let parent_chain_info = Self::get_parent_chain_info(app)
+        let inner = Self::get_parent_chain_info(app)
             .inspect_err(|err| tracing::error!("{err:#}"));
-        Self(parent_chain_info)
+        Self(inner)
     }
 
     fn refresh_parent_chain_info(&mut self, app: &App) {

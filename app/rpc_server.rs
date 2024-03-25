@@ -6,7 +6,11 @@ use jsonrpsee::{
     server::Server,
     types::ErrorObject,
 };
-use thunder::{node, types::Address, wallet};
+use thunder::{
+    node,
+    types::{Address, Txid},
+    wallet,
+};
 use thunder_app_rpc_api::RpcServer;
 
 use crate::app::{self, App};
@@ -113,6 +117,31 @@ impl RpcServer for RpcServerImpl {
 
     async fn stop(&self) {
         std::process::exit(0);
+    }
+
+    async fn withdraw(
+        &self,
+        mainchain_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
+        amount_sats: u64,
+        fee_sats: u64,
+        mainchain_fee_sats: u64,
+    ) -> RpcResult<Txid> {
+        let accumulator =
+            self.app.node.get_accumulator().map_err(convert_node_err)?;
+        let tx = self
+            .app
+            .wallet
+            .create_withdrawal(
+                &accumulator,
+                mainchain_address,
+                amount_sats,
+                mainchain_fee_sats,
+                fee_sats,
+            )
+            .map_err(convert_wallet_err)?;
+        let txid = tx.txid();
+        self.app.sign_and_send(tx).map_err(convert_app_err)?;
+        Ok(txid)
     }
 }
 

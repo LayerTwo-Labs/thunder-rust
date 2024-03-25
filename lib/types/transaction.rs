@@ -156,7 +156,7 @@ impl From<&PointedOutput> for NodeHash {
     }
 }
 
-#[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize)]
+#[derive(BorshSerialize, Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Transaction {
     pub inputs: Vec<(OutPoint, Hash)>,
     /// Utreexo proof for inputs

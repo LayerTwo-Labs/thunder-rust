@@ -30,7 +30,10 @@ impl Miner {
         let best_hash = &format!("{best_hash}")[0..8];
         ui.monospace(format!("{best_hash}..."));
         let running = self.running.load(atomic::Ordering::SeqCst);
-        if ui.add_enabled(!running, Button::new("Mine")).clicked() {
+        if ui
+            .add_enabled(!running, Button::new("Mine / Refresh Block"))
+            .clicked()
+        {
             self.running.store(true, atomic::Ordering::SeqCst);
             app.runtime.spawn({
                 let app = app.clone();

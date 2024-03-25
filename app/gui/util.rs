@@ -1,6 +1,27 @@
 use std::borrow::Borrow;
 
-use eframe::egui::{self, Response, Ui};
+use eframe::egui::{self, InnerResponse, Response, Ui};
+
+// extension for InnerResponse<Response> and InnerResponse<Option<Response>>
+pub trait InnerResponseExt {
+    #[allow(dead_code)]
+    fn join(self) -> Response;
+}
+
+impl InnerResponseExt for InnerResponse<Response> {
+    fn join(self) -> Response {
+        self.response | self.inner
+    }
+}
+
+impl InnerResponseExt for InnerResponse<Option<Response>> {
+    fn join(self) -> Response {
+        match self.inner {
+            Some(inner) => self.response | inner,
+            None => self.response,
+        }
+    }
+}
 
 /// extension trait for egui::Ui
 pub trait UiExt {

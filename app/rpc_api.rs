@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 
 use bip300301::bitcoin;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
-use thunder::types::Address;
+use thunder::types::{Address, Txid};
 
 #[rpc(client, server)]
 pub trait Rpc {
@@ -42,4 +42,13 @@ pub trait Rpc {
 
     #[method(name = "stop")]
     async fn stop(&self);
+
+    #[method(name = "withdraw")]
+    async fn withdraw(
+        &self,
+        mainchain_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
+        amount_sats: u64,
+        fee_sats: u64,
+        mainchain_fee_sats: u64,
+    ) -> RpcResult<Txid>;
 }

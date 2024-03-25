@@ -97,16 +97,10 @@ impl App {
         })
     }
 
-    pub fn sign_and_send(&mut self) -> Result<(), Error> {
-        let authorized_transaction =
-            self.wallet.authorize(self.transaction.read().clone())?;
+    pub fn sign_and_send(&self, tx: Transaction) -> Result<(), Error> {
+        let authorized_transaction = self.wallet.authorize(tx)?;
         self.runtime
             .block_on(self.node.submit_transaction(&authorized_transaction))?;
-        *self.transaction.write() = Transaction {
-            inputs: vec![],
-            proof: Proof::default(),
-            outputs: vec![],
-        };
         self.update_utxos()?;
         Ok(())
     }
