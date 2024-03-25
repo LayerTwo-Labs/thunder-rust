@@ -16,7 +16,7 @@ bytes = "1.4.0"
 ed25519-dalek = { version = "2.1.1", features = ["batch", "serde"] }
 ed25519-dalek-bip32 = "0.3.0"
 heed = { git = "https://github.com/meilisearch/heed", tag = "v0.12.4", version = "0.12.4" }
-hex = "0.4.3"
+hex = { version = "0.4.3", features = ["serde"] }
 quinn = "0.10.1"
 rayon = "1.7.0"
 rcgen = "0.11.1"

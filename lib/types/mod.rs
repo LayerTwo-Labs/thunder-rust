@@ -16,14 +16,37 @@ pub use transaction::{
     SpentOutput, Transaction, Verify,
 };
 
-/*
-// Replace () with a type (usually an enum) for output data specific for your sidechain.
-pub type Output = types::Output<()>;
-pub type Transaction = types::Transaction<()>;
-pub type FilledTransaction = types::FilledTransaction<()>;
-pub type AuthorizedTransaction = types::AuthorizedTransaction<Authorization, ()>;
-pub type Body = types::Body<Authorization, ()>;
-*/
+/// (de)serialize as hex strings for human-readable forms like json,
+/// and default serialization for non human-readable formats like bincode
+mod serde_hexstr_human_readable {
+    use hex::{FromHex, ToHex};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S, T>(data: T, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+        T: Serialize + ToHex,
+    {
+        if serializer.is_human_readable() {
+            hex::serde::serialize(data, serializer)
+        } else {
+            data.serialize(serializer)
+        }
+    }
+
+    pub fn deserialize<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: Deserialize<'de> + FromHex,
+        <T as FromHex>::Error: std::fmt::Display,
+    {
+        if deserializer.is_human_readable() {
+            hex::serde::deserialize(deserializer)
+        } else {
+            T::deserialize(deserializer)
+        }
+    }
+}
 
 fn borsh_serialize_utreexo_nodehash<W>(
     node_hash: &NodeHash,

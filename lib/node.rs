@@ -275,6 +275,13 @@ impl Node {
         Ok(self.state.get_pending_withdrawal_bundle(&txn)?)
     }
 
+    pub fn remove_from_mempool(&self, txid: Txid) -> Result<(), Error> {
+        let mut rwtxn = self.env.write_txn()?;
+        let () = self.mempool.delete(&mut rwtxn, &txid)?;
+        rwtxn.commit()?;
+        Ok(())
+    }
+
     pub async fn submit_block(
         &self,
         header: &Header,

@@ -3,6 +3,8 @@ use bitcoin::hashes::Hash as _;
 use borsh::BorshSerialize;
 use serde::{Deserialize, Serialize};
 
+use super::serde_hexstr_human_readable;
+
 const BLAKE3_LENGTH: usize = 32;
 
 pub type Hash = [u8; BLAKE3_LENGTH];
@@ -105,7 +107,9 @@ impl std::fmt::Debug for MerkleRoot {
     Serialize,
     PartialEq,
 )]
-pub struct Txid(pub Hash);
+#[repr(transparent)]
+#[serde(transparent)]
+pub struct Txid(#[serde(with = "serde_hexstr_human_readable")] pub Hash);
 
 impl Txid {
     pub fn as_slice(&self) -> &[u8] {

@@ -34,6 +34,10 @@ pub trait Rpc {
     #[method(name = "mine")]
     async fn mine(&self, fee: Option<u64>) -> RpcResult<()>;
 
+    /// Remove a tx from the mempool
+    #[method(name = "remove_from_mempool")]
+    async fn remove_from_mempool(&self, txid: Txid) -> RpcResult<()>;
+
     #[method(name = "set_seed_from_mnemonic")]
     async fn set_seed_from_mnemonic(&self, mnemonic: String) -> RpcResult<()>;
 
@@ -42,6 +46,14 @@ pub trait Rpc {
 
     #[method(name = "stop")]
     async fn stop(&self);
+
+    #[method(name = "transfer")]
+    async fn transfer(
+        &self,
+        dest: Address,
+        value_sats: u64,
+        fee_sats: u64,
+    ) -> RpcResult<Txid>;
 
     #[method(name = "withdraw")]
     async fn withdraw(

@@ -1,5 +1,5 @@
 use heed::{
-    types::{OwnedType, SerdeBincode, Unit},
+    types::{SerdeBincode, Unit},
     Database, RoTxn, RwTxn,
 };
 use rustreexo::accumulator::pollard::Pollard;
@@ -19,7 +19,7 @@ pub enum Error {
 #[derive(Clone)]
 pub struct MemPool {
     pub transactions:
-        Database<OwnedType<[u8; 32]>, SerdeBincode<AuthorizedTransaction>>,
+        Database<SerdeBincode<Txid>, SerdeBincode<AuthorizedTransaction>>,
     pub spent_utxos: Database<SerdeBincode<OutPoint>, Unit>,
 }
 
@@ -52,14 +52,19 @@ impl MemPool {
         }
         self.transactions.put(
             txn,
-            &transaction.transaction.txid().into(),
+            &transaction.transaction.txid(),
             transaction,
         )?;
         Ok(())
     }
 
-    pub fn delete(&self, txn: &mut RwTxn, txid: &Txid) -> Result<(), Error> {
-        self.transactions.delete(txn, txid.into())?;
+    pub fn delete(&self, rwtxn: &mut RwTxn, txid: &Txid) -> Result<(), Error> {
+        if let Some(tx) = self.transactions.get(rwtxn, txid)? {
+            for (outpoint, _) in &tx.transaction.inputs {
+                self.spent_utxos.delete(rwtxn, outpoint)?;
+            }
+            self.transactions.delete(rwtxn, txid)?;
+        }
         Ok(())
     }
 

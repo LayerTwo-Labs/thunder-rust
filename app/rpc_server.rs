@@ -94,6 +94,13 @@ impl RpcServer for RpcServerImpl {
         self.app.mine(fee).await.map_err(convert_app_err)
     }
 
+    async fn remove_from_mempool(&self, txid: Txid) -> RpcResult<()> {
+        self.app
+            .node
+            .remove_from_mempool(txid)
+            .map_err(convert_node_err)
+    }
+
     async fn set_seed_from_mnemonic(&self, mnemonic: String) -> RpcResult<()> {
         let mnemonic =
             bip39::Mnemonic::from_phrase(&mnemonic, bip39::Language::English)
@@ -117,6 +124,24 @@ impl RpcServer for RpcServerImpl {
 
     async fn stop(&self) {
         std::process::exit(0);
+    }
+
+    async fn transfer(
+        &self,
+        dest: Address,
+        value_sats: u64,
+        fee_sats: u64,
+    ) -> RpcResult<Txid> {
+        let accumulator =
+            self.app.node.get_accumulator().map_err(convert_node_err)?;
+        let tx = self
+            .app
+            .wallet
+            .create_transaction(&accumulator, dest, value_sats, fee_sats)
+            .map_err(convert_wallet_err)?;
+        let txid = tx.txid();
+        self.app.sign_and_send(tx).map_err(convert_app_err)?;
+        Ok(txid)
     }
 
     async fn withdraw(

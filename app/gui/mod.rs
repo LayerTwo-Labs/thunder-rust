@@ -62,12 +62,13 @@ impl EguiApp {
         // Restore app state using cc.storage (requires the "persistence" feature).
         // Use the cc.gl (a glow::Context) to create graphics shaders and buffers that you can use
         // for e.g. egui::PaintCallback.
+        let coins = Coins::new(&app);
         let height = app.node.get_height().unwrap_or(0);
         let parent_chain = ParentChain::new(&app);
         Self {
             app,
             block_explorer: BlockExplorer::new(height),
-            coins: Coins::default(),
+            coins,
             logs: Logs::new(logs_capture),
             mempool_explorer: MemPoolExplorer::default(),
             miner: Miner::default(),

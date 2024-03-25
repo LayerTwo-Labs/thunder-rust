@@ -95,7 +95,6 @@ impl Withdrawal {
                         .hint_text("mainchain address")
                         .desired_width(150.);
                 ui.add(mainchain_address_edit);
-                ui.label("BTC");
                 if ui.button("generate").clicked() {
                     match app.get_new_main_address() {
                         Ok(main_address) => {

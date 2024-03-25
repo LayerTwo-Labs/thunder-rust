@@ -46,7 +46,7 @@ pub enum Error {
     NoUtxo { outpoint: OutPoint },
     #[error("utreexo error: {0}")]
     Utreexo(String),
-    #[error("Utreexo proof verification failed")]
+    #[error("Utreexo proof verification failed for tx {txid}")]
     UtreexoProofFailed { txid: Txid },
     #[error("Computed Utreexo roots do not match the header roots")]
     UtreexoRootsMismatch,
