@@ -117,6 +117,7 @@ impl Net {
             }
         }
         let connection = self.client.connect(addr, "localhost")?.await?;
+        tracing::debug!("Connected to peer at {addr}");
         let peer = Peer {
             state: Arc::new(RwLock::new(None)),
             connection,

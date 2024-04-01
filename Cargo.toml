@@ -11,11 +11,11 @@ authors = [
     "Nikita Chashchinskii <nikita.chashchinskii@gmail.com>"
 ]
 edition = "2021"
-version = "0.5.2"
+version = "0.5.3"
 
 [workspace.dependencies.bip300301]
 git = "https://github.com/Ash-L2L/bip300301.git"
-rev = "c6e410e702f3d22f5801f21ffdf39edece3985df"
+rev = "43ba4d7bee075ecd2504f87b5ec2a5ba3b10cd3b"
 
 
 [profile.release]

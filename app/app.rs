@@ -61,7 +61,7 @@ impl App {
             &config.main_password,
         )?;
         let node = runtime.block_on(async {
-            let node = match Node::new(
+            let mut node = match Node::new(
                 &config.datadir,
                 config.net_addr,
                 config.main_addr,
@@ -71,6 +71,7 @@ impl App {
                 Ok(node) => node,
                 Err(err) => return Err(err),
             };
+            node.run()?;
             Ok(node)
         })?;
         let utxos = {

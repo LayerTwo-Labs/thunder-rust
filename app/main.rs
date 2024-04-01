@@ -15,6 +15,7 @@ use logs::{CaptureWriter, LogsCapture};
 // Configure logger
 fn set_tracing_subscriber(log_level: tracing::Level) -> LogsCapture {
     let targets_filter = tracing_filter::Targets::new().with_targets([
+        ("bip300301", log_level),
         ("jsonrpsee_core::tracing", log_level),
         ("thunder", log_level),
         ("thunder_app", log_level),

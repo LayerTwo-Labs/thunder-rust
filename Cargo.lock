@@ -565,7 +565,7 @@ dependencies = [
 [[package]]
 name = "bip300301"
 version = "0.1.1"
-source = "git+https://github.com/Ash-L2L/bip300301.git?rev=c6e410e702f3d22f5801f21ffdf39edece3985df#c6e410e702f3d22f5801f21ffdf39edece3985df"
+source = "git+https://github.com/Ash-L2L/bip300301.git?rev=43ba4d7bee075ecd2504f87b5ec2a5ba3b10cd3b#43ba4d7bee075ecd2504f87b5ec2a5ba3b10cd3b"
 dependencies = [
  "base64 0.21.7",
  "bitcoin",
@@ -577,6 +577,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -4192,7 +4193,7 @@ dependencies = [
 
 [[package]]
 name = "thunder"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anyhow",
  "bincode",
@@ -4222,7 +4223,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_app"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
