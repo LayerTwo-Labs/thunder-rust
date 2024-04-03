@@ -1,6 +1,14 @@
 use borsh::BorshSerialize;
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, thiserror::Error)]
+pub enum AddressParseError {
+    #[error("bs58 error")]
+    Bs58(#[from] bs58::decode::Error),
+    #[error("wrong address length {0} != 20")]
+    WrongLength(usize),
+}
+
 #[derive(
     BorshSerialize, Clone, Copy, Deserialize, Eq, PartialEq, Hash, Serialize,
 )]
@@ -44,12 +52,4 @@ impl std::str::FromStr for Address {
             |address: Vec<u8>| AddressParseError::WrongLength(address.len()),
         )?))
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum AddressParseError {
-    #[error("bs58 error")]
-    Bs58(#[from] bs58::decode::Error),
-    #[error("wrong address length {0} != 20")]
-    WrongLength(usize),
 }

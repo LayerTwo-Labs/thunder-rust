@@ -37,32 +37,40 @@ jobs:
       - name: Build
         run: cargo build --release
 
-      - name: 'Set environment variables: version number and output filename'
+      - name: 'Set environment variables: version number and output filenames'
         run: |
           THUNDER_APP_VERSION=$(cargo metadata --format-version 1 | \
             jq -er '.packages | map(select(.name == "thunder_app") | .version) | .[0]')
-          OUTPUT_FILENAME="thunder-${THUNDER_APP_VERSION}-x86_64-unknown-linux-gnu"
+          THUNDER_APP_FILENAME="thunder-${THUNDER_APP_VERSION}-x86_64-unknown-linux-gnu"
+          THUNDER_CLI_FILENAME="thunder-cli-${THUNDER_APP_VERSION}-x86_64-unknown-linux-gnu"
           echo "THUNDER_APP_VERSION=$THUNDER_APP_VERSION" >> "$GITHUB_ENV"
-          echo "OUTPUT_FILENAME=$OUTPUT_FILENAME" >> "$GITHUB_ENV"
+          echo "THUNDER_APP_FILENAME=$THUNDER_APP_FILENAME" >> "$GITHUB_ENV"
+          echo "THUNDER_CLI_FILENAME=$THUNDER_CLI_FILENAME" >> "$GITHUB_ENV"
 
-      - name: 'Set filename for release binary'
+
+      - name: 'Set filenames for release binaries'
         run: |
           pushd "target/release"
-          ln -fs "thunder_app" "${OUTPUT_FILENAME}"
+          ln -fs "thunder_app" "${THUNDER_APP_FILENAME}"
+          ln -fs "thunder_app_cli" "${THUNDER_CLI_FILENAME}"
           popd
 
       - name: 'Upload Artifacts (thunder)'
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.OUTPUT_FILENAME }}
-          path: target/release/${{ env.OUTPUT_FILENAME }}
+          name: ${{ env.THUNDER_APP_FILENAME }}
           if-no-files-found: error
+          path: |
+            target/release/${{ env.THUNDER_APP_FILENAME }}
+            target/release/${{ env.THUNDER_CLI_FILENAME }}
 
       - name: Release
         uses: softprops/action-gh-release@v2.0.2
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: target/release/${{ env.OUTPUT_FILENAME }}
+          files: |
+            target/release/${{ env.THUNDER_APP_FILENAME }}
+            target/release/${{ env.THUNDER_CLI_FILENAME }}
           fail_on_unmatched_files: true
   
   build-macos:
@@ -86,32 +94,39 @@ jobs:
       - name: Build
         run: cargo build --release
 
-      - name: 'Set environment variables: version number and output filename'
+      - name: 'Set environment variables: version number and output filenames'
         run: |
           THUNDER_APP_VERSION=$(cargo metadata --format-version 1 | \
             jq -er '.packages | map(select(.name == "thunder_app") | .version) | .[0]')
-          OUTPUT_FILENAME="thunder-${THUNDER_APP_VERSION}-x86_64-apple-darwin"
+          THUNDER_APP_FILENAME="thunder-${THUNDER_APP_VERSION}-x86_64-apple-darwin"
+          THUNDER_CLI_FILENAME="thunder-cli-${THUNDER_APP_VERSION}-x86_64-apple-darwin"
           echo "THUNDER_APP_VERSION=$THUNDER_APP_VERSION" >> "$GITHUB_ENV"
-          echo "OUTPUT_FILENAME=$OUTPUT_FILENAME" >> "$GITHUB_ENV"
+          echo "THUNDER_APP_FILENAME=$THUNDER_APP_FILENAME" >> "$GITHUB_ENV"
+          echo "THUNDER_CLI_FILENAME=$THUNDER_CLI_FILENAME" >> "$GITHUB_ENV"
 
-      - name: 'Set filename for release binary'
+      - name: 'Set filenames for release binaries'
         run: |
           pushd "target/release"
-          ln -fs "thunder_app" "${OUTPUT_FILENAME}"
+          ln -fs "thunder_app" "${THUNDER_APP_FILENAME}"
+          ln -fs "thunder_app_cli" "${THUNDER_CLI_FILENAME}"
           popd
 
       - name: 'Upload Artifacts (thunder)'
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.OUTPUT_FILENAME }}
-          path: target/release/${{ env.OUTPUT_FILENAME }}
+          name: ${{ env.THUNDER_APP_FILENAME }}
           if-no-files-found: error
+          path: |
+            target/release/${{ env.THUNDER_APP_FILENAME }}
+            target/release/${{ env.THUNDER_CLI_FILENAME }}
 
       - name: Release
         uses: softprops/action-gh-release@v2.0.2
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: target/release/${{ env.OUTPUT_FILENAME }}
+          files: |
+            target/release/${{ env.THUNDER_APP_FILENAME }}
+            target/release/${{ env.THUNDER_CLI_FILENAME }}
           fail_on_unmatched_files: true
 
   build-windows:
@@ -141,32 +156,40 @@ jobs:
         env:
           RUSTFLAGS: "-C linker=/usr/bin/x86_64-w64-mingw32-gcc"
 
-      - name: 'Set environment variables: version number and output filename'
+      - name: 'Set environment variables: version number and output filenames'
         run: |
           THUNDER_APP_VERSION=$(cargo metadata --format-version 1 | \
             jq -er '.packages | map(select(.name == "thunder_app") | .version) | .[0]')
-          OUTPUT_FILENAME="thunder-${THUNDER_APP_VERSION}-x86_64-pc-windows-gnu.exe"
+          THUNDER_APP_FILENAME="thunder-${THUNDER_APP_VERSION}-x86_64-pc-windows-gnu.exe"
+          THUNDER_CLI_FILENAME="thunder-cli-${THUNDER_APP_VERSION}-x86_64-pc-windows-gnu.exe"
           echo "THUNDER_APP_VERSION=$THUNDER_APP_VERSION" >> "$GITHUB_ENV"
-          echo "OUTPUT_FILENAME=$OUTPUT_FILENAME" >> "$GITHUB_ENV"
+          echo "THUNDER_APP_FILENAME=$THUNDER_APP_FILENAME" >> "$GITHUB_ENV"
+          echo "THUNDER_CLI_FILENAME=$THUNDER_CLI_FILENAME" >> "$GITHUB_ENV"
 
-      - name: 'Set filename for release binary'
+
+      - name: 'Set filenames for release binaries'
         run: |
           pushd "target/x86_64-pc-windows-gnu/release"
-          ln -fs "thunder_app.exe" "${OUTPUT_FILENAME}"
+          ln -fs "thunder_app.exe" "${THUNDER_APP_FILENAME}"
+          ln -fs "thunder_app_cli.exe" "${THUNDER_CLI_FILENAME}"
           popd
 
       - name: 'Upload Artifacts (thunder)'
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.OUTPUT_FILENAME }}
-          path: target/x86_64-pc-windows-gnu/release/${{ env.OUTPUT_FILENAME }}
+          name: ${{ env.THUNDER_APP_FILENAME }}
           if-no-files-found: error
+          path: |
+            target/x86_64-pc-windows-gnu/release/${{ env.THUNDER_APP_FILENAME }}
+            target/x86_64-pc-windows-gnu/release/${{ env.THUNDER_CLI_FILENAME }}
 
       - name: Release
         uses: softprops/action-gh-release@v2.0.2
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: target/x86_64-pc-windows-gnu/release/${{ env.OUTPUT_FILENAME }}
+          files: |
+            target/x86_64-pc-windows-gnu/release/${{ env.THUNDER_APP_FILENAME }}
+            target/x86_64-pc-windows-gnu/release/${{ env.THUNDER_CLI_FILENAME }}
           fail_on_unmatched_files: true
   
   upload-releases-to-releases-drivechain-info:
@@ -182,12 +205,22 @@ jobs:
 
       - name: Create zip files for releases.drivechain.info
         run: |
-          mv thunder-*-x86_64-apple-darwin thunder-latest-x86_64-apple-darwin
-          zip L2-S9-Thunder-latest-x86_64-apple-darwin.zip thunder-latest-x86_64-apple-darwin
-          mv thunder-*-x86_64-pc-windows-gnu.exe thunder-latest-x86_64-pc-windows-gnu.exe
-          zip L2-S9-Thunder-latest-x86_64-pc-windows-gnu.zip thunder-latest-x86_64-pc-windows-gnu.exe
-          mv thunder-*-x86_64-unknown-linux-gnu thunder-latest-x86_64-unknown-linux-gnu
-          zip L2-S9-Thunder-latest-x86_64-unknown-linux-gnu.zip thunder-latest-x86_64-unknown-linux-gnu
+          shopt -s extglob
+          mv thunder-+([0-9]).+([0-9]).+([0-9])-x86_64-apple-darwin thunder-latest-x86_64-apple-darwin
+          mv thunder-cli-+([0-9]).+([0-9]).+([0-9])-x86_64-apple-darwin thunder-cli-latest-x86_64-apple-darwin
+          zip L2-S9-Thunder-latest-x86_64-apple-darwin.zip \
+            thunder-latest-x86_64-apple-darwin \
+            thunder-cli-latest-x86_64-apple-darwin
+          mv thunder-+([0-9]).+([0-9]).+([0-9])-x86_64-pc-windows-gnu.exe thunder-latest-x86_64-pc-windows-gnu.exe
+          mv thunder-cli-+([0-9]).+([0-9]).+([0-9])-x86_64-pc-windows-gnu.exe thunder-cli-latest-x86_64-pc-windows-gnu.exe
+          zip L2-S9-Thunder-latest-x86_64-pc-windows-gnu.zip \
+            thunder-latest-x86_64-pc-windows-gnu.exe \
+            thunder-cli-latest-x86_64-pc-windows-gnu.exe
+          mv thunder-+([0-9]).+([0-9]).+([0-9])-x86_64-unknown-linux-gnu thunder-latest-x86_64-unknown-linux-gnu
+          mv thunder-cli-+([0-9]).+([0-9]).+([0-9])-x86_64-unknown-linux-gnu thunder-cli-latest-x86_64-unknown-linux-gnu
+          zip L2-S9-Thunder-latest-x86_64-unknown-linux-gnu.zip \
+            thunder-latest-x86_64-unknown-linux-gnu \
+            thunder-cli-latest-x86_64-unknown-linux-gnu
 
       - name: Upload release assets to releases.drivechain.info
         uses: cross-the-world/ssh-scp-ssh-pipelines@latest

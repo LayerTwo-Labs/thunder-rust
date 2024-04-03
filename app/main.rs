@@ -7,20 +7,20 @@ use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
 mod app;
 mod cli;
 mod gui;
-mod logs;
+mod line_buffer;
 mod rpc_server;
 
-use logs::{CaptureWriter, LogsCapture};
+use line_buffer::{LineBuffer, LineBufferWriter};
 
 // Configure logger
-fn set_tracing_subscriber(log_level: tracing::Level) -> LogsCapture {
+fn set_tracing_subscriber(log_level: tracing::Level) -> LineBuffer {
     let targets_filter = tracing_filter::Targets::new().with_targets([
         ("bip300301", log_level),
         ("jsonrpsee_core::tracing", log_level),
         ("thunder", log_level),
         ("thunder_app", log_level),
     ]);
-    let logs_capture = LogsCapture::default();
+    let line_buffer = LineBuffer::default();
     let stdout_layer = tracing_subscriber::fmt::layer()
         .compact()
         .with_line_number(true);
@@ -28,20 +28,20 @@ fn set_tracing_subscriber(log_level: tracing::Level) -> LogsCapture {
         .compact()
         .with_line_number(true)
         .with_ansi(false)
-        .with_writer(CaptureWriter::from(&logs_capture));
+        .with_writer(LineBufferWriter::from(&line_buffer));
     let tracing_subscriber = tracing_subscriber::registry()
         .with(targets_filter)
         .with(stdout_layer)
         .with(capture_layer);
     tracing::subscriber::set_global_default(tracing_subscriber)
         .expect("setting default subscriber failed");
-    logs_capture
+    line_buffer
 }
 
 fn main() -> anyhow::Result<()> {
     let cli = cli::Cli::parse();
     let config = cli.get_config()?;
-    let logs_capture = set_tracing_subscriber(config.log_level);
+    let line_buffer = set_tracing_subscriber(config.log_level);
     let app = app::App::new(&config)?;
     // spawn rpc server
     app.runtime.spawn({
@@ -62,7 +62,14 @@ fn main() -> anyhow::Result<()> {
         eframe::run_native(
             "Thunder",
             native_options,
-            Box::new(|cc| Box::new(gui::EguiApp::new(app, cc, logs_capture))),
+            Box::new(move |cc| {
+                Box::new(gui::EguiApp::new(
+                    app,
+                    cc,
+                    line_buffer,
+                    config.rpc_addr,
+                ))
+            }),
         )
         .map_err(|err| anyhow::anyhow!("failed to launch egui app: {err}"))?
     }

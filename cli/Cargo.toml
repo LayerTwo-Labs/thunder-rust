@@ -1,0 +1,22 @@
+[package]
+name = "thunder_app_cli"
+authors.workspace = true
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow = "1.0.72"
+bip300301.workspace = true
+clap = { version = "4.5.4", features = ["derive"] }
+jsonrpsee = { version = "0.20.0", features = ["client-core"] }
+thunder = { path = "../lib" }
+thunder_app_rpc_api = { path = "../rpc-api" }
+tokio = "1.29.1"
+
+[lib]
+name = "thunder_app_cli_lib"
+path = "lib.rs"
+
+[[bin]]
+name = "thunder_app_cli"
+path = "main.rs"

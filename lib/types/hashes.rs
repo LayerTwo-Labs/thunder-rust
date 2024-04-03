@@ -1,6 +1,9 @@
+use std::str::FromStr;
+
 use bip300301::bitcoin;
 use bitcoin::hashes::Hash as _;
 use borsh::BorshSerialize;
+use hex::FromHex;
 use serde::{Deserialize, Serialize};
 
 use super::serde_hexstr_human_readable;
@@ -144,6 +147,13 @@ impl std::fmt::Display for Txid {
 impl std::fmt::Debug for Txid {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", hex::encode(self.0))
+    }
+}
+
+impl FromStr for Txid {
+    type Err = hex::FromHexError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Hash::from_hex(s).map(Self)
     }
 }
 

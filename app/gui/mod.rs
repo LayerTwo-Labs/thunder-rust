@@ -1,11 +1,13 @@
+use std::net::SocketAddr;
+
 use eframe::egui;
 use strum::{EnumIter, IntoEnumIterator};
 
-use crate::{app::App, logs::LogsCapture};
+use crate::{app::App, line_buffer::LineBuffer};
 
 mod block_explorer;
 mod coins;
-mod logs;
+mod console_logs;
 mod mempool_explorer;
 mod miner;
 mod parent_chain;
@@ -15,7 +17,7 @@ mod withdrawals;
 
 use block_explorer::BlockExplorer;
 use coins::Coins;
-use logs::Logs;
+use console_logs::ConsoleLogs;
 use mempool_explorer::MemPoolExplorer;
 use miner::Miner;
 use parent_chain::ParentChain;
@@ -26,7 +28,7 @@ pub struct EguiApp {
     app: App,
     block_explorer: BlockExplorer,
     coins: Coins,
-    logs: Logs,
+    console_logs: ConsoleLogs,
     mempool_explorer: MemPoolExplorer,
     miner: Miner,
     parent_chain: ParentChain,
@@ -48,28 +50,30 @@ enum Tab {
     BlockExplorer,
     #[strum(to_string = "Withdrawals")]
     Withdrawals,
-    #[strum(to_string = "Logs")]
-    Logs,
+    #[strum(to_string = "Console / Logs")]
+    ConsoleLogs,
 }
 
 impl EguiApp {
     pub fn new(
         app: App,
         _cc: &eframe::CreationContext<'_>,
-        logs_capture: LogsCapture,
+        logs_capture: LineBuffer,
+        rpc_addr: SocketAddr,
     ) -> Self {
         // Customize egui here with cc.egui_ctx.set_fonts and cc.egui_ctx.set_visuals.
         // Restore app state using cc.storage (requires the "persistence" feature).
         // Use the cc.gl (a glow::Context) to create graphics shaders and buffers that you can use
         // for e.g. egui::PaintCallback.
         let coins = Coins::new(&app);
+        let console_logs = ConsoleLogs::new(logs_capture, rpc_addr);
         let height = app.node.get_height().unwrap_or(0);
         let parent_chain = ParentChain::new(&app);
         Self {
             app,
             block_explorer: BlockExplorer::new(height),
             coins,
-            logs: Logs::new(logs_capture),
+            console_logs,
             mempool_explorer: MemPoolExplorer::default(),
             miner: Miner::default(),
             parent_chain,
@@ -142,8 +146,8 @@ impl eframe::App for EguiApp {
                 Tab::Withdrawals => {
                     self.withdrawals.show(&mut self.app, ui);
                 }
-                Tab::Logs => {
-                    self.logs.show(ui);
+                Tab::ConsoleLogs => {
+                    self.console_logs.show(&self.app, ui);
                 }
             });
         } else {

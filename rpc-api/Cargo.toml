@@ -1,0 +1,14 @@
+[package]
+name = "thunder_app_rpc_api"
+authors.workspace = true
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+bip300301.workspace = true
+jsonrpsee = { version = "0.20.0", features = ["macros"] }
+thunder = { path = "../lib" }
+
+[lib]
+name = "thunder_app_rpc_api"
+path = "lib.rs"
