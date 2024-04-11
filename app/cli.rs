@@ -13,7 +13,7 @@ pub struct Cli {
     /// Log level, defaults to [`tracing::Level::Info`]
     #[arg(default_value_t = tracing::Level::INFO, long)]
     pub log_level: tracing::Level,
-    /// address to use for P2P networking, defaults to 127.0.0.1:4000
+    /// address to use for P2P networking, defaults to 0.0.0.0:4000
     #[arg(short, long)]
     pub net_addr: Option<String>,
     /// address to connect to mainchain node RPC server, defaults to 127.0.0.1:18443
@@ -68,7 +68,7 @@ impl Cli {
             .clone()
             .unwrap_or_else(|| "password".into());
         let main_user = self.user_main.clone().unwrap_or_else(|| "user".into());
-        const DEFAULT_NET_ADDR: &str = "127.0.0.1:4000";
+        const DEFAULT_NET_ADDR: &str = "0.0.0.0:4000";
         let net_addr: SocketAddr = self
             .net_addr
             .clone()

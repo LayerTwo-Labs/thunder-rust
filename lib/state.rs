@@ -19,9 +19,9 @@ use serde::{Deserialize, Serialize};
 use crate::{
     authorization::Authorization,
     types::{
-        hash, Address, AggregatedWithdrawal, Body, FilledTransaction,
-        GetAddress, GetValue, InPoint, OutPoint, Output, OutputContent,
-        PointedOutput, SpentOutput, Transaction, Txid, Verify,
+        hash, Address, AggregatedWithdrawal, AuthorizedTransaction, Body,
+        FilledTransaction, GetAddress, GetValue, InPoint, OutPoint, Output,
+        OutputContent, PointedOutput, SpentOutput, Transaction, Txid, Verify,
         WithdrawalBundle,
     },
 };
@@ -186,6 +186,23 @@ impl State {
             .unwrap_or_default()
             .0;
         Ok(accumulator)
+    }
+
+    /// Regenerate utreexo proof for a tx
+    pub fn regenerate_proof(
+        &self,
+        rotxn: &RoTxn,
+        tx: &mut Transaction,
+    ) -> Result<(), Error> {
+        let accumulator = self.get_accumulator(rotxn)?;
+        let targets: Vec<_> = tx
+            .inputs
+            .iter()
+            .map(|(_, utxo_hash)| utxo_hash.into())
+            .collect();
+        let (proof, _) = accumulator.prove(&targets).map_err(Error::Utreexo)?;
+        tx.proof = proof;
+        Ok(())
     }
 
     /// Get a Utreexo proof for the provided utxos
@@ -389,6 +406,29 @@ impl State {
             return Err(Error::NotEnoughValueIn);
         }
         Ok(value_in - value_out)
+    }
+
+    pub fn validate_transaction(
+        &self,
+        rotxn: &RoTxn,
+        transaction: &AuthorizedTransaction,
+    ) -> Result<u64, Error> {
+        let filled_transaction =
+            self.fill_transaction(rotxn, &transaction.transaction)?;
+        for (authorization, spent_utxo) in transaction
+            .authorizations
+            .iter()
+            .zip(filled_transaction.spent_utxos.iter())
+        {
+            if authorization.get_address() != spent_utxo.address {
+                return Err(Error::WrongPubKeyForAddress);
+            }
+        }
+        if Authorization::verify_transaction(transaction).is_err() {
+            return Err(Error::AuthorizationError);
+        }
+        let fee = self.validate_filled_transaction(&filled_transaction)?;
+        Ok(fee)
     }
 
     const LIMIT_GROWTH_EXPONENT: f64 = 1.04;

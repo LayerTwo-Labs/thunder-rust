@@ -1,8 +1,3 @@
-use crate::net::{PeerState, Request, Response};
-use crate::{authorization::Authorization, types::*};
-use bip300301::bitcoin;
-use heed::RoTxn;
-use rustreexo::accumulator::pollard::Pollard;
 use std::{
     collections::{HashMap, HashSet},
     fmt::Debug,
@@ -10,7 +5,22 @@ use std::{
     path::Path,
     sync::Arc,
 };
-use tokio::sync::RwLock;
+
+use bip300301::bitcoin;
+use futures::{stream, StreamExt, TryFutureExt};
+use rustreexo::accumulator::pollard::Pollard;
+use tokio::{spawn, task::JoinHandle};
+use tokio_stream::StreamNotifyClose;
+
+use crate::{
+    archive::{self, Archive},
+    mempool::{self, MemPool},
+    net::{
+        self, Net, PeerConnectionInfo, PeerInfoRx, PeerRequest, PeerResponse,
+    },
+    state::{self, State},
+    types::*,
+};
 
 pub const THIS_SIDECHAIN: u8 = 9;
 
@@ -19,7 +29,7 @@ pub enum Error {
     #[error("address parse error")]
     AddrParse(#[from] std::net::AddrParseError),
     #[error("archive error")]
-    Archive(#[from] crate::archive::Error),
+    Archive(#[from] archive::Error),
     #[error("bincode error")]
     Bincode(#[from] bincode::Error),
     #[error("drivechain error")]
@@ -29,23 +39,224 @@ pub enum Error {
     #[error("quinn error")]
     Io(#[from] std::io::Error),
     #[error("mempool error")]
-    MemPool(#[from] crate::mempool::Error),
+    MemPool(#[from] mempool::Error),
     #[error("net error")]
-    Net(#[from] crate::net::Error),
+    Net(#[from] net::Error),
+    #[error("peer info stream closed")]
+    PeerInfoRxClosed,
     #[error("state error")]
-    State(#[from] crate::state::Error),
+    State(#[from] state::Error),
     #[error("Utreexo error: {0}")]
     Utreexo(String),
 }
 
+async fn submit_block(
+    env: &heed::Env,
+    archive: &Archive,
+    drivechain: &bip300301::Drivechain,
+    mempool: &MemPool,
+    state: &State,
+    header: &Header,
+    body: &Body,
+) -> Result<(), Error> {
+    let last_deposit_block_hash = {
+        let txn = env.read_txn()?;
+        state.get_last_deposit_block_hash(&txn)?
+    };
+    let bundle = {
+        let two_way_peg_data = drivechain
+            .get_two_way_peg_data(
+                header.prev_main_hash,
+                last_deposit_block_hash,
+            )
+            .await?;
+        let mut txn = env.write_txn()?;
+        let height = archive.get_height(&txn)?;
+        state.validate_body(&txn, &header.roots, body, height)?;
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            let block_hash = header.hash();
+            let merkle_root = body.compute_merkle_root();
+            state.connect_body(&mut txn, body)?;
+            tracing::debug!(%height, %merkle_root, %block_hash,
+                                "connected body")
+        } else {
+            state.connect_body(&mut txn, body)?;
+        }
+        state.connect_two_way_peg_data(&mut txn, &two_way_peg_data, height)?;
+        let bundle = state.get_pending_withdrawal_bundle(&txn)?;
+        archive.append_header(&mut txn, header)?;
+        archive.put_body(&mut txn, header, body)?;
+        for transaction in &body.transactions {
+            mempool.delete(&mut txn, &transaction.txid())?;
+        }
+        let accumulator = state.get_accumulator(&txn)?;
+        mempool.regenerate_proofs(&mut txn, &accumulator)?;
+        txn.commit()?;
+        bundle
+    };
+    if let Some(bundle) = bundle {
+        let () = drivechain
+            .broadcast_withdrawal_bundle(bundle.transaction)
+            .await?;
+    }
+    Ok(())
+}
+
+struct NetTaskContext {
+    env: heed::Env,
+    archive: Archive,
+    drivechain: bip300301::Drivechain,
+    mempool: MemPool,
+    net: Net,
+    state: State,
+}
+
+struct NetTask {
+    ctxt: NetTaskContext,
+    peer_info_rx: PeerInfoRx,
+}
+
+impl NetTask {
+    async fn handle_response(
+        ctxt: &NetTaskContext,
+        addr: SocketAddr,
+        resp: PeerResponse,
+        req: PeerRequest,
+    ) -> Result<(), Error> {
+        match (req, resp) {
+            (
+                req @ PeerRequest::GetBlock { height },
+                ref resp @ PeerResponse::Block {
+                    ref header,
+                    ref body,
+                },
+            ) => {
+                let (tip_hash, tip_height) = {
+                    let rotxn = ctxt.env.read_txn()?;
+                    let tip_height = ctxt.archive.get_height(&rotxn)?;
+                    let tip_hash = ctxt.archive.get_best_hash(&rotxn)?;
+                    (tip_hash, tip_height)
+                };
+                if height != tip_height + 1 {
+                    return Ok(());
+                }
+                if header.prev_side_hash != tip_hash {
+                    tracing::warn!(%addr, ?req, ?resp, "Cannot handle reorg");
+                    return Ok(());
+                }
+                submit_block(
+                    &ctxt.env,
+                    &ctxt.archive,
+                    &ctxt.drivechain,
+                    &ctxt.mempool,
+                    &ctxt.state,
+                    header,
+                    body,
+                )
+                .await
+            }
+            (
+                PeerRequest::GetBlock { height: req_height },
+                PeerResponse::NoBlock {
+                    height: resp_height,
+                },
+            ) if req_height == resp_height => Ok(()),
+            (
+                PeerRequest::PushTransaction { transaction: _ },
+                PeerResponse::TransactionAccepted(_),
+            ) => Ok(()),
+            (
+                PeerRequest::PushTransaction { transaction: _ },
+                PeerResponse::TransactionRejected(_),
+            ) => Ok(()),
+            (
+                req @ (PeerRequest::GetBlock { .. }
+                | PeerRequest::Heartbeat(_)
+                | PeerRequest::PushTransaction { .. }),
+                resp,
+            ) => {
+                // Invalid response
+                tracing::warn!(%addr, ?req, ?resp,"Invalid response from peer");
+                let () = ctxt.net.remove_active_peer(addr);
+                Ok(())
+            }
+        }
+    }
+
+    async fn run(self) -> Result<(), Error> {
+        enum MailboxItem {
+            AcceptConnection(Result<(), Error>),
+            PeerInfo(Option<(SocketAddr, Option<PeerConnectionInfo>)>),
+        }
+        let accept_connections = stream::try_unfold((), |()| {
+            let env = self.ctxt.env.clone();
+            let net = self.ctxt.net.clone();
+            let fut = async move {
+                let () = net.accept_incoming(env).await?;
+                Result::<_, Error>::Ok(Some(((), ())))
+            };
+            Box::pin(fut)
+        })
+        .map(MailboxItem::AcceptConnection);
+        let peer_info_stream = StreamNotifyClose::new(self.peer_info_rx)
+            .map(MailboxItem::PeerInfo);
+        let mut mailbox_stream =
+            stream::select(accept_connections, peer_info_stream);
+        while let Some(mailbox_item) = mailbox_stream.next().await {
+            match mailbox_item {
+                MailboxItem::AcceptConnection(res) => res?,
+                MailboxItem::PeerInfo(None) => {
+                    return Err(Error::PeerInfoRxClosed)
+                }
+                MailboxItem::PeerInfo(Some((addr, None))) => {
+                    // peer connection is closed, remove it
+                    tracing::warn!(%addr, "Connection to peer closed");
+                    let () = self.ctxt.net.remove_active_peer(addr);
+                    continue;
+                }
+                MailboxItem::PeerInfo(Some((addr, Some(peer_info)))) => {
+                    match peer_info {
+                        PeerConnectionInfo::Error(err) => {
+                            tracing::error!(%addr, %err, "Peer connection error");
+                            let () = self.ctxt.net.remove_active_peer(addr);
+                        }
+                        PeerConnectionInfo::NewTransaction(mut new_tx) => {
+                            let mut rwtxn = self.ctxt.env.write_txn()?;
+                            let () = self.ctxt.state.regenerate_proof(
+                                &rwtxn,
+                                &mut new_tx.transaction,
+                            )?;
+                            self.ctxt.mempool.put(&mut rwtxn, &new_tx)?;
+                            rwtxn.commit()?;
+                            // broadcast
+                            let () = self
+                                .ctxt
+                                .net
+                                .push_tx(HashSet::from_iter([addr]), new_tx);
+                        }
+                        PeerConnectionInfo::Response(resp, req) => {
+                            let () = Self::handle_response(
+                                &self.ctxt, addr, resp, req,
+                            )
+                            .await?;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 pub struct Node {
-    net: crate::net::Net,
-    state: crate::state::State,
-    archive: crate::archive::Archive,
-    mempool: crate::mempool::MemPool,
+    archive: Archive,
     drivechain: bip300301::Drivechain,
     env: heed::Env,
+    mempool: MemPool,
+    net: Net,
+    net_task: Arc<JoinHandle<()>>,
+    state: State,
 }
 
 impl Node {
@@ -67,23 +278,38 @@ impl Node {
                     + crate::mempool::MemPool::NUM_DBS,
             )
             .open(env_path)?;
-        let state = crate::state::State::new(&env)?;
-        let archive = crate::archive::Archive::new(&env)?;
-        let mempool = crate::mempool::MemPool::new(&env)?;
+        let state = State::new(&env)?;
+        let archive = Archive::new(&env)?;
+        let mempool = MemPool::new(&env)?;
         let drivechain = bip300301::Drivechain::new(
             THIS_SIDECHAIN,
             main_addr,
             user,
             password,
         )?;
-        let net = crate::net::Net::new(bind_addr)?;
+        let (net, peer_info_rx) =
+            Net::new(&env, archive.clone(), state.clone(), bind_addr)?;
+        let net_task = spawn({
+            let ctxt = NetTaskContext {
+                env: env.clone(),
+                archive: archive.clone(),
+                drivechain: drivechain.clone(),
+                mempool: mempool.clone(),
+                net: net.clone(),
+                state: state.clone(),
+            };
+            NetTask { ctxt, peer_info_rx }
+                .run()
+                .unwrap_or_else(|err| tracing::error!(%err))
+        });
         Ok(Self {
-            net,
-            state,
             archive,
-            mempool,
             drivechain,
             env,
+            mempool,
+            net,
+            net_task: Arc::new(net_task),
+            state,
         })
     }
 
@@ -114,47 +340,17 @@ impl Node {
         Ok(res)
     }
 
-    pub fn validate_transaction(
+    pub fn submit_transaction(
         &self,
-        txn: &RoTxn,
-        transaction: &AuthorizedTransaction,
-    ) -> Result<u64, Error> {
-        let filled_transaction =
-            self.state.fill_transaction(txn, &transaction.transaction)?;
-        for (authorization, spent_utxo) in transaction
-            .authorizations
-            .iter()
-            .zip(filled_transaction.spent_utxos.iter())
-        {
-            if authorization.get_address() != spent_utxo.address {
-                return Err(crate::state::Error::WrongPubKeyForAddress.into());
-            }
-        }
-        if Authorization::verify_transaction(transaction).is_err() {
-            return Err(crate::state::Error::AuthorizationError.into());
-        }
-        let fee = self
-            .state
-            .validate_filled_transaction(&filled_transaction)?;
-        Ok(fee)
-    }
-
-    pub async fn submit_transaction(
-        &self,
-        transaction: &AuthorizedTransaction,
+        transaction: AuthorizedTransaction,
     ) -> Result<(), Error> {
         {
             let mut txn = self.env.write_txn()?;
-            self.validate_transaction(&txn, transaction)?;
-            self.mempool.put(&mut txn, transaction)?;
+            self.state.validate_transaction(&txn, &transaction)?;
+            self.mempool.put(&mut txn, &transaction)?;
             txn.commit()?;
         }
-        for peer in self.net.peers.read().await.values() {
-            peer.request(&Request::PushTransaction {
-                transaction: transaction.clone(),
-            })
-            .await?;
-        }
+        self.net.push_tx(Default::default(), transaction);
         Ok(())
     }
 
@@ -186,16 +382,9 @@ impl Node {
         Ok(self.state.get_accumulator(&rotxn)?)
     }
 
-    /// Regenerate utreexo proof for a tx
     pub fn regenerate_proof(&self, tx: &mut Transaction) -> Result<(), Error> {
-        let accumulator = self.get_accumulator()?;
-        let targets: Vec<_> = tx
-            .inputs
-            .iter()
-            .map(|(_, utxo_hash)| utxo_hash.into())
-            .collect();
-        let (proof, _) = accumulator.prove(&targets).map_err(Error::Utreexo)?;
-        tx.proof = proof;
+        let rotxn = self.env.read_txn()?;
+        let () = self.state.regenerate_proof(&rotxn, tx)?;
         Ok(())
     }
 
@@ -241,7 +430,7 @@ impl Node {
                     .delete(&mut txn, &transaction.transaction.txid())?;
                 continue;
             }
-            if self.validate_transaction(&txn, transaction).is_err() {
+            if self.state.validate_transaction(&txn, transaction).is_err() {
                 self.mempool
                     .delete(&mut txn, &transaction.transaction.txid())?;
                 continue;
@@ -282,323 +471,37 @@ impl Node {
         Ok(())
     }
 
+    pub fn connect_peer(&self, addr: SocketAddr) -> Result<(), Error> {
+        self.net
+            .connect_peer(self.env.clone(), addr)
+            .map_err(Error::from)
+    }
+
     pub async fn submit_block(
         &self,
         header: &Header,
         body: &Body,
     ) -> Result<(), Error> {
-        let last_deposit_block_hash = {
-            let txn = self.env.read_txn()?;
-            self.state.get_last_deposit_block_hash(&txn)?
-        };
-        let bundle = {
-            let two_way_peg_data = self
-                .drivechain
-                .get_two_way_peg_data(
-                    header.prev_main_hash,
-                    last_deposit_block_hash,
-                )
-                .await?;
-            let mut txn = self.env.write_txn()?;
-            let height = self.archive.get_height(&txn)?;
-            self.state
-                .validate_body(&txn, &header.roots, body, height)?;
-            if tracing::enabled!(tracing::Level::DEBUG) {
-                let block_hash = header.hash();
-                let merkle_root = body.compute_merkle_root();
-                self.state.connect_body(&mut txn, body)?;
-                tracing::debug!(%height, %merkle_root, %block_hash,
-                                    "connected body")
-            } else {
-                self.state.connect_body(&mut txn, body)?;
-            }
-            self.state.connect_two_way_peg_data(
-                &mut txn,
-                &two_way_peg_data,
-                height,
-            )?;
-            let bundle = self.state.get_pending_withdrawal_bundle(&txn)?;
-            self.archive.append_header(&mut txn, header)?;
-            self.archive.put_body(&mut txn, header, body)?;
-            for transaction in &body.transactions {
-                self.mempool.delete(&mut txn, &transaction.txid())?;
-            }
-            let accumulator = self.state.get_accumulator(&txn)?;
-            self.mempool.regenerate_proofs(&mut txn, &accumulator)?;
-            txn.commit()?;
-            bundle
-        };
-        if let Some(bundle) = bundle {
-            let () = self
-                .drivechain
-                .broadcast_withdrawal_bundle(bundle.transaction)
-                .await?;
+        submit_block(
+            &self.env,
+            &self.archive,
+            &self.drivechain,
+            &self.mempool,
+            &self.state,
+            header,
+            body,
+        )
+        .await
+    }
+}
+
+impl Drop for Node {
+    // If only one reference exists (ie. within self), abort the net task.
+    fn drop(&mut self) {
+        // use `Arc::get_mut` since `Arc::into_inner` requires ownership of the
+        // Arc, and cloning would increase the reference count
+        if let Some(task) = Arc::get_mut(&mut self.net_task) {
+            task.abort()
         }
-        Ok(())
-    }
-
-    pub async fn heart_beat_listen(
-        &self,
-        peer: &crate::net::Peer,
-    ) -> Result<(), Error> {
-        let message = match peer.connection.read_datagram().await {
-            Ok(message) => message,
-            Err(err) => {
-                self.net
-                    .peers
-                    .write()
-                    .await
-                    .remove(&peer.connection.stable_id());
-                let addr = peer.connection.stable_id();
-                println!("connection {addr} closed");
-                return Err(crate::net::Error::from(err).into());
-            }
-        };
-        let state: PeerState = bincode::deserialize(&message)?;
-        *peer.state.write().await = Some(state);
-        Ok(())
-    }
-
-    pub async fn peer_listen(
-        &self,
-        peer: &crate::net::Peer,
-    ) -> Result<(), Error> {
-        let (mut send, mut recv) = peer
-            .connection
-            .accept_bi()
-            .await
-            .map_err(crate::net::Error::from)?;
-        let data = recv
-            .read_to_end(crate::net::READ_LIMIT)
-            .await
-            .map_err(crate::net::Error::from)?;
-        let message: Request = bincode::deserialize(&data)?;
-        match message {
-            Request::GetBlock { height } => {
-                let (header, body) = {
-                    let txn = self.env.read_txn()?;
-                    (
-                        self.archive.get_header(&txn, height)?,
-                        self.archive.get_body(&txn, height)?,
-                    )
-                };
-                let response = match (header, body) {
-                    (Some(header), Some(body)) => {
-                        Response::Block { header, body }
-                    }
-                    (_, _) => Response::NoBlock,
-                };
-                let response = bincode::serialize(&response)?;
-                send.write_all(&response)
-                    .await
-                    .map_err(crate::net::Error::from)?;
-                send.finish().await.map_err(crate::net::Error::from)?;
-            }
-            Request::PushTransaction { transaction } => {
-                let valid = {
-                    let txn = self.env.read_txn()?;
-                    self.validate_transaction(&txn, &transaction)
-                };
-                match valid {
-                    Err(err) => {
-                        let response = Response::TransactionRejected;
-                        let response = bincode::serialize(&response)?;
-                        send.write_all(&response)
-                            .await
-                            .map_err(crate::net::Error::from)?;
-                        return Err(err);
-                    }
-                    Ok(_) => {
-                        {
-                            let mut txn = self.env.write_txn()?;
-                            println!(
-                                "adding transaction to mempool: {:?}",
-                                &transaction
-                            );
-                            self.mempool.put(&mut txn, &transaction)?;
-                            txn.commit()?;
-                        }
-                        for peer0 in self.net.peers.read().await.values() {
-                            if peer0.connection.stable_id()
-                                == peer.connection.stable_id()
-                            {
-                                continue;
-                            }
-                            peer0
-                                .request(&Request::PushTransaction {
-                                    transaction: transaction.clone(),
-                                })
-                                .await?;
-                        }
-                        let response = Response::TransactionAccepted;
-                        let response = bincode::serialize(&response)?;
-                        send.write_all(&response)
-                            .await
-                            .map_err(crate::net::Error::from)?;
-                        return Ok(());
-                    }
-                }
-            }
-        };
-        Ok(())
-    }
-
-    pub async fn connect_peer(&self, addr: SocketAddr) -> Result<(), Error> {
-        let peer = self.net.connect_peer(addr).await?;
-        tokio::spawn({
-            let node = self.clone();
-            let peer = peer.clone();
-            async move {
-                loop {
-                    match node.peer_listen(&peer).await {
-                        Ok(_) => {}
-                        Err(err) => {
-                            println!("{:?}", err);
-                            break;
-                        }
-                    }
-                }
-            }
-        });
-        tokio::spawn({
-            let node = self.clone();
-            let peer = peer.clone();
-            async move {
-                loop {
-                    match node.heart_beat_listen(&peer).await {
-                        Ok(_) => {}
-                        Err(err) => {
-                            println!("{:?}", err);
-                            break;
-                        }
-                    }
-                }
-            }
-        });
-        Ok(())
-    }
-
-    pub fn run(&mut self) -> Result<(), Error> {
-        // Listening to connections.
-        let node = self.clone();
-        tokio::spawn(async move {
-            loop {
-                let incoming_conn = node.net.server.accept().await.unwrap();
-                let connection = incoming_conn.await.unwrap();
-                for peer in node.net.peers.read().await.values() {
-                    if peer.connection.remote_address()
-                        == connection.remote_address()
-                    {
-                        println!(
-                            "already connected to {} refusing duplicate connection",
-                            connection.remote_address()
-                        );
-                        connection.close(
-                            quinn::VarInt::from_u32(1),
-                            b"already connected",
-                        );
-                    }
-                }
-                if connection.close_reason().is_some() {
-                    continue;
-                }
-                println!(
-                    "[server] connection accepted: addr={} id={}",
-                    connection.remote_address(),
-                    connection.stable_id(),
-                );
-                let peer = crate::net::Peer {
-                    state: Arc::new(RwLock::new(None)),
-                    connection,
-                };
-                tokio::spawn({
-                    let node = node.clone();
-                    let peer = peer.clone();
-                    async move {
-                        loop {
-                            match node.peer_listen(&peer).await {
-                                Ok(_) => {}
-                                Err(err) => {
-                                    println!("{:?}", err);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                });
-                tokio::spawn({
-                    let node = node.clone();
-                    let peer = peer.clone();
-                    async move {
-                        loop {
-                            match node.heart_beat_listen(&peer).await {
-                                Ok(_) => {}
-                                Err(err) => {
-                                    println!("{:?}", err);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                });
-                node.net
-                    .peers
-                    .write()
-                    .await
-                    .insert(peer.connection.stable_id(), peer);
-            }
-        });
-
-        // Heart beat.
-        let node = self.clone();
-        tokio::spawn(async move {
-            loop {
-                for peer in node.net.peers.read().await.values() {
-                    let block_height = {
-                        let txn = node.env.read_txn().unwrap();
-                        node.archive.get_height(&txn).unwrap()
-                    };
-                    let state = PeerState { block_height };
-                    peer.heart_beat(&state).unwrap();
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
-        });
-
-        // Request missing headers.
-        let node = self.clone();
-        tokio::spawn(async move {
-            loop {
-                for peer in node.net.peers.read().await.values() {
-                    if let Some(state) = &peer.state.read().await.as_ref() {
-                        let height = {
-                            let txn = node.env.read_txn().unwrap();
-                            node.archive.get_height(&txn).unwrap()
-                        };
-                        if state.block_height > height {
-                            let response = peer
-                                .request(&Request::GetBlock {
-                                    height: height + 1,
-                                })
-                                .await
-                                .unwrap();
-                            match response {
-                                Response::Block { header, body } => {
-                                    println!("got new header {:?}", &header);
-                                    node.submit_block(&header, &body)
-                                        .await
-                                        .unwrap();
-                                }
-                                Response::NoBlock => {}
-                                Response::TransactionAccepted => {}
-                                Response::TransactionRejected => {}
-                            };
-                        }
-                    }
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
-        });
-        Ok(())
     }
 }

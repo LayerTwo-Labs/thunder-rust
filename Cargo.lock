@@ -4205,7 +4205,7 @@ dependencies = [
 
 [[package]]
 name = "thunder"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "bincode",
@@ -4217,8 +4217,10 @@ dependencies = [
  "bytes",
  "ed25519-dalek",
  "ed25519-dalek-bip32",
+ "futures",
  "heed",
  "hex",
+ "parking_lot",
  "quinn",
  "rayon",
  "rcgen",
@@ -4230,12 +4232,13 @@ dependencies = [
  "thiserror",
  "tiny-bip39",
  "tokio",
+ "tokio-stream",
  "tracing",
 ]
 
 [[package]]
 name = "thunder_app"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -4267,7 +4270,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_app_cli"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "bip300301",
@@ -4280,7 +4283,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_app_rpc_api"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bip300301",
  "jsonrpsee",
@@ -4406,9 +4409,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-stream"
-version = "0.1.14"
+version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "397c988d37662c7dda6d2208364a706264bf3d6138b11d436cbac0ad38832842"
+checksum = "267ac89e0bec6e691e5813911606935d77c476ff49024f98abcea3e7b15e37af"
 dependencies = [
  "futures-core",
  "pin-project-lite",

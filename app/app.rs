@@ -60,20 +60,15 @@ impl App {
             &config.main_user,
             &config.main_password,
         )?;
-        let node = runtime.block_on(async {
-            let mut node = match Node::new(
-                &config.datadir,
-                config.net_addr,
-                config.main_addr,
-                &config.main_user,
-                &config.main_password,
-            ) {
-                Ok(node) => node,
-                Err(err) => return Err(err),
-            };
-            node.run()?;
-            Ok(node)
-        })?;
+        let rt_guard = runtime.enter();
+        let node = Node::new(
+            &config.datadir,
+            config.net_addr,
+            config.main_addr,
+            &config.main_user,
+            &config.main_password,
+        )?;
+        drop(rt_guard);
         let utxos = {
             let mut utxos = wallet.get_utxos()?;
             let transactions = node.get_all_transactions()?;
@@ -100,8 +95,7 @@ impl App {
 
     pub fn sign_and_send(&self, tx: Transaction) -> Result<(), Error> {
         let authorized_transaction = self.wallet.authorize(tx)?;
-        self.runtime
-            .block_on(self.node.submit_transaction(&authorized_transaction))?;
+        self.node.submit_transaction(authorized_transaction)?;
         self.update_utxos()?;
         Ok(())
     }
