@@ -15,6 +15,8 @@ byteorder = "1.4.3"
 bytes = "1.4.0"
 ed25519-dalek = { version = "2.1.1", features = ["batch", "serde"] }
 ed25519-dalek-bip32 = "0.3.0"
+fallible-iterator = "0.3.0"
+futures = "0.3.30"
 heed = { git = "https://github.com/meilisearch/heed", tag = "v0.12.4", version = "0.12.4" }
 hex = { version = "0.4.3", features = ["serde"] }
 quinn = "0.10.1"
@@ -28,6 +30,7 @@ sha256 = "1.2.2"
 thiserror = "1.0.44"
 tiny-bip39 = "1.0.0"
 tokio = { version = "1.29.1", features = ["sync"] }
+tokio-util = { version = "0.7.10", features = ["rt"] }
 tracing = "0.1.40"
 
 [lib]

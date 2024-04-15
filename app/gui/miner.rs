@@ -35,10 +35,10 @@ impl Miner {
             .clicked()
         {
             self.running.store(true, atomic::Ordering::SeqCst);
-            app.runtime.spawn({
+            app.local_pool.spawn_pinned({
                 let app = app.clone();
                 let running = self.running.clone();
-                async move {
+                || async move {
                     tracing::debug!("Mining...");
                     let mining_result = app.mine(None).await;
                     running.store(false, atomic::Ordering::SeqCst);

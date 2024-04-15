@@ -70,7 +70,9 @@ impl std::fmt::Debug for BlockHash {
     Deserialize,
     Eq,
     Hash,
+    Ord,
     PartialEq,
+    PartialOrd,
     Serialize,
 )]
 pub struct MerkleRoot(Hash);
@@ -108,7 +110,9 @@ impl std::fmt::Debug for MerkleRoot {
     Eq,
     Hash,
     Serialize,
+    Ord,
     PartialEq,
+    PartialOrd,
 )]
 #[repr(transparent)]
 #[serde(transparent)]

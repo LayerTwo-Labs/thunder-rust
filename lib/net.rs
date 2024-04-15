@@ -4,7 +4,7 @@ use quinn::{ClientConfig, Connection, Endpoint, ServerConfig};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use crate::types::{AuthorizedTransaction, Body, Header};
+use crate::types::{AuthorizedTransaction, BlockHash, Body, Header};
 
 pub const READ_LIMIT: usize = 1024;
 
@@ -39,18 +39,33 @@ pub enum Error {
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct PeerState {
     pub block_height: u32,
+    pub tip: BlockHash,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Request {
-    GetBlock { height: u32 },
-    PushTransaction { transaction: AuthorizedTransaction },
+    GetBlock {
+        block_hash: BlockHash,
+    },
+    /// Request headers up to [`end`]
+    GetHeaders {
+        end: BlockHash,
+    },
+    PushTransaction {
+        transaction: AuthorizedTransaction,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Response {
-    Block { header: Header, body: Body },
+    Block {
+        header: Header,
+        body: Body,
+    },
+    /// Headers, from start to end
+    Headers(Vec<Header>),
     NoBlock,
+    NoHeader,
     TransactionAccepted,
     TransactionRejected,
 }

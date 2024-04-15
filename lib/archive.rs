@@ -1,15 +1,34 @@
-use crate::types::{hash, BlockHash, Body, Header};
+use std::cmp::Ordering;
+
+use fallible_iterator::FallibleIterator;
 use heed::{
-    byteorder::{BigEndian, ByteOrder},
     types::{OwnedType, SerdeBincode},
     Database, RoTxn, RwTxn,
 };
 
+use crate::types::{BlockHash, Body, Header};
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("heed error")]
+    Heed(#[from] heed::Error),
+    #[error("invalid previous side hash")]
+    InvalidPrevSideHash,
+    #[error("invalid merkle root")]
+    InvalidMerkleRoot,
+    #[error("no block with hash {0}")]
+    NoBlock(BlockHash),
+    #[error("no header with hash {0}")]
+    NoHeader(BlockHash),
+    #[error("no height info hash {0}")]
+    NoHeight(BlockHash),
+}
+
 #[derive(Clone)]
 pub struct Archive {
-    headers: Database<OwnedType<[u8; 4]>, SerdeBincode<Header>>,
-    bodies: Database<OwnedType<[u8; 4]>, SerdeBincode<Body>>,
-    hash_to_height: Database<OwnedType<[u8; 32]>, OwnedType<[u8; 4]>>,
+    headers: Database<SerdeBincode<BlockHash>, SerdeBincode<Header>>,
+    bodies: Database<SerdeBincode<BlockHash>, SerdeBincode<Body>>,
+    hash_to_height: Database<SerdeBincode<BlockHash>, OwnedType<u32>>,
 }
 
 impl Archive {
@@ -26,86 +45,175 @@ impl Archive {
         })
     }
 
+    pub fn try_get_header(
+        &self,
+        rotxn: &RoTxn,
+        block_hash: BlockHash,
+    ) -> Result<Option<Header>, Error> {
+        let header = self.headers.get(rotxn, &block_hash)?;
+        Ok(header)
+    }
+
     pub fn get_header(
         &self,
-        txn: &RoTxn,
-        height: u32,
-    ) -> Result<Option<Header>, Error> {
-        let height = height.to_be_bytes();
-        let header = self.headers.get(txn, &height)?;
-        Ok(header)
+        rotxn: &RoTxn,
+        block_hash: BlockHash,
+    ) -> Result<Header, Error> {
+        self.try_get_header(rotxn, block_hash)?
+            .ok_or(Error::NoHeader(block_hash))
+    }
+
+    pub fn try_get_body(
+        &self,
+        rotxn: &RoTxn,
+        block_hash: BlockHash,
+    ) -> Result<Option<Body>, Error> {
+        let body = self.bodies.get(rotxn, &block_hash)?;
+        Ok(body)
     }
 
     pub fn get_body(
         &self,
-        txn: &RoTxn,
-        height: u32,
-    ) -> Result<Option<Body>, Error> {
-        let height = height.to_be_bytes();
-        let header = self.bodies.get(txn, &height)?;
-        Ok(header)
+        rotxn: &RoTxn,
+        block_hash: BlockHash,
+    ) -> Result<Body, Error> {
+        self.try_get_body(rotxn, block_hash)?
+            .ok_or(Error::NoBlock(block_hash))
     }
 
-    pub fn get_best_hash(&self, txn: &RoTxn) -> Result<BlockHash, Error> {
-        let best_hash = match self.headers.last(txn)? {
-            Some((_, header)) => hash(&header).into(),
-            None => [0; 32].into(),
-        };
-        Ok(best_hash)
+    pub fn try_get_height(
+        &self,
+        rotxn: &RoTxn,
+        block_hash: BlockHash,
+    ) -> Result<Option<u32>, Error> {
+        if block_hash == BlockHash::default() {
+            Ok(Some(0))
+        } else {
+            self.hash_to_height
+                .get(rotxn, &block_hash)
+                .map_err(Error::from)
+        }
     }
 
-    pub fn get_height(&self, txn: &RoTxn) -> Result<u32, Error> {
-        let height = match self.headers.last(txn)? {
-            Some((height, _)) => BigEndian::read_u32(&height),
-            None => 0,
-        };
-        Ok(height)
+    pub fn get_height(
+        &self,
+        rotxn: &RoTxn,
+        block_hash: BlockHash,
+    ) -> Result<u32, Error> {
+        self.try_get_height(rotxn, block_hash)?
+            .ok_or(Error::NoHeight(block_hash))
     }
 
+    /// Store a block body. The header must already exist.
     pub fn put_body(
         &self,
-        txn: &mut RwTxn,
-        header: &Header,
+        rwtxn: &mut RwTxn,
+        block_hash: BlockHash,
         body: &Body,
     ) -> Result<(), Error> {
+        let header = self.get_header(rwtxn, block_hash)?;
         if header.merkle_root != body.compute_merkle_root() {
             return Err(Error::InvalidMerkleRoot);
         }
-        let hash = header.hash();
-        let height = self
-            .hash_to_height
-            .get(txn, &hash.into())?
-            .ok_or(Error::NoHeader(hash))?;
-        self.bodies.put(txn, &height, body)?;
+        self.bodies.put(rwtxn, &block_hash, body)?;
         Ok(())
     }
 
-    pub fn append_header(
+    pub fn put_header(
         &self,
-        txn: &mut RwTxn,
+        rwtxn: &mut RwTxn,
         header: &Header,
     ) -> Result<(), Error> {
-        let height = self.get_height(txn)?;
-        let best_hash = self.get_best_hash(txn)?;
-        if header.prev_side_hash != best_hash {
+        let Some(prev_height) =
+            self.try_get_height(rwtxn, header.prev_side_hash)?
+        else {
             return Err(Error::InvalidPrevSideHash);
-        }
-        let new_height = (height + 1).to_be_bytes();
-        self.headers.put(txn, &new_height, header)?;
-        self.hash_to_height
-            .put(txn, &header.hash().into(), &new_height)?;
+        };
+        let height = prev_height + 1;
+        let block_hash = header.hash();
+        self.headers.put(rwtxn, &block_hash, header)?;
+        self.hash_to_height.put(rwtxn, &block_hash, &height)?;
         Ok(())
+    }
+
+    /// Return a fallible iterator over ancestors of a block,
+    /// starting with the specified block's header
+    pub fn ancestors<'a, 'rotxn>(
+        &'a self,
+        rotxn: &'a RoTxn<'rotxn>,
+        block_hash: BlockHash,
+    ) -> Ancestors<'a, 'rotxn> where {
+        Ancestors {
+            archive: self,
+            rotxn,
+            block_hash,
+        }
+    }
+
+    /// Find the last common ancestor of two blocks, if headers for both exist
+    pub fn last_common_ancestor(
+        &self,
+        rotxn: &RoTxn,
+        mut block_hash0: BlockHash,
+        mut block_hash1: BlockHash,
+    ) -> Result<BlockHash, Error> {
+        let mut height0 = self.get_height(rotxn, block_hash0)?;
+        let mut height1 = self.get_height(rotxn, block_hash1)?;
+        let mut header0 = self.get_header(rotxn, block_hash0)?;
+        let mut header1 = self.get_header(rotxn, block_hash1)?;
+        // Find respective ancestors of block_hash0 and block_hash1 with height
+        // equal to min(height0, height1)
+        loop {
+            match height0.cmp(&height1) {
+                Ordering::Less => {
+                    block_hash1 = header1.prev_side_hash;
+                    header1 = self.get_header(rotxn, block_hash1)?;
+                    height1 -= 1;
+                }
+                Ordering::Greater => {
+                    block_hash0 = header0.prev_side_hash;
+                    header0 = self.get_header(rotxn, block_hash0)?;
+                    height0 -= 1;
+                }
+                Ordering::Equal => {
+                    if block_hash0 == block_hash1 {
+                        return Ok(block_hash0);
+                    } else {
+                        block_hash0 = header0.prev_side_hash;
+                        block_hash1 = header1.prev_side_hash;
+                        header0 = self.get_header(rotxn, block_hash0)?;
+                        header1 = self.get_header(rotxn, block_hash1)?;
+                        height0 -= 1;
+                        height1 -= 1;
+                    }
+                }
+            };
+        }
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("heed error")]
-    Heed(#[from] heed::Error),
-    #[error("invalid previous side hash")]
-    InvalidPrevSideHash,
-    #[error("invalid merkle root")]
-    InvalidMerkleRoot,
-    #[error("no header with hash {0}")]
-    NoHeader(BlockHash),
+/// Return a fallible iterator over ancestors of a block,
+/// starting with the specified block.
+/// created by [`Archive::ancestors`]
+pub struct Ancestors<'a, 'rotxn> {
+    archive: &'a Archive,
+    rotxn: &'a RoTxn<'rotxn>,
+    block_hash: BlockHash,
+}
+
+impl<'a, 'rotxn> FallibleIterator for Ancestors<'a, 'rotxn> {
+    type Item = BlockHash;
+    type Error = Error;
+
+    fn next(&mut self) -> Result<Option<Self::Item>, Self::Error> {
+        if self.block_hash == BlockHash::default() {
+            Ok(None)
+        } else {
+            let res = self.block_hash;
+            let header =
+                self.archive.get_header(self.rotxn, self.block_hash)?;
+            self.block_hash = header.prev_side_hash;
+            Ok(Some(res))
+        }
+    }
 }

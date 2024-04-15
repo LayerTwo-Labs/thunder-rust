@@ -2,7 +2,10 @@ use bip300301::bitcoin;
 use borsh::BorshSerialize;
 use rustreexo::accumulator::node_hash::NodeHash;
 use serde::{Deserialize, Serialize};
-use std::{cmp::Ordering, collections::HashMap};
+use std::{
+    cmp::Ordering,
+    collections::{BTreeMap, HashMap},
+};
 
 mod address;
 pub mod hashes;
@@ -113,7 +116,7 @@ pub enum WithdrawalBundleStatus {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WithdrawalBundle {
-    pub spend_utxos: HashMap<transaction::OutPoint, transaction::Output>,
+    pub spend_utxos: BTreeMap<transaction::OutPoint, transaction::Output>,
     pub transaction: bitcoin::Transaction,
 }
 

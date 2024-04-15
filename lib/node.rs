@@ -1,8 +1,3 @@
-use crate::net::{PeerState, Request, Response};
-use crate::{authorization::Authorization, types::*};
-use bip300301::bitcoin;
-use heed::RoTxn;
-use rustreexo::accumulator::pollard::Pollard;
 use std::{
     collections::{HashMap, HashSet},
     fmt::Debug,
@@ -10,7 +5,20 @@ use std::{
     path::Path,
     sync::Arc,
 };
+
+use bip300301::bitcoin;
+use fallible_iterator::{FallibleIterator, IteratorExt};
+use futures::future::JoinAll;
+use heed::{RoTxn, RwTxn};
+use rustreexo::accumulator::pollard::Pollard;
 use tokio::sync::RwLock;
+use tokio_util::task::LocalPoolHandle;
+
+use crate::{
+    authorization::Authorization,
+    net::{PeerState, Request, Response},
+    types::*,
+};
 
 pub const THIS_SIDECHAIN: u8 = 9;
 
@@ -46,6 +54,7 @@ pub struct Node {
     mempool: crate::mempool::MemPool,
     drivechain: bip300301::Drivechain,
     env: heed::Env,
+    local_pool: LocalPoolHandle,
 }
 
 impl Node {
@@ -55,6 +64,7 @@ impl Node {
         main_addr: SocketAddr,
         user: &str,
         password: &str,
+        local_pool: LocalPoolHandle,
     ) -> Result<Self, Error> {
         let env_path = datadir.join("data.mdb");
         // let _ = std::fs::remove_dir_all(&env_path);
@@ -84,6 +94,7 @@ impl Node {
             mempool,
             drivechain,
             env,
+            local_pool,
         })
     }
 
@@ -93,12 +104,12 @@ impl Node {
 
     pub fn get_height(&self) -> Result<u32, Error> {
         let txn = self.env.read_txn()?;
-        Ok(self.archive.get_height(&txn)?)
+        Ok(self.state.get_height(&txn)?)
     }
 
     pub fn get_best_hash(&self) -> Result<BlockHash, Error> {
         let txn = self.env.read_txn()?;
-        Ok(self.archive.get_best_hash(&txn)?)
+        Ok(self.state.get_tip(&txn)?)
     }
 
     pub async fn get_best_parentchain_hash(
@@ -199,14 +210,49 @@ impl Node {
         Ok(())
     }
 
-    pub fn get_header(&self, height: u32) -> Result<Option<Header>, Error> {
+    pub fn try_get_header(
+        &self,
+        block_hash: BlockHash,
+    ) -> Result<Option<Header>, Error> {
         let txn = self.env.read_txn()?;
-        Ok(self.archive.get_header(&txn, height)?)
+        Ok(self.archive.try_get_header(&txn, block_hash)?)
     }
 
-    pub fn get_body(&self, height: u32) -> Result<Option<Body>, Error> {
+    pub fn get_header(&self, block_hash: BlockHash) -> Result<Header, Error> {
         let txn = self.env.read_txn()?;
-        Ok(self.archive.get_body(&txn, height)?)
+        Ok(self.archive.get_header(&txn, block_hash)?)
+    }
+
+    /// Get the block hash at the specified height in the current chain,
+    /// if it exists
+    pub fn try_get_block_hash(
+        &self,
+        height: u32,
+    ) -> Result<Option<BlockHash>, Error> {
+        let rotxn = self.env.read_txn()?;
+        let tip = self.state.get_tip(&rotxn)?;
+        let tip_height = self.state.get_height(&rotxn)?;
+        if tip_height >= height {
+            self.archive
+                .ancestors(&rotxn, tip)
+                .nth((tip_height - height) as usize)
+                .map_err(Error::from)
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn try_get_body(
+        &self,
+        block_hash: BlockHash,
+    ) -> Result<Option<Body>, Error> {
+        let txn = self.env.read_txn()?;
+        Ok(self.archive.try_get_body(&txn, block_hash)?)
+    }
+
+    pub fn get_body(&self, block_hash: BlockHash) -> Result<Body, Error> {
+        let txn = self.env.read_txn()?;
+        Ok(self.archive.get_body(&txn, block_hash)?)
     }
 
     pub fn get_all_transactions(
@@ -238,12 +284,12 @@ impl Node {
             if !spent_utxos.is_disjoint(&inputs) {
                 println!("UTXO double spent");
                 self.mempool
-                    .delete(&mut txn, &transaction.transaction.txid())?;
+                    .delete(&mut txn, transaction.transaction.txid())?;
                 continue;
             }
             if self.validate_transaction(&txn, transaction).is_err() {
                 self.mempool
-                    .delete(&mut txn, &transaction.transaction.txid())?;
+                    .delete(&mut txn, transaction.transaction.txid())?;
                 continue;
             }
             let filled_transaction = self
@@ -272,12 +318,65 @@ impl Node {
         &self,
     ) -> Result<Option<WithdrawalBundle>, Error> {
         let txn = self.env.read_txn()?;
-        Ok(self.state.get_pending_withdrawal_bundle(&txn)?)
+        let bundle = self
+            .state
+            .get_pending_withdrawal_bundle(&txn)?
+            .map(|(bundle, _)| bundle);
+        Ok(bundle)
     }
 
     pub fn remove_from_mempool(&self, txid: Txid) -> Result<(), Error> {
         let mut rwtxn = self.env.write_txn()?;
-        let () = self.mempool.delete(&mut rwtxn, &txid)?;
+        let () = self.mempool.delete(&mut rwtxn, txid)?;
+        rwtxn.commit()?;
+        Ok(())
+    }
+
+    async fn connect_tip_(
+        &self,
+        rwtxn: &mut RwTxn<'_, '_>,
+        header: &Header,
+        body: &Body,
+    ) -> Result<(), Error> {
+        let last_deposit_block_hash =
+            self.state.get_last_deposit_block_hash(rwtxn)?;
+        let two_way_peg_data = self
+            .drivechain
+            .get_two_way_peg_data(
+                header.prev_main_hash,
+                last_deposit_block_hash,
+            )
+            .await?;
+        let block_hash = header.hash();
+        self.state.validate_block(rwtxn, header, body)?;
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            let merkle_root = body.compute_merkle_root();
+            let height = self.state.get_height(rwtxn)?;
+            self.state.connect_block(rwtxn, header, body)?;
+            tracing::debug!(%height, %merkle_root, %block_hash,
+                                "connected body")
+        } else {
+            self.state.connect_block(rwtxn, header, body)?;
+        }
+        self.state
+            .connect_two_way_peg_data(rwtxn, &two_way_peg_data)?;
+        self.archive.put_header(rwtxn, header)?;
+        self.archive.put_body(rwtxn, block_hash, body)?;
+        for transaction in &body.transactions {
+            self.mempool.delete(rwtxn, transaction.txid())?;
+        }
+        let accumulator = self.state.get_accumulator(rwtxn)?;
+        self.mempool.regenerate_proofs(rwtxn, &accumulator)?;
+        Ok(())
+    }
+
+    pub async fn connect_tip(
+        &self,
+        header: &Header,
+        body: &Body,
+    ) -> Result<(), Error> {
+        let mut rwtxn = self.env.write_txn()?;
+        let () = self.connect_tip_(&mut rwtxn, header, body).await?;
         rwtxn.commit()?;
         Ok(())
     }
@@ -287,53 +386,100 @@ impl Node {
         header: &Header,
         body: &Body,
     ) -> Result<(), Error> {
-        let last_deposit_block_hash = {
-            let txn = self.env.read_txn()?;
-            self.state.get_last_deposit_block_hash(&txn)?
-        };
-        let bundle = {
-            let two_way_peg_data = self
-                .drivechain
-                .get_two_way_peg_data(
-                    header.prev_main_hash,
-                    last_deposit_block_hash,
-                )
-                .await?;
-            let mut txn = self.env.write_txn()?;
-            let height = self.archive.get_height(&txn)?;
-            self.state
-                .validate_body(&txn, &header.roots, body, height)?;
-            if tracing::enabled!(tracing::Level::DEBUG) {
-                let block_hash = header.hash();
-                let merkle_root = body.compute_merkle_root();
-                self.state.connect_body(&mut txn, body)?;
-                tracing::debug!(%height, %merkle_root, %block_hash,
-                                    "connected body")
-            } else {
-                self.state.connect_body(&mut txn, body)?;
-            }
-            self.state.connect_two_way_peg_data(
-                &mut txn,
-                &two_way_peg_data,
-                height,
-            )?;
-            let bundle = self.state.get_pending_withdrawal_bundle(&txn)?;
-            self.archive.append_header(&mut txn, header)?;
-            self.archive.put_body(&mut txn, header, body)?;
-            for transaction in &body.transactions {
-                self.mempool.delete(&mut txn, &transaction.txid())?;
-            }
-            let accumulator = self.state.get_accumulator(&txn)?;
-            self.mempool.regenerate_proofs(&mut txn, &accumulator)?;
-            txn.commit()?;
-            bundle
-        };
-        if let Some(bundle) = bundle {
+        let mut rwtxn = self.env.write_txn()?;
+        let () = self.connect_tip_(&mut rwtxn, header, body).await?;
+        let bundle = self.state.get_pending_withdrawal_bundle(&rwtxn)?;
+        rwtxn.commit()?;
+        if let Some((bundle, _)) = bundle {
             let () = self
                 .drivechain
                 .broadcast_withdrawal_bundle(bundle.transaction)
                 .await?;
         }
+        Ok(())
+    }
+
+    async fn disconnect_tip_(
+        &self,
+        rwtxn: &mut RwTxn<'_, '_>,
+    ) -> Result<(), Error> {
+        let tip_block_hash = self.state.get_tip(rwtxn)?;
+        let tip_header = self.archive.get_header(rwtxn, tip_block_hash)?;
+        let tip_body = self.archive.get_body(rwtxn, tip_block_hash)?;
+        let height = self.state.get_height(rwtxn)?;
+        let two_way_peg_data = {
+            let start_block_hash = self
+                .state
+                .deposit_blocks
+                .rev_iter(rwtxn)?
+                .transpose_into_fallible()
+                .find_map(|(_, (block_hash, applied_height))| {
+                    if applied_height < height {
+                        Ok(Some(block_hash))
+                    } else {
+                        Ok(None)
+                    }
+                })?;
+            self.drivechain
+                .get_two_way_peg_data(
+                    tip_header.prev_main_hash,
+                    start_block_hash,
+                )
+                .await?
+        };
+        let () = self
+            .state
+            .disconnect_two_way_peg_data(rwtxn, &two_way_peg_data)?;
+        let () = self.state.disconnect_tip(rwtxn, &tip_header, &tip_body)?;
+        for transaction in tip_body.authorized_transactions().iter().rev() {
+            self.mempool.put(rwtxn, transaction)?;
+        }
+        let accumulator = self.state.get_accumulator(rwtxn)?;
+        self.mempool.regenerate_proofs(rwtxn, &accumulator)?;
+        Ok(())
+    }
+
+    pub async fn disconnect_tip(&self) -> Result<(), Error> {
+        let mut rwtxn = self.env.write_txn()?;
+        let () = self.disconnect_tip_(&mut rwtxn).await?;
+        rwtxn.commit()?;
+        Ok(())
+    }
+
+    /// Re-org to the specified tip. The new tip block and all ancestor blocks
+    /// must exist in the node's archive.
+    pub async fn reorg_to_tip(&self, new_tip: BlockHash) -> Result<(), Error> {
+        let mut rwtxn = self.env.write_txn()?;
+        let tip = self.state.get_tip(&rwtxn)?;
+        let tip_height = self.state.get_height(&rwtxn)?;
+        let common_ancestor =
+            self.archive.last_common_ancestor(&rwtxn, tip, new_tip)?;
+        // Check that all necessary bodies exist before disconnecting tip
+        let blocks_to_apply: Vec<(Header, Body)> = self
+            .archive
+            .ancestors(&rwtxn, tip)
+            .take_while(|block_hash| Ok(*block_hash != tip))
+            .map(|block_hash| {
+                let header = self.archive.get_header(&rwtxn, block_hash)?;
+                let body = self.archive.get_body(&rwtxn, block_hash)?;
+                Ok((header, body))
+            })
+            .collect()?;
+        // Disconnect tip until common ancestor is reached
+        let common_ancestor_height =
+            self.archive.get_height(&rwtxn, common_ancestor)?;
+        for _ in 0..tip_height - common_ancestor_height {
+            let () = self.disconnect_tip_(&mut rwtxn).await?;
+        }
+        let tip = self.state.get_tip(&rwtxn)?;
+        assert_eq!(tip, common_ancestor);
+        // Apply blocks until new tip is reached
+        for (header, body) in blocks_to_apply.into_iter().rev() {
+            let () = self.connect_tip_(&mut rwtxn, &header, &body).await?;
+        }
+        let tip = self.state.get_tip(&rwtxn)?;
+        assert_eq!(tip, new_tip);
+        rwtxn.commit()?;
         Ok(())
     }
 
@@ -374,12 +520,12 @@ impl Node {
             .map_err(crate::net::Error::from)?;
         let message: Request = bincode::deserialize(&data)?;
         match message {
-            Request::GetBlock { height } => {
+            Request::GetBlock { block_hash } => {
                 let (header, body) = {
                     let txn = self.env.read_txn()?;
                     (
-                        self.archive.get_header(&txn, height)?,
-                        self.archive.get_body(&txn, height)?,
+                        self.archive.try_get_header(&txn, block_hash)?,
+                        self.archive.try_get_body(&txn, block_hash)?,
                     )
                 };
                 let response = match (header, body) {
@@ -390,6 +536,32 @@ impl Node {
                 };
                 let response = bincode::serialize(&response)?;
                 send.write_all(&response)
+                    .await
+                    .map_err(crate::net::Error::from)?;
+                send.finish().await.map_err(crate::net::Error::from)?;
+            }
+            Request::GetHeaders { end } => {
+                let response = {
+                    let rotxn = self.env.read_txn()?;
+                    if self.archive.try_get_header(&rotxn, end)?.is_some() {
+                        let mut headers: Vec<Header> = self
+                            .archive
+                            .ancestors(&rotxn, end)
+                            .take_while(|block_hash| {
+                                Ok(*block_hash != BlockHash::default())
+                            })
+                            .map(|block_hash| {
+                                self.archive.get_header(&rotxn, block_hash)
+                            })
+                            .collect()?;
+                        headers.reverse();
+                        Response::Headers(headers)
+                    } else {
+                        Response::NoHeader
+                    }
+                };
+                let response_bytes = bincode::serialize(&response)?;
+                send.write_all(&response_bytes)
                     .await
                     .map_err(crate::net::Error::from)?;
                 send.finish().await.map_err(crate::net::Error::from)?;
@@ -554,11 +726,13 @@ impl Node {
         tokio::spawn(async move {
             loop {
                 for peer in node.net.peers.read().await.values() {
-                    let block_height = {
+                    let (block_height, tip) = {
                         let txn = node.env.read_txn().unwrap();
-                        node.archive.get_height(&txn).unwrap()
+                        let block_height = node.state.get_height(&txn).unwrap();
+                        let tip = node.state.get_tip(&txn).unwrap();
+                        (block_height, tip)
                     };
-                    let state = PeerState { block_height };
+                    let state = PeerState { block_height, tip };
                     peer.heart_beat(&state).unwrap();
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -570,29 +744,140 @@ impl Node {
         tokio::spawn(async move {
             loop {
                 for peer in node.net.peers.read().await.values() {
-                    if let Some(state) = &peer.state.read().await.as_ref() {
-                        let height = {
-                            let txn = node.env.read_txn().unwrap();
-                            node.archive.get_height(&txn).unwrap()
+                    if let Some(peer_state) = &peer.state.read().await.as_ref()
+                    {
+                        let (block_height, tip) = {
+                            let rotxn = node.env.read_txn().unwrap();
+                            let block_height =
+                                node.state.get_height(&rotxn).unwrap();
+                            let tip = node.state.get_tip(&rotxn).unwrap();
+                            (block_height, tip)
                         };
-                        if state.block_height > height {
-                            let response = peer
-                                .request(&Request::GetBlock {
-                                    height: height + 1,
-                                })
-                                .await
-                                .unwrap();
-                            match response {
-                                Response::Block { header, body } => {
-                                    println!("got new header {:?}", &header);
-                                    node.submit_block(&header, &body)
-                                        .await
-                                        .unwrap();
-                                }
-                                Response::NoBlock => {}
-                                Response::TransactionAccepted => {}
-                                Response::TransactionRejected => {}
+                        if peer_state.block_height > block_height {
+                            // If we have the header, request any missing bodies and apply them
+                            let header_exists = {
+                                let rotxn = node.env.read_txn().unwrap();
+                                node.archive
+                                    .try_get_header(&rotxn, peer_state.tip)
+                                    .unwrap()
+                                    .is_some()
                             };
+                            if header_exists {
+                                let missing_bodies: Vec<_> = {
+                                    let rotxn = node.env.read_txn().unwrap();
+                                    let last_common_ancestor = node
+                                        .archive
+                                        .last_common_ancestor(
+                                            &rotxn,
+                                            tip,
+                                            peer_state.tip,
+                                        )
+                                        .unwrap();
+                                    node.archive
+                                        .ancestors(&rotxn, peer_state.tip)
+                                        .take_while(|block_hash| {
+                                            Ok(*block_hash
+                                                != last_common_ancestor)
+                                        })
+                                        .filter_map(|block_hash| {
+                                            match node.archive.try_get_body(
+                                                &rotxn, block_hash,
+                                            )? {
+                                                Some(_) => Ok(None),
+                                                None => Ok(Some(block_hash)),
+                                            }
+                                        })
+                                        .collect()
+                                        .unwrap()
+                                };
+                                // Reorg If no bodies are missing
+                                if missing_bodies.is_empty() {
+                                    node.local_pool
+                                        .spawn_pinned({
+                                            let node = node.clone();
+                                            let new_tip = peer_state.tip;
+                                            move || async move {
+                                                node.reorg_to_tip(new_tip).await
+                                            }
+                                        })
+                                        .await
+                                        .unwrap()
+                                        .unwrap();
+                                    continue;
+                                }
+                                // Request missing bodies
+                                let _res: Vec<()> = missing_bodies.into_iter().map(|block_hash| {
+                                    let node = node.clone();
+                                    async move {
+                                    let response = peer
+                                    .request(&Request::GetBlock {
+                                        block_hash
+                                    }).await.unwrap();
+                                    match response {
+                                        Response::Block { header, body } => {
+                                            let mut rwtxn = node.env.write_txn().unwrap();
+                                            let block_hash = header.hash();
+                                            node.archive.put_body(&mut rwtxn, block_hash, &body).unwrap();
+                                            rwtxn.commit().unwrap();
+                                        }
+                                        Response::Headers(_) => {}
+                                        Response::NoBlock => {}
+                                        Response::NoHeader => {}
+                                        Response::TransactionAccepted => {}
+                                        Response::TransactionRejected => {}
+                                    };
+                                }}).collect::<JoinAll<_>>().await;
+                            } else {
+                                // Request headers
+                                let response = peer
+                                    .request(&Request::GetHeaders {
+                                        end: peer_state.tip,
+                                    })
+                                    .await
+                                    .unwrap();
+                                match response {
+                                    Response::Block { .. } => {}
+                                    Response::Headers(headers) => {
+                                        let mut rwtxn =
+                                            node.env.write_txn().unwrap();
+                                        // Store new headers
+                                        for header in headers {
+                                            let block_hash = header.hash();
+                                            if node
+                                                .archive
+                                                .try_get_header(
+                                                    &rwtxn, block_hash,
+                                                )
+                                                .unwrap()
+                                                .is_none()
+                                            {
+                                                if node
+                                                    .archive
+                                                    .try_get_header(
+                                                        &rwtxn,
+                                                        header.prev_side_hash,
+                                                    )
+                                                    .unwrap()
+                                                    .is_some()
+                                                {
+                                                    node.archive
+                                                        .put_header(
+                                                            &mut rwtxn, &header,
+                                                        )
+                                                        .unwrap();
+                                                } else {
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        rwtxn.commit().unwrap();
+                                    }
+                                    Response::NoBlock => {}
+                                    Response::NoHeader => {}
+                                    Response::TransactionAccepted => {}
+                                    Response::TransactionRejected => {}
+                                };
+                            }
                         }
                     }
                 }

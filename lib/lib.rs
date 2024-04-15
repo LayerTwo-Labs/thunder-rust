@@ -1,3 +1,5 @@
+#![feature(let_chains)]
+
 pub mod archive;
 pub mod authorization;
 pub mod mempool;

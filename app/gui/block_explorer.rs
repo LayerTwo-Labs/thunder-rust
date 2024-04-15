@@ -1,6 +1,10 @@
 use eframe::egui;
 use human_size::{Byte, Kibibyte, Mebibyte, SpecificSize};
-use thunder::{bip300301::bitcoin, state::State, types::GetValue};
+use thunder::{
+    bip300301::bitcoin,
+    state::State,
+    types::{Body, GetValue, Header},
+};
 
 use crate::app::App;
 
@@ -15,8 +19,17 @@ impl BlockExplorer {
 
     pub fn show(&mut self, app: &mut App, ui: &mut egui::Ui) {
         let max_height = app.node.get_height().unwrap_or(0);
-        let header = app.node.get_header(self.height).ok().flatten();
-        let body = app.node.get_body(self.height).ok().flatten();
+        let block: Option<(Header, Body)> = {
+            if let Ok(Some(block_hash)) =
+                app.node.try_get_block_hash(self.height)
+                && let Ok(header) = app.node.get_header(block_hash)
+                && let Ok(body) = app.node.get_body(block_hash)
+            {
+                Some((header, body))
+            } else {
+                None
+            }
+        };
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.heading("Block");
             ui.horizontal(|ui| {
@@ -31,7 +44,7 @@ impl BlockExplorer {
                     self.height = max_height;
                 }
             });
-            if let (Some(header), Some(body)) = (header, body) {
+            if let Some((header, body)) = block {
                 let hash = &format!("{}", header.hash());
                 let merkle_root = &format!("{}", header.merkle_root);
                 let prev_side_hash = &format!("{}", header.prev_side_hash);

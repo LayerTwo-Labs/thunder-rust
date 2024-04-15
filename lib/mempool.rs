@@ -1,7 +1,6 @@
-use heed::{
-    types::{SerdeBincode, Unit},
-    Database, RoTxn, RwTxn,
-};
+use std::collections::VecDeque;
+
+use heed::{types::SerdeBincode, Database, RoTxn, RwTxn};
 use rustreexo::accumulator::pollard::Pollard;
 
 use crate::types::{AuthorizedTransaction, OutPoint, Txid};
@@ -20,7 +19,7 @@ pub enum Error {
 pub struct MemPool {
     pub transactions:
         Database<SerdeBincode<Txid>, SerdeBincode<AuthorizedTransaction>>,
-    pub spent_utxos: Database<SerdeBincode<OutPoint>, Unit>,
+    pub spent_utxos: Database<SerdeBincode<OutPoint>, SerdeBincode<Txid>>,
 }
 
 impl MemPool {
@@ -40,30 +39,38 @@ impl MemPool {
         txn: &mut RwTxn,
         transaction: &AuthorizedTransaction,
     ) -> Result<(), Error> {
-        println!(
-            "adding transaction {} to mempool",
-            transaction.transaction.txid()
-        );
+        let txid = transaction.transaction.txid();
+        tracing::debug!("adding transaction {txid} to mempool");
         for (outpoint, _) in &transaction.transaction.inputs {
             if self.spent_utxos.get(txn, outpoint)?.is_some() {
                 return Err(Error::UtxoDoubleSpent);
             }
-            self.spent_utxos.put(txn, outpoint, &())?;
+            self.spent_utxos.put(txn, outpoint, &txid)?;
         }
-        self.transactions.put(
-            txn,
-            &transaction.transaction.txid(),
-            transaction,
-        )?;
+        self.transactions.put(txn, &txid, transaction)?;
         Ok(())
     }
 
-    pub fn delete(&self, rwtxn: &mut RwTxn, txid: &Txid) -> Result<(), Error> {
-        if let Some(tx) = self.transactions.get(rwtxn, txid)? {
-            for (outpoint, _) in &tx.transaction.inputs {
-                self.spent_utxos.delete(rwtxn, outpoint)?;
+    pub fn delete(&self, rwtxn: &mut RwTxn, txid: Txid) -> Result<(), Error> {
+        let mut pending_deletes = VecDeque::from([txid]);
+        while let Some(txid) = pending_deletes.pop_front() {
+            if let Some(tx) = self.transactions.get(rwtxn, &txid)? {
+                for (outpoint, _) in &tx.transaction.inputs {
+                    self.spent_utxos.delete(rwtxn, outpoint)?;
+                }
+                self.transactions.delete(rwtxn, &txid)?;
+                for vout in 0..tx.transaction.outputs.len() {
+                    let outpoint = OutPoint::Regular {
+                        txid,
+                        vout: vout as u32,
+                    };
+                    if let Some(child_txid) =
+                        self.spent_utxos.get(rwtxn, &outpoint)?
+                    {
+                        pending_deletes.push_back(child_txid);
+                    }
+                }
             }
-            self.transactions.delete(rwtxn, txid)?;
         }
         Ok(())
     }
