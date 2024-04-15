@@ -11,6 +11,7 @@ use thunder::{
     wallet::{self, Wallet},
 };
 use tokio::sync::RwLock as TokioRwLock;
+use tokio_util::task::LocalPoolHandle;
 
 use crate::cli::Config;
 
@@ -40,6 +41,7 @@ pub struct App {
     pub utxos: Arc<RwLock<HashMap<OutPoint, Output>>>,
     pub transaction: Arc<RwLock<Transaction>>,
     pub runtime: Arc<tokio::runtime::Runtime>,
+    pub local_pool: LocalPoolHandle,
 }
 
 impl App {
@@ -61,12 +63,14 @@ impl App {
             &config.main_password,
         )?;
         let rt_guard = runtime.enter();
+        let local_pool = LocalPoolHandle::new(1);
         let node = Node::new(
             &config.datadir,
             config.net_addr,
             config.main_addr,
             &config.main_user,
             &config.main_password,
+            local_pool.clone(),
         )?;
         drop(rt_guard);
         let utxos = {
@@ -90,6 +94,7 @@ impl App {
                 outputs: vec![],
             })),
             runtime: Arc::new(runtime),
+            local_pool,
         })
     }
 

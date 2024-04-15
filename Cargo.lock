@@ -565,7 +565,7 @@ dependencies = [
 [[package]]
 name = "bip300301"
 version = "0.1.1"
-source = "git+https://github.com/Ash-L2L/bip300301.git?rev=43ba4d7bee075ecd2504f87b5ec2a5ba3b10cd3b#43ba4d7bee075ecd2504f87b5ec2a5ba3b10cd3b"
+source = "git+https://github.com/Ash-L2L/bip300301.git?rev=d1da609b4c77d2b53bea2c8e922891b83612a03b#d1da609b4c77d2b53bea2c8e922891b83612a03b"
 dependencies = [
  "base64 0.21.7",
  "bitcoin",
@@ -1596,6 +1596,12 @@ dependencies = [
  "event-listener 5.2.0",
  "pin-project-lite",
 ]
+
+[[package]]
+name = "fallible-iterator"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649"
 
 [[package]]
 name = "fastrand"
@@ -4205,7 +4211,7 @@ dependencies = [
 
 [[package]]
 name = "thunder"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "bincode",
@@ -4217,6 +4223,7 @@ dependencies = [
  "bytes",
  "ed25519-dalek",
  "ed25519-dalek-bip32",
+ "fallible-iterator",
  "futures",
  "heed",
  "hex",
@@ -4233,12 +4240,13 @@ dependencies = [
  "tiny-bip39",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "tracing",
 ]
 
 [[package]]
 name = "thunder_app"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -4264,13 +4272,14 @@ dependencies = [
  "thunder_app_rpc_api",
  "tiny-bip39",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]
 
 [[package]]
 name = "thunder_app_cli"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "bip300301",
@@ -4283,7 +4292,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_app_rpc_api"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "bip300301",
  "jsonrpsee",
@@ -4428,6 +4437,8 @@ dependencies = [
  "futures-core",
  "futures-io",
  "futures-sink",
+ "futures-util",
+ "hashbrown",
  "pin-project-lite",
  "tokio",
  "tracing",

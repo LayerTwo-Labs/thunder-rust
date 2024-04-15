@@ -87,7 +87,10 @@ impl RpcServer for RpcServerImpl {
 
     async fn mine(&self, fee: Option<u64>) -> RpcResult<()> {
         let fee = fee.map(bip300301::bitcoin::Amount::from_sat);
-        self.app.mine(fee).await.map_err(convert_app_err)
+        self.app.local_pool.spawn_pinned({
+            let app = self.app.clone();
+            move || async move { app.mine(fee).await.map_err(convert_app_err) }
+        }).await.unwrap()
     }
 
     async fn remove_from_mempool(&self, txid: Txid) -> RpcResult<()> {

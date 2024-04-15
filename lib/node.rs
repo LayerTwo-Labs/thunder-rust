@@ -7,10 +7,13 @@ use std::{
 };
 
 use bip300301::bitcoin;
+use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::{stream, StreamExt, TryFutureExt};
+use heed::RwTxn;
 use rustreexo::accumulator::pollard::Pollard;
-use tokio::{spawn, task::JoinHandle};
+use tokio::task::JoinHandle;
 use tokio_stream::StreamNotifyClose;
+use tokio_util::task::LocalPoolHandle;
 
 use crate::{
     archive::{self, Archive},
@@ -50,6 +53,78 @@ pub enum Error {
     Utreexo(String),
 }
 
+async fn connect_tip_(
+    rwtxn: &mut RwTxn<'_, '_>,
+    archive: &Archive,
+    drivechain: &bip300301::Drivechain,
+    mempool: &MemPool,
+    state: &State,
+    header: &Header,
+    body: &Body,
+) -> Result<(), Error> {
+    let last_deposit_block_hash = state.get_last_deposit_block_hash(rwtxn)?;
+    let two_way_peg_data = drivechain
+        .get_two_way_peg_data(header.prev_main_hash, last_deposit_block_hash)
+        .await?;
+    let block_hash = header.hash();
+    let _fees: u64 = state.validate_block(rwtxn, header, body)?;
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        let merkle_root = body.compute_merkle_root();
+        let height = state.get_height(rwtxn)?;
+        let () = state.connect_block(rwtxn, header, body)?;
+        tracing::debug!(%height, %merkle_root, %block_hash,
+                            "connected body")
+    } else {
+        let () = state.connect_block(rwtxn, header, body)?;
+    }
+    let () = state.connect_two_way_peg_data(rwtxn, &two_way_peg_data)?;
+    let () = archive.put_header(rwtxn, header)?;
+    let () = archive.put_body(rwtxn, block_hash, body)?;
+    for transaction in &body.transactions {
+        let () = mempool.delete(rwtxn, transaction.txid())?;
+    }
+    let accumulator = state.get_accumulator(rwtxn)?;
+    let () = mempool.regenerate_proofs(rwtxn, &accumulator)?;
+    Ok(())
+}
+
+async fn disconnect_tip_(
+    rwtxn: &mut RwTxn<'_, '_>,
+    archive: &Archive,
+    drivechain: &bip300301::Drivechain,
+    mempool: &MemPool,
+    state: &State,
+) -> Result<(), Error> {
+    let tip_block_hash = state.get_tip(rwtxn)?;
+    let tip_header = archive.get_header(rwtxn, tip_block_hash)?;
+    let tip_body = archive.get_body(rwtxn, tip_block_hash)?;
+    let height = state.get_height(rwtxn)?;
+    let two_way_peg_data = {
+        let start_block_hash = state
+            .deposit_blocks
+            .rev_iter(rwtxn)?
+            .transpose_into_fallible()
+            .find_map(|(_, (block_hash, applied_height))| {
+                if applied_height < height {
+                    Ok(Some(block_hash))
+                } else {
+                    Ok(None)
+                }
+            })?;
+        drivechain
+            .get_two_way_peg_data(tip_header.prev_main_hash, start_block_hash)
+            .await?
+    };
+    let () = state.disconnect_two_way_peg_data(rwtxn, &two_way_peg_data)?;
+    let () = state.disconnect_tip(rwtxn, &tip_header, &tip_body)?;
+    for transaction in tip_body.authorized_transactions().iter().rev() {
+        mempool.put(rwtxn, transaction)?;
+    }
+    let accumulator = state.get_accumulator(rwtxn)?;
+    mempool.regenerate_proofs(rwtxn, &accumulator)?;
+    Ok(())
+}
+
 async fn submit_block(
     env: &heed::Env,
     archive: &Archive,
@@ -59,46 +134,64 @@ async fn submit_block(
     header: &Header,
     body: &Body,
 ) -> Result<(), Error> {
-    let last_deposit_block_hash = {
-        let txn = env.read_txn()?;
-        state.get_last_deposit_block_hash(&txn)?
-    };
-    let bundle = {
-        let two_way_peg_data = drivechain
-            .get_two_way_peg_data(
-                header.prev_main_hash,
-                last_deposit_block_hash,
-            )
-            .await?;
-        let mut txn = env.write_txn()?;
-        let height = archive.get_height(&txn)?;
-        state.validate_body(&txn, &header.roots, body, height)?;
-        if tracing::enabled!(tracing::Level::DEBUG) {
-            let block_hash = header.hash();
-            let merkle_root = body.compute_merkle_root();
-            state.connect_body(&mut txn, body)?;
-            tracing::debug!(%height, %merkle_root, %block_hash,
-                                "connected body")
-        } else {
-            state.connect_body(&mut txn, body)?;
-        }
-        state.connect_two_way_peg_data(&mut txn, &two_way_peg_data, height)?;
-        let bundle = state.get_pending_withdrawal_bundle(&txn)?;
-        archive.append_header(&mut txn, header)?;
-        archive.put_body(&mut txn, header, body)?;
-        for transaction in &body.transactions {
-            mempool.delete(&mut txn, &transaction.txid())?;
-        }
-        let accumulator = state.get_accumulator(&txn)?;
-        mempool.regenerate_proofs(&mut txn, &accumulator)?;
-        txn.commit()?;
-        bundle
-    };
-    if let Some(bundle) = bundle {
+    let mut rwtxn = env.write_txn()?;
+    let () = connect_tip_(
+        &mut rwtxn, archive, drivechain, mempool, state, header, body,
+    )
+    .await?;
+    let bundle = state.get_pending_withdrawal_bundle(&rwtxn)?;
+    rwtxn.commit()?;
+    if let Some((bundle, _)) = bundle {
         let () = drivechain
             .broadcast_withdrawal_bundle(bundle.transaction)
             .await?;
     }
+    Ok(())
+}
+
+/// Re-org to the specified tip. The new tip block and all ancestor blocks
+/// must exist in the node's archive.
+async fn reorg_to_tip(
+    env: &heed::Env,
+    archive: &Archive,
+    drivechain: &bip300301::Drivechain,
+    mempool: &MemPool,
+    state: &State,
+    new_tip: BlockHash,
+) -> Result<(), Error> {
+    let mut rwtxn = env.write_txn()?;
+    let tip = state.get_tip(&rwtxn)?;
+    let tip_height = state.get_height(&rwtxn)?;
+    let common_ancestor = archive.last_common_ancestor(&rwtxn, tip, new_tip)?;
+    // Check that all necessary bodies exist before disconnecting tip
+    let blocks_to_apply: Vec<(Header, Body)> = archive
+        .ancestors(&rwtxn, tip)
+        .take_while(|block_hash| Ok(*block_hash != tip))
+        .map(|block_hash| {
+            let header = archive.get_header(&rwtxn, block_hash)?;
+            let body = archive.get_body(&rwtxn, block_hash)?;
+            Ok((header, body))
+        })
+        .collect()?;
+    // Disconnect tip until common ancestor is reached
+    let common_ancestor_height = archive.get_height(&rwtxn, common_ancestor)?;
+    for _ in 0..tip_height - common_ancestor_height {
+        let () =
+            disconnect_tip_(&mut rwtxn, archive, drivechain, mempool, state)
+                .await?;
+    }
+    let tip = state.get_tip(&rwtxn)?;
+    assert_eq!(tip, common_ancestor);
+    // Apply blocks until new tip is reached
+    for (header, body) in blocks_to_apply.into_iter().rev() {
+        let () = connect_tip_(
+            &mut rwtxn, archive, drivechain, mempool, state, &header, &body,
+        )
+        .await?;
+    }
+    let tip = state.get_tip(&rwtxn)?;
+    assert_eq!(tip, new_tip);
+    rwtxn.commit()?;
     Ok(())
 }
 
@@ -125,42 +218,99 @@ impl NetTask {
     ) -> Result<(), Error> {
         match (req, resp) {
             (
-                req @ PeerRequest::GetBlock { height },
+                req @ PeerRequest::GetBlock { block_hash },
                 ref resp @ PeerResponse::Block {
                     ref header,
                     ref body,
                 },
             ) => {
-                let (tip_hash, tip_height) = {
+                let tip = {
                     let rotxn = ctxt.env.read_txn()?;
-                    let tip_height = ctxt.archive.get_height(&rotxn)?;
-                    let tip_hash = ctxt.archive.get_best_hash(&rotxn)?;
-                    (tip_hash, tip_height)
+                    ctxt.state.get_tip(&rotxn)?
                 };
-                if height != tip_height + 1 {
+                if header.hash() != block_hash {
+                    // Invalid response
+                    tracing::warn!(%addr, ?req, ?resp,"Invalid response from peer; unexpected block hash");
+                    let () = ctxt.net.remove_active_peer(addr);
                     return Ok(());
                 }
-                if header.prev_side_hash != tip_hash {
-                    tracing::warn!(%addr, ?req, ?resp, "Cannot handle reorg");
-                    return Ok(());
+                if header.prev_side_hash == tip {
+                    submit_block(
+                        &ctxt.env,
+                        &ctxt.archive,
+                        &ctxt.drivechain,
+                        &ctxt.mempool,
+                        &ctxt.state,
+                        header,
+                        body,
+                    )
+                    .await
+                } else {
+                    let mut rwtxn = ctxt.env.write_txn()?;
+                    let () = ctxt.archive.put_header(&mut rwtxn, header)?;
+                    let () =
+                        ctxt.archive.put_body(&mut rwtxn, block_hash, body)?;
+                    rwtxn.commit()?;
+                    Ok(())
                 }
-                submit_block(
-                    &ctxt.env,
-                    &ctxt.archive,
-                    &ctxt.drivechain,
-                    &ctxt.mempool,
-                    &ctxt.state,
-                    header,
-                    body,
-                )
-                .await
             }
             (
-                PeerRequest::GetBlock { height: req_height },
-                PeerResponse::NoBlock {
-                    height: resp_height,
+                PeerRequest::GetBlock {
+                    block_hash: req_block_hash,
                 },
-            ) if req_height == resp_height => Ok(()),
+                PeerResponse::NoBlock {
+                    block_hash: resp_block_hash,
+                },
+            ) if req_block_hash == resp_block_hash => Ok(()),
+            (
+                req @ PeerRequest::GetHeaders { end },
+                PeerResponse::Headers(headers),
+            ) => {
+                // check that the end header is as requested
+                if let Some(end_header) = headers.last() {
+                    if end_header.hash() != end {
+                        tracing::warn!(%addr, ?req, ?end_header,"Invalid response from peer; unexpected end header");
+                        let () = ctxt.net.remove_active_peer(addr);
+                        return Ok(());
+                    }
+                };
+                // check that headers are sequential based on prev_side_hash
+                let mut prev_side_hash = BlockHash::default();
+                for header in &headers {
+                    if header.prev_side_hash != prev_side_hash {
+                        tracing::warn!(%addr, ?req, ?headers,"Invalid response from peer; non-sequential headers");
+                        let () = ctxt.net.remove_active_peer(addr);
+                        return Ok(());
+                    }
+                    prev_side_hash = header.hash();
+                }
+                // Store new headers
+                let mut rwtxn = ctxt.env.write_txn()?;
+                for header in headers {
+                    let block_hash = header.hash();
+                    if ctxt
+                        .archive
+                        .try_get_header(&rwtxn, block_hash)?
+                        .is_none()
+                    {
+                        if ctxt
+                            .archive
+                            .try_get_header(&rwtxn, header.prev_side_hash)?
+                            .is_some()
+                        {
+                            ctxt.archive.put_header(&mut rwtxn, &header)?;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                rwtxn.commit()?;
+                Ok(())
+            }
+            (
+                PeerRequest::GetHeaders { end },
+                PeerResponse::NoHeader { block_hash },
+            ) if end == block_hash => Ok(()),
             (
                 PeerRequest::PushTransaction { transaction: _ },
                 PeerResponse::TransactionAccepted(_),
@@ -171,6 +321,7 @@ impl NetTask {
             ) => Ok(()),
             (
                 req @ (PeerRequest::GetBlock { .. }
+                | PeerRequest::GetHeaders { .. }
                 | PeerRequest::Heartbeat(_)
                 | PeerRequest::PushTransaction { .. }),
                 resp,
@@ -220,6 +371,17 @@ impl NetTask {
                             tracing::error!(%addr, %err, "Peer connection error");
                             let () = self.ctxt.net.remove_active_peer(addr);
                         }
+                        PeerConnectionInfo::NewTipReady(new_tip) => {
+                            let () = reorg_to_tip(
+                                &self.ctxt.env,
+                                &self.ctxt.archive,
+                                &self.ctxt.drivechain,
+                                &self.ctxt.mempool,
+                                &self.ctxt.state,
+                                new_tip,
+                            )
+                            .await?;
+                        }
                         PeerConnectionInfo::NewTransaction(mut new_tx) => {
                             let mut rwtxn = self.ctxt.env.write_txn()?;
                             let () = self.ctxt.state.regenerate_proof(
@@ -253,6 +415,7 @@ pub struct Node {
     archive: Archive,
     drivechain: bip300301::Drivechain,
     env: heed::Env,
+    _local_pool: LocalPoolHandle,
     mempool: MemPool,
     net: Net,
     net_task: Arc<JoinHandle<()>>,
@@ -266,6 +429,7 @@ impl Node {
         main_addr: SocketAddr,
         user: &str,
         password: &str,
+        local_pool: LocalPoolHandle,
     ) -> Result<Self, Error> {
         let env_path = datadir.join("data.mdb");
         // let _ = std::fs::remove_dir_all(&env_path);
@@ -289,7 +453,7 @@ impl Node {
         )?;
         let (net, peer_info_rx) =
             Net::new(&env, archive.clone(), state.clone(), bind_addr)?;
-        let net_task = spawn({
+        let net_task = local_pool.spawn_pinned({
             let ctxt = NetTaskContext {
                 env: env.clone(),
                 archive: archive.clone(),
@@ -298,14 +462,17 @@ impl Node {
                 net: net.clone(),
                 state: state.clone(),
             };
-            NetTask { ctxt, peer_info_rx }
-                .run()
-                .unwrap_or_else(|err| tracing::error!(%err))
+            || {
+                NetTask { ctxt, peer_info_rx }
+                    .run()
+                    .unwrap_or_else(|err| tracing::error!(%err))
+            }
         });
         Ok(Self {
             archive,
             drivechain,
             env,
+            _local_pool: local_pool,
             mempool,
             net,
             net_task: Arc::new(net_task),
@@ -319,12 +486,12 @@ impl Node {
 
     pub fn get_height(&self) -> Result<u32, Error> {
         let txn = self.env.read_txn()?;
-        Ok(self.archive.get_height(&txn)?)
+        Ok(self.state.get_height(&txn)?)
     }
 
     pub fn get_best_hash(&self) -> Result<BlockHash, Error> {
         let txn = self.env.read_txn()?;
-        Ok(self.archive.get_best_hash(&txn)?)
+        Ok(self.state.get_tip(&txn)?)
     }
 
     pub async fn get_best_parentchain_hash(
@@ -388,14 +555,49 @@ impl Node {
         Ok(())
     }
 
-    pub fn get_header(&self, height: u32) -> Result<Option<Header>, Error> {
+    pub fn try_get_header(
+        &self,
+        block_hash: BlockHash,
+    ) -> Result<Option<Header>, Error> {
         let txn = self.env.read_txn()?;
-        Ok(self.archive.get_header(&txn, height)?)
+        Ok(self.archive.try_get_header(&txn, block_hash)?)
     }
 
-    pub fn get_body(&self, height: u32) -> Result<Option<Body>, Error> {
+    pub fn get_header(&self, block_hash: BlockHash) -> Result<Header, Error> {
         let txn = self.env.read_txn()?;
-        Ok(self.archive.get_body(&txn, height)?)
+        Ok(self.archive.get_header(&txn, block_hash)?)
+    }
+
+    /// Get the block hash at the specified height in the current chain,
+    /// if it exists
+    pub fn try_get_block_hash(
+        &self,
+        height: u32,
+    ) -> Result<Option<BlockHash>, Error> {
+        let rotxn = self.env.read_txn()?;
+        let tip = self.state.get_tip(&rotxn)?;
+        let tip_height = self.state.get_height(&rotxn)?;
+        if tip_height >= height {
+            self.archive
+                .ancestors(&rotxn, tip)
+                .nth((tip_height - height) as usize)
+                .map_err(Error::from)
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn try_get_body(
+        &self,
+        block_hash: BlockHash,
+    ) -> Result<Option<Body>, Error> {
+        let txn = self.env.read_txn()?;
+        Ok(self.archive.try_get_body(&txn, block_hash)?)
+    }
+
+    pub fn get_body(&self, block_hash: BlockHash) -> Result<Body, Error> {
+        let txn = self.env.read_txn()?;
+        Ok(self.archive.get_body(&txn, block_hash)?)
     }
 
     pub fn get_all_transactions(
@@ -427,12 +629,12 @@ impl Node {
             if !spent_utxos.is_disjoint(&inputs) {
                 println!("UTXO double spent");
                 self.mempool
-                    .delete(&mut txn, &transaction.transaction.txid())?;
+                    .delete(&mut txn, transaction.transaction.txid())?;
                 continue;
             }
             if self.state.validate_transaction(&txn, transaction).is_err() {
                 self.mempool
-                    .delete(&mut txn, &transaction.transaction.txid())?;
+                    .delete(&mut txn, transaction.transaction.txid())?;
                 continue;
             }
             let filled_transaction = self
@@ -461,12 +663,36 @@ impl Node {
         &self,
     ) -> Result<Option<WithdrawalBundle>, Error> {
         let txn = self.env.read_txn()?;
-        Ok(self.state.get_pending_withdrawal_bundle(&txn)?)
+        let bundle = self
+            .state
+            .get_pending_withdrawal_bundle(&txn)?
+            .map(|(bundle, _)| bundle);
+        Ok(bundle)
     }
 
     pub fn remove_from_mempool(&self, txid: Txid) -> Result<(), Error> {
         let mut rwtxn = self.env.write_txn()?;
-        let () = self.mempool.delete(&mut rwtxn, &txid)?;
+        let () = self.mempool.delete(&mut rwtxn, txid)?;
+        rwtxn.commit()?;
+        Ok(())
+    }
+
+    pub async fn connect_tip(
+        &self,
+        header: &Header,
+        body: &Body,
+    ) -> Result<(), Error> {
+        let mut rwtxn = self.env.write_txn()?;
+        let () = connect_tip_(
+            &mut rwtxn,
+            &self.archive,
+            &self.drivechain,
+            &self.mempool,
+            &self.state,
+            header,
+            body,
+        )
+        .await?;
         rwtxn.commit()?;
         Ok(())
     }
@@ -492,6 +718,20 @@ impl Node {
             body,
         )
         .await
+    }
+
+    pub async fn disconnect_tip(&self) -> Result<(), Error> {
+        let mut rwtxn = self.env.write_txn()?;
+        let () = disconnect_tip_(
+            &mut rwtxn,
+            &self.archive,
+            &self.drivechain,
+            &self.mempool,
+            &self.state,
+        )
+        .await?;
+        rwtxn.commit()?;
+        Ok(())
     }
 }
 

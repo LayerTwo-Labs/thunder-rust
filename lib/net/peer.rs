@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 
+use fallible_iterator::FallibleIterator;
 use futures::{channel::mpsc, stream, StreamExt, TryFutureExt, TryStreamExt};
 use quinn::{Endpoint, SendStream};
 use serde::{Deserialize, Serialize};
@@ -13,7 +14,7 @@ use tokio_stream::wrappers::IntervalStream;
 use crate::{
     archive::{self, Archive},
     state::{self, State},
-    types::{AuthorizedTransaction, Body, Header, Txid},
+    types::{AuthorizedTransaction, BlockHash, Body, Header, Txid},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -34,6 +35,8 @@ pub enum ConnectionError {
     ReadToEnd(#[from] quinn::ReadToEndError),
     #[error("send datagram error")]
     SendDatagram(#[from] quinn::SendDatagramError),
+    #[error("send forward request error")]
+    SendForwardRequest,
     #[error("send info error")]
     SendInfo,
     #[error("state error")]
@@ -48,15 +51,32 @@ impl From<mpsc::TrySendError<Info>> for ConnectionError {
     }
 }
 
+impl From<mpsc::TrySendError<Request>> for ConnectionError {
+    fn from(_: mpsc::TrySendError<Request>) -> Self {
+        Self::SendForwardRequest
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct PeerState {
     block_height: u32,
+    tip: BlockHash,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Response {
-    Block { header: Header, body: Body },
-    NoBlock { height: u32 },
+    Block {
+        header: Header,
+        body: Body,
+    },
+    /// Headers, from start to end
+    Headers(Vec<Header>),
+    NoBlock {
+        block_hash: BlockHash,
+    },
+    NoHeader {
+        block_hash: BlockHash,
+    },
     TransactionAccepted(Txid),
     TransactionRejected(Txid),
 }
@@ -64,14 +84,24 @@ pub enum Response {
 #[derive(Debug, Deserialize, Serialize)]
 pub enum Request {
     Heartbeat(PeerState),
-    GetBlock { height: u32 },
-    PushTransaction { transaction: AuthorizedTransaction },
+    GetBlock {
+        block_hash: BlockHash,
+    },
+    /// Request headers up to [`end`]
+    GetHeaders {
+        end: BlockHash,
+    },
+    PushTransaction {
+        transaction: AuthorizedTransaction,
+    },
 }
 
 #[must_use]
 #[derive(Debug)]
 pub enum Info {
     Error(ConnectionError),
+    /// New tip ready (body and header exist in archive)
+    NewTipReady(BlockHash),
     NewTransaction(AuthorizedTransaction),
     Response(Response, Request),
 }
@@ -157,6 +187,8 @@ struct ConnectionTask {
     ctxt: ConnectionContext,
     info_tx: mpsc::UnboundedSender<Info>,
     peer_state: Option<PeerState>,
+    /// Push a request to forward to the peer
+    forward_request_tx: mpsc::UnboundedSender<Request>,
     /// Receive requests to forward to the peer
     forward_request_rx: mpsc::UnboundedReceiver<Request>,
 }
@@ -188,18 +220,64 @@ impl ConnectionTask {
 
     async fn handle_heartbeat(
         ctxt: &ConnectionContext,
-        conn: &Connection,
         info_tx: &mpsc::UnboundedSender<Info>,
+        forward_request_tx: &mpsc::UnboundedSender<Request>,
         peer_state: &PeerState,
     ) -> Result<(), ConnectionError> {
-        let height = {
+        let (tip, tip_height) = {
             let rotxn = ctxt.env.read_txn()?;
-            ctxt.archive.get_height(&rotxn)
-        }?;
+            let tip = ctxt.state.get_tip(&rotxn)?;
+            let tip_height = ctxt.state.get_height(&rotxn)?;
+            (tip, tip_height)
+        };
         let peer_height = peer_state.block_height;
-        if peer_height > height {
-            let request = Request::GetBlock { height: height + 1 };
-            Self::send_request(conn, info_tx, request).await
+        if peer_height > tip_height {
+            let header_exists = {
+                let rotxn = ctxt.env.read_txn().unwrap();
+                ctxt.archive
+                    .try_get_header(&rotxn, peer_state.tip)
+                    .unwrap()
+                    .is_some()
+            };
+            if header_exists {
+                let missing_bodies: Vec<_> = {
+                    let rotxn = ctxt.env.read_txn()?;
+                    let last_common_ancestor = ctxt
+                        .archive
+                        .last_common_ancestor(&rotxn, tip, peer_state.tip)?;
+                    ctxt.archive
+                        .ancestors(&rotxn, peer_state.tip)
+                        .take_while(|block_hash| {
+                            Ok(*block_hash != last_common_ancestor)
+                        })
+                        .filter_map(|block_hash| {
+                            match ctxt
+                                .archive
+                                .try_get_body(&rotxn, block_hash)?
+                            {
+                                Some(_) => Ok(None),
+                                None => Ok(Some(block_hash)),
+                            }
+                        })
+                        .collect()?
+                };
+                if missing_bodies.is_empty() {
+                    let info = Info::NewTipReady(peer_state.tip);
+                    info_tx.unbounded_send(info)?;
+                } else {
+                    // Request missing bodies
+                    missing_bodies.into_iter().try_for_each(|block_hash| {
+                        let request = Request::GetBlock { block_hash };
+                        forward_request_tx.unbounded_send(request)
+                    })?;
+                }
+            } else {
+                // Request headers
+                let request = Request::GetHeaders {
+                    end: peer_state.tip,
+                };
+                forward_request_tx.unbounded_send(request)?;
+            }
         }
         Ok(())
     }
@@ -207,19 +285,47 @@ impl ConnectionTask {
     async fn handle_get_block(
         ctxt: &ConnectionContext,
         response_tx: SendStream,
-        height: u32,
+        block_hash: BlockHash,
     ) -> Result<(), ConnectionError> {
         let (header, body) = {
             let rotxn = ctxt.env.read_txn()?;
-            let header = ctxt.archive.get_header(&rotxn, height)?;
-            let body = ctxt.archive.get_body(&rotxn, height)?;
+            let header = ctxt.archive.try_get_header(&rotxn, block_hash)?;
+            let body = ctxt.archive.try_get_body(&rotxn, block_hash)?;
             (header, body)
         };
         let resp = match (header, body) {
             (Some(header), Some(body)) => Response::Block { header, body },
-            (_, _) => Response::NoBlock { height },
+            (_, _) => Response::NoBlock { block_hash },
         };
         Self::send_response(response_tx, resp).await
+    }
+
+    async fn handle_get_headers(
+        ctxt: &ConnectionContext,
+        response_tx: SendStream,
+        end: BlockHash,
+    ) -> Result<(), ConnectionError> {
+        // FIXME
+        let response = {
+            let rotxn = ctxt.env.read_txn()?;
+            if ctxt.archive.try_get_header(&rotxn, end)?.is_some() {
+                let mut headers: Vec<Header> = ctxt
+                    .archive
+                    .ancestors(&rotxn, end)
+                    .take_while(|block_hash| {
+                        Ok(*block_hash != BlockHash::default())
+                    })
+                    .map(|block_hash| {
+                        ctxt.archive.get_header(&rotxn, block_hash)
+                    })
+                    .collect()?;
+                headers.reverse();
+                Response::Headers(headers)
+            } else {
+                Response::NoHeader { block_hash: end }
+            }
+        };
+        Self::send_response(response_tx, response).await
     }
 
     async fn handle_push_tx(
@@ -256,8 +362,8 @@ impl ConnectionTask {
 
     async fn handle_request(
         ctxt: &ConnectionContext,
-        conn: &Connection,
         info_tx: &mpsc::UnboundedSender<Info>,
+        forward_request_tx: &mpsc::UnboundedSender<Request>,
         peer_state: &mut Option<PeerState>,
         response_tx: SendStream,
         request: Request,
@@ -266,16 +372,19 @@ impl ConnectionTask {
             Request::Heartbeat(new_peer_state) => {
                 let () = Self::handle_heartbeat(
                     ctxt,
-                    conn,
                     info_tx,
+                    forward_request_tx,
                     &new_peer_state,
                 )
                 .await?;
                 *peer_state = Some(new_peer_state);
                 Ok(())
             }
-            Request::GetBlock { height } => {
-                Self::handle_get_block(ctxt, response_tx, height).await
+            Request::GetBlock { block_hash } => {
+                Self::handle_get_block(ctxt, response_tx, block_hash).await
+            }
+            Request::GetHeaders { end } => {
+                Self::handle_get_headers(ctxt, response_tx, end).await
             }
             Request::PushTransaction { transaction } => {
                 Self::handle_push_tx(ctxt, info_tx, response_tx, transaction)
@@ -334,20 +443,23 @@ impl ConnectionTask {
                     });
                 }
                 MailboxItem::Heartbeat => {
-                    let tip_height = {
+                    let (tip, tip_height) = {
                         let rotxn = self.ctxt.env.read_txn()?;
-                        self.ctxt.archive.get_height(&rotxn)?
+                        let tip = self.ctxt.state.get_tip(&rotxn)?;
+                        let tip_height = self.ctxt.state.get_height(&rotxn)?;
+                        (tip, tip_height)
                     };
                     let state_msg = PeerState {
                         block_height: tip_height,
+                        tip,
                     };
                     let () = self.connection.heart_beat(&state_msg)?;
                 }
                 MailboxItem::Request((request, response_tx)) => {
                     let () = Self::handle_request(
                         &self.ctxt,
-                        &self.connection,
                         &self.info_tx,
+                        &self.forward_request_tx,
                         &mut self.peer_state,
                         response_tx,
                         request,
@@ -381,12 +493,14 @@ pub fn handle(
     let (info_tx, info_rx) = mpsc::unbounded();
     let connection_task = {
         let info_tx = info_tx.clone();
+        let forward_request_tx = forward_request_tx.clone();
         move || async move {
             let connection_task = ConnectionTask {
                 connection,
                 ctxt,
                 info_tx,
                 peer_state: None,
+                forward_request_tx,
                 forward_request_rx,
             };
             connection_task.run().await
@@ -417,6 +531,7 @@ pub fn connect(
     let (info_tx, info_rx) = mpsc::unbounded();
     let connection_task = {
         let info_tx = info_tx.clone();
+        let forward_request_tx = forward_request_tx.clone();
         move || async move {
             let connection = Connection::new(&endpoint, addr).await?;
             let connection_task = ConnectionTask {
@@ -424,6 +539,7 @@ pub fn connect(
                 ctxt,
                 info_tx,
                 peer_state: None,
+                forward_request_tx,
                 forward_request_rx,
             };
             connection_task.run().await

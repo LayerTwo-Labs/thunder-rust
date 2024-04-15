@@ -30,7 +30,9 @@ where
     Deserialize,
     Eq,
     Hash,
+    Ord,
     PartialEq,
+    PartialOrd,
     Serialize,
 )]
 pub enum OutPoint {
@@ -208,14 +210,14 @@ impl FilledTransaction {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AuthorizedTransaction {
     pub transaction: Transaction,
     /// Authorization is called witness in Bitcoin.
     pub authorizations: Vec<Authorization>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Body {
     pub coinbase: Vec<Output>,
     pub transactions: Vec<Transaction>,
@@ -244,6 +246,24 @@ impl Body {
             transactions,
             authorizations,
         }
+    }
+
+    pub fn authorized_transactions(&self) -> Vec<AuthorizedTransaction> {
+        let mut authorizations_iter = self.authorizations.iter();
+        self.transactions
+            .iter()
+            .map(|tx| {
+                let mut authorizations = Vec::with_capacity(tx.inputs.len());
+                for _ in 0..tx.inputs.len() {
+                    let auth = authorizations_iter.next().unwrap();
+                    authorizations.push(auth.clone());
+                }
+                AuthorizedTransaction {
+                    transaction: tx.clone(),
+                    authorizations,
+                }
+            })
+            .collect()
     }
 
     pub fn compute_merkle_root(&self) -> MerkleRoot {
