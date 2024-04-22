@@ -1,9 +1,11 @@
 use std::{collections::HashSet, net::SocketAddr};
 
+use bip300301::bitcoin::{self, hashes::Hash};
 use fallible_iterator::FallibleIterator;
 use futures::{channel::mpsc, stream, StreamExt, TryFutureExt, TryStreamExt};
 use quinn::{Endpoint, SendStream};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use tokio::{
     spawn,
     task::{JoinHandle, JoinSet},
@@ -17,7 +19,19 @@ use crate::{
     types::{AuthorizedTransaction, BlockHash, Body, Header, Txid},
 };
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Error)]
+pub enum BanReason {
+    #[error("BMM verification failed for block {0}")]
+    BmmVerificationFailed(BlockHash),
+    #[error("Incorrect total work for block {block_hash}: {total_work:?}")]
+    IncorrectTotalWork {
+        block_hash: BlockHash,
+        total_work: Option<bitcoin::Work>,
+    },
+}
+
+#[must_use]
+#[derive(Debug, Error)]
 pub enum ConnectionError {
     #[error("archive error")]
     Archive(#[from] archive::Error),
@@ -31,6 +45,8 @@ pub enum ConnectionError {
     HeartbeatTimeout,
     #[error("heed error")]
     Heed(#[from] heed::Error),
+    #[error("peer should be banned; {0}")]
+    PeerBan(#[from] BanReason),
     #[error("read to end error")]
     ReadToEnd(#[from] quinn::ReadToEndError),
     #[error("send datagram error")]
@@ -61,6 +77,7 @@ impl From<mpsc::TrySendError<Request>> for ConnectionError {
 pub struct PeerState {
     block_height: u32,
     tip: BlockHash,
+    total_work: Option<bitcoin::Work>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -118,7 +135,11 @@ impl Request {
 #[derive(Debug)]
 pub enum Info {
     Error(ConnectionError),
-    /// New tip ready (body and header exist in archive)
+    /// Need BMM verification for the specified blocks
+    NeedBmmVerification(Vec<BlockHash>),
+    /// Need Mainchain ancestors for the specified block hash
+    NeedMainchainAncestors(bitcoin::BlockHash),
+    /// New tip ready (body and header exist in archive, BMM verified)
     NewTipReady(BlockHash),
     NewTransaction(AuthorizedTransaction),
     Response(Response, Request),
@@ -243,6 +264,7 @@ impl ConnectionTask {
     /// * If the header does not exist, request it
     /// * Verify height of the new tip.
     /// * If the previous mainchain header does not exist, request it
+    /// * Verify PoW
     /// * Verify BMM
     /// * If ancestor bodies do not exist, request them
     /// * Attempt to apply the new tip
@@ -252,19 +274,34 @@ impl ConnectionTask {
         forward_request_tx: &mpsc::UnboundedSender<Request>,
         peer_state: &PeerState,
     ) -> Result<(), ConnectionError> {
-        let (tip, tip_height) = {
+        let (tip, tip_height, total_work) = {
             let rotxn = ctxt.env.read_txn()?;
             let tip = ctxt.state.get_tip(&rotxn)?;
             let tip_height = ctxt.state.get_height(&rotxn)?;
-            (tip, tip_height)
+            let total_work = match ctxt.archive.try_get_header(&rotxn, tip)? {
+                None => None,
+                Some(header)
+                    if header.prev_main_hash
+                        == bitcoin::BlockHash::all_zeros() =>
+                {
+                    None
+                }
+                Some(header) => Some(
+                    ctxt.archive
+                        .get_total_work(&rotxn, header.prev_main_hash)?,
+                ),
+            };
+            (tip, tip_height, total_work)
         };
         let peer_height = peer_state.block_height;
-        if peer_height > tip_height {
+        if peer_height > tip_height
+            || (peer_height == tip_height && peer_state.total_work > total_work)
+        {
             let header = {
-                let rotxn = ctxt.env.read_txn().unwrap();
+                let rotxn = ctxt.env.read_txn()?;
                 ctxt.archive.try_get_header(&rotxn, peer_state.tip)?
             };
-            let Some(_header) = header else {
+            let Some(header) = header else {
                 // Request headers
                 let request = Request::GetHeaders {
                     // TODO: provide alternative start points
@@ -275,15 +312,68 @@ impl ConnectionTask {
                 forward_request_tx.unbounded_send(request)?;
                 return Ok(());
             };
-            // Verify height of new tip
-            // TODO: Check mainchain headers
-            let missing_bodies: Vec<_> = {
+            // Check mainchain headers
+            let prev_main_header = {
                 let rotxn = ctxt.env.read_txn()?;
-                let last_common_ancestor = ctxt.archive.last_common_ancestor(
+                ctxt.archive
+                    .try_get_main_header(&rotxn, header.prev_main_hash)?
+            };
+            let Some(_prev_main_header) = prev_main_header else {
+                let info = Info::NeedMainchainAncestors(header.prev_main_hash);
+                info_tx.unbounded_send(info)?;
+                return Ok(());
+            };
+            // Check PoW
+            let prev_main_total_work = {
+                let rotxn = ctxt.env.read_txn()?;
+                ctxt.archive.get_total_work(&rotxn, header.prev_main_hash)?
+            };
+            if Some(prev_main_total_work) != peer_state.total_work {
+                let ban_reason = BanReason::IncorrectTotalWork {
+                    block_hash: peer_state.tip,
+                    total_work: peer_state.total_work,
+                };
+                return Err(ConnectionError::PeerBan(ban_reason));
+            }
+            let last_common_ancestor = {
+                let rotxn = ctxt.env.read_txn()?;
+                ctxt.archive.last_common_ancestor(
                     &rotxn,
                     tip,
                     peer_state.tip,
-                )?;
+                )?
+            };
+            // Verify BMM
+            {
+                let rotxn = ctxt.env.read_txn()?;
+                let mut missing_bmm = Vec::new();
+                let mut ancestors =
+                    ctxt.archive.ancestors(&rotxn, peer_state.tip).take_while(
+                        |block_hash| Ok(*block_hash != last_common_ancestor),
+                    );
+                while let Some(block_hash) = ancestors.next()? {
+                    match ctxt
+                        .archive
+                        .try_get_bmm_verification(&rotxn, peer_state.tip)?
+                    {
+                        Some(false) => {
+                            let ban_reason =
+                                BanReason::BmmVerificationFailed(block_hash);
+                            return Err(ConnectionError::PeerBan(ban_reason));
+                        }
+                        Some(true) => (),
+                        None => missing_bmm.push(block_hash),
+                    }
+                }
+                if !missing_bmm.is_empty() {
+                    missing_bmm.reverse();
+                    let info = Info::NeedBmmVerification(missing_bmm);
+                    info_tx.unbounded_send(info)?;
+                    return Ok(());
+                }
+            };
+            let missing_bodies: Vec<_> = {
+                let rotxn = ctxt.env.read_txn()?;
                 ctxt.archive
                     .ancestors(&rotxn, peer_state.tip)
                     .take_while(|block_hash| {
@@ -473,15 +563,35 @@ impl ConnectionTask {
                     });
                 }
                 MailboxItem::Heartbeat => {
-                    let (tip, tip_height) = {
+                    let (tip, tip_height, total_work) = {
                         let rotxn = self.ctxt.env.read_txn()?;
                         let tip = self.ctxt.state.get_tip(&rotxn)?;
                         let tip_height = self.ctxt.state.get_height(&rotxn)?;
-                        (tip, tip_height)
+                        let total_work = match self
+                            .ctxt
+                            .archive
+                            .try_get_header(&rotxn, tip)?
+                        {
+                            None => None,
+                            Some(header)
+                                if header.prev_main_hash
+                                    == bitcoin::BlockHash::all_zeros() =>
+                            {
+                                None
+                            }
+                            Some(header) => {
+                                Some(self.ctxt.archive.get_total_work(
+                                    &rotxn,
+                                    header.prev_main_hash,
+                                )?)
+                            }
+                        };
+                        (tip, tip_height, total_work)
                     };
                     let heartbeat_msg = Request::Heartbeat(PeerState {
                         block_height: tip_height,
                         tip,
+                        total_work,
                     });
                     task_set.spawn({
                         let connection = self.connection.clone();

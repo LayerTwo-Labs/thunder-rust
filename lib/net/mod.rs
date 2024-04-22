@@ -4,6 +4,7 @@ use std::{
     sync::Arc,
 };
 
+use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::{channel::mpsc, StreamExt};
 use heed::{
     types::{OwnedType, SerdeBincode},
@@ -100,29 +101,6 @@ pub struct Net {
 impl Net {
     pub const NUM_DBS: u32 = 1;
 
-    pub fn new(
-        env: &heed::Env,
-        archive: Archive,
-        state: State,
-        bind_addr: SocketAddr,
-    ) -> Result<(Self, PeerInfoRx), Error> {
-        let (server, _) = make_server_endpoint(bind_addr)?;
-        let client = make_client_endpoint("0.0.0.0:0".parse()?)?;
-        let active_peers = Arc::new(RwLock::new(HashMap::new()));
-        let known_peers = env.create_database(Some("known_peers"))?;
-        let (peer_info_tx, peer_info_rx) = mpsc::unbounded();
-        let net = Net {
-            server,
-            client,
-            archive,
-            state,
-            active_peers,
-            peer_info_tx,
-            known_peers,
-        };
-        Ok((net, peer_info_rx))
-    }
-
     fn add_active_peer(
         &self,
         addr: SocketAddr,
@@ -144,6 +122,74 @@ impl Net {
             drop(peer_connection);
             tracing::info!("Disconnected from peer at {addr}")
         }
+    }
+
+    pub fn connect_peer(
+        &self,
+        env: heed::Env,
+        addr: SocketAddr,
+    ) -> Result<(), Error> {
+        if self.active_peers.read().contains_key(&addr) {
+            return Err(Error::AlreadyConnected(addr));
+        }
+        let mut rwtxn = env.write_txn()?;
+        self.known_peers.put(&mut rwtxn, &addr, &())?;
+        rwtxn.commit()?;
+        let connection_ctxt = PeerConnectionCtxt {
+            env,
+            archive: self.archive.clone(),
+            state: self.state.clone(),
+        };
+        let (connection_handle, info_rx) =
+            peer::connect(self.client.clone(), addr, connection_ctxt);
+        tokio::spawn({
+            let info_rx = StreamNotifyClose::new(info_rx)
+                .map(move |info| Ok((addr, info)));
+            let peer_info_tx = self.peer_info_tx.clone();
+            async move {
+                if let Err(_send_err) = info_rx.forward(peer_info_tx).await {
+                    tracing::error!(%addr, "Failed to send peer connection info");
+                }
+            }
+        });
+        self.add_active_peer(addr, connection_handle)?;
+        Ok(())
+    }
+
+    pub fn new(
+        env: &heed::Env,
+        archive: Archive,
+        state: State,
+        bind_addr: SocketAddr,
+    ) -> Result<(Self, PeerInfoRx), Error> {
+        let (server, _) = make_server_endpoint(bind_addr)?;
+        let client = make_client_endpoint("0.0.0.0:0".parse()?)?;
+        let active_peers = Arc::new(RwLock::new(HashMap::new()));
+        let known_peers = env.create_database(Some("known_peers"))?;
+        let (peer_info_tx, peer_info_rx) = mpsc::unbounded();
+        let net = Net {
+            server,
+            client,
+            archive,
+            state,
+            active_peers,
+            peer_info_tx,
+            known_peers,
+        };
+        #[allow(clippy::let_and_return)]
+        let known_peers: Vec<_> = {
+            let rotxn = env.read_txn()?;
+            let known_peers = net
+                .known_peers
+                .iter(&rotxn)?
+                .transpose_into_fallible()
+                .collect()?;
+            known_peers
+        };
+        let () = known_peers.into_iter().try_for_each(|(peer_addr, _)| {
+            net.connect_peer(env.clone(), peer_addr)
+        })?;
+        Ok((net, peer_info_rx))
     }
 
     /// Accept the next incoming connection
@@ -175,47 +221,6 @@ impl Net {
         };
         let (connection_handle, info_rx) =
             peer::handle(connection_ctxt, connection);
-        tokio::spawn({
-            let info_rx = StreamNotifyClose::new(info_rx)
-                .map(move |info| Ok((addr, info)));
-            let peer_info_tx = self.peer_info_tx.clone();
-            async move {
-                if let Err(_send_err) = info_rx.forward(peer_info_tx).await {
-                    tracing::error!(%addr, "Failed to send peer connection info");
-                }
-            }
-        });
-        self.add_active_peer(addr, connection_handle)?;
-        Ok(())
-    }
-
-    /*
-    /// Handle an incoming connection
-    pub fn handle_connection(
-        &self,
-        env: heed::Env,
-        connection:
-    )
-    */
-
-    pub fn connect_peer(
-        &self,
-        env: heed::Env,
-        addr: SocketAddr,
-    ) -> Result<(), Error> {
-        if self.active_peers.read().contains_key(&addr) {
-            return Err(Error::AlreadyConnected(addr));
-        }
-        let mut rwtxn = env.write_txn()?;
-        self.known_peers.put(&mut rwtxn, &addr, &())?;
-        rwtxn.commit()?;
-        let connection_ctxt = PeerConnectionCtxt {
-            env,
-            archive: self.archive.clone(),
-            state: self.state.clone(),
-        };
-        let (connection_handle, info_rx) =
-            peer::connect(self.client.clone(), addr, connection_ctxt);
         tokio::spawn({
             let info_rx = StreamNotifyClose::new(info_rx)
                 .map(move |info| Ok((addr, info)));

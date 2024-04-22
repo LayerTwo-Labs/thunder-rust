@@ -658,12 +658,12 @@ impl State {
                 &(deposit_block_hash, block_height - 1),
             )?;
         }
-        for (outpoint, deposit) in &two_way_peg_data.deposits {
-            if let Ok(address) = deposit.address.parse() {
-                let outpoint = OutPoint::Deposit(*outpoint);
+        for deposit in &two_way_peg_data.deposits {
+            if let Ok(address) = deposit.output.address.parse() {
+                let outpoint = OutPoint::Deposit(deposit.outpoint);
                 let output = Output {
                     address,
-                    content: OutputContent::Value(deposit.value),
+                    content: OutputContent::Value(deposit.output.value),
                 };
                 self.utxos.put(rwtxn, &outpoint, &output)?;
                 let utxo_hash = hash(&PointedOutput { outpoint, output });
@@ -839,12 +839,12 @@ impl State {
                 return Err(Error::NoDepositBlock);
             };
         }
-        for (outpoint, deposit) in two_way_peg_data.deposits.iter().rev() {
-            if let Ok(address) = deposit.address.parse() {
-                let outpoint = OutPoint::Deposit(*outpoint);
+        for deposit in two_way_peg_data.deposits.iter().rev() {
+            if let Ok(address) = deposit.output.address.parse() {
+                let outpoint = OutPoint::Deposit(deposit.outpoint);
                 let output = Output {
                     address,
-                    content: OutputContent::Value(deposit.value),
+                    content: OutputContent::Value(deposit.output.value),
                 };
                 if !self.utxos.delete(rwtxn, &outpoint)? {
                     return Err(Error::NoUtxo { outpoint });

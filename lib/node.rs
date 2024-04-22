@@ -6,7 +6,14 @@ use std::{
     sync::Arc,
 };
 
-use bip300301::bitcoin;
+use bip300301::{
+    bitcoin::{
+        self,
+        block::{self, Header as BitcoinHeader},
+        hashes::Hash,
+    },
+    DepositInfo,
+};
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::{stream, StreamExt, TryFutureExt};
 use heed::RwTxn;
@@ -21,7 +28,11 @@ use crate::{
         self, Net, PeerConnectionInfo, PeerInfoRx, PeerRequest, PeerResponse,
     },
     state::{self, State},
-    types::*,
+    types::{
+        Accumulator, Address, AuthorizedTransaction, BlockHash, Body, GetValue,
+        Header, OutPoint, Output, SpentOutput, Transaction, Txid,
+        WithdrawalBundle,
+    },
 };
 
 pub const THIS_SIDECHAIN: u8 = 9;
@@ -50,6 +61,139 @@ pub enum Error {
     State(#[from] state::Error),
     #[error("Utreexo error: {0}")]
     Utreexo(String),
+}
+
+/// Attempt to verify bmm for the provided header,
+/// and store the verification result
+async fn verify_bmm(
+    env: &heed::Env,
+    archive: &Archive,
+    drivechain: &bip300301::Drivechain,
+    header: Header,
+) -> Result<bool, Error> {
+    use jsonrpsee::types::error::ErrorCode as JsonrpseeErrorCode;
+    const VERIFY_BMM_POLL_INTERVAL: Duration = Duration::from_secs(15);
+    let block_hash = header.hash();
+    let res = {
+        let rotxn = env.read_txn()?;
+        archive.try_get_bmm_verification(&rotxn, block_hash)?
+    };
+    if let Some(res) = res {
+        return Ok(res);
+    }
+    let res = match drivechain
+        .verify_bmm(
+            &header.prev_main_hash,
+            &block_hash.into(),
+            VERIFY_BMM_POLL_INTERVAL,
+        )
+        .await
+    {
+        Ok(()) => true,
+        Err(bip300301::Error::Jsonrpsee(jsonrpsee::core::Error::Call(err)))
+            if JsonrpseeErrorCode::from(err.code())
+                == JsonrpseeErrorCode::ServerError(-1) =>
+        {
+            false
+        }
+        Err(err) => return Err(Error::from(err)),
+    };
+    let mut rwtxn = env.write_txn()?;
+    let () = archive.put_bmm_verification(&mut rwtxn, block_hash, res)?;
+    rwtxn.commit()?;
+    Ok(res)
+}
+
+/// Request ancestor headers from the mainchain node,
+/// including the specified header
+async fn request_ancestor_headers(
+    env: &heed::Env,
+    archive: &Archive,
+    drivechain: &bip300301::Drivechain,
+    mut block_hash: bitcoin::BlockHash,
+) -> Result<(), Error> {
+    let mut headers: Vec<BitcoinHeader> = Vec::new();
+    loop {
+        if block_hash == bitcoin::BlockHash::all_zeros() {
+            break;
+        } else {
+            let rotxn = env.read_txn()?;
+            if archive.try_get_main_header(&rotxn, block_hash)?.is_some() {
+                break;
+            }
+        }
+        let header = drivechain.get_header(block_hash).await?;
+        block_hash = header.prev_blockhash;
+        headers.push(header);
+    }
+    if headers.is_empty() {
+        Ok(())
+    } else {
+        let mut rwtxn = env.write_txn()?;
+        headers.into_iter().rev().try_for_each(|header| {
+            archive.put_main_header(&mut rwtxn, &header)
+        })?;
+        rwtxn.commit()?;
+        Ok(())
+    }
+}
+
+/// Request any missing two way peg data up to the specified block hash.
+/// All ancestor headers must exist in the archive.
+// TODO: deposits only for now
+#[allow(dead_code)]
+async fn request_two_way_peg_data(
+    env: &heed::Env,
+    archive: &Archive,
+    drivechain: &bip300301::Drivechain,
+    block_hash: bitcoin::BlockHash,
+) -> Result<(), Error> {
+    // last block for which deposit info is known
+    let last_known_deposit_info = {
+        let rotxn = env.read_txn()?;
+        #[allow(clippy::let_and_return)]
+        let last_known_deposit_info = archive
+            .main_ancestors(&rotxn, block_hash)
+            .find(|block_hash| {
+                let deposits = archive.try_get_deposits(&rotxn, *block_hash)?;
+                Ok(deposits.is_some())
+            })?;
+        last_known_deposit_info
+    };
+    if last_known_deposit_info == Some(block_hash) {
+        return Ok(());
+    }
+    let two_way_peg_data = drivechain
+        .get_two_way_peg_data(block_hash, last_known_deposit_info)
+        .await?;
+    let mut rwtxn = env.write_txn()?;
+    // Deposits by block, first-to-last within each block
+    let deposits_by_block: HashMap<block::BlockHash, Vec<DepositInfo>> = {
+        let mut deposits = HashMap::<_, Vec<_>>::new();
+        two_way_peg_data.deposits.into_iter().for_each(|deposit| {
+            deposits
+                .entry(deposit.block_hash)
+                .or_default()
+                .push(deposit)
+        });
+        let () = archive
+            .main_ancestors(&rwtxn, block_hash)
+            .take_while(|block_hash| {
+                Ok(last_known_deposit_info != Some(*block_hash))
+            })
+            .for_each(|block_hash| {
+                let _ = deposits.entry(block_hash).or_default();
+                Ok(())
+            })?;
+        deposits
+    };
+    deposits_by_block
+        .into_iter()
+        .try_for_each(|(block_hash, deposits)| {
+            archive.put_deposits(&mut rwtxn, block_hash, deposits)
+        })?;
+    rwtxn.commit()?;
+    Ok(())
 }
 
 async fn connect_tip_(
@@ -146,6 +290,12 @@ async fn submit_block(
     body: &Body,
 ) -> Result<(), Error> {
     let mut rwtxn = env.write_txn()?;
+    if archive
+        .try_get_main_header(&rwtxn, header.prev_main_hash)?
+        .is_none()
+    {
+        // Request mainchain headers
+    }
     let () = connect_tip_(
         &mut rwtxn, archive, drivechain, mempool, state, header, body,
     )
@@ -207,6 +357,7 @@ async fn reorg_to_tip(
     Ok(())
 }
 
+#[derive(Clone)]
 struct NetTaskContext {
     env: heed::Env,
     archive: Archive,
@@ -248,7 +399,7 @@ impl NetTask {
                     let () = ctxt.net.remove_active_peer(addr);
                     return Ok(());
                 }
-                // verify bmm
+                // Verify BMM
                 // TODO: Spawn a task for this
                 let () = ctxt
                     .drivechain
@@ -295,17 +446,16 @@ impl NetTask {
                 PeerResponse::Headers(headers),
             ) => {
                 // check that the end header is as requested
-                if let Some(end_header) = headers.last() {
-                    if end_header.hash() != end {
-                        tracing::warn!(%addr, ?req, ?end_header,"Invalid response from peer; unexpected end header");
-                        let () = ctxt.net.remove_active_peer(addr);
-                        return Ok(());
-                    }
-                } else {
+                let Some(end_header) = headers.last() else {
                     tracing::warn!(%addr, ?req, "Invalid response from peer; missing end header");
                     let () = ctxt.net.remove_active_peer(addr);
                     return Ok(());
                 };
+                if end_header.hash() != end {
+                    tracing::warn!(%addr, ?req, ?end_header,"Invalid response from peer; unexpected end header");
+                    let () = ctxt.net.remove_active_peer(addr);
+                    return Ok(());
+                }
                 // Must be at least one header due to previous check
                 let start_hash = headers.first().unwrap().prev_side_hash;
                 // check that the first header is after a start block
@@ -337,6 +487,57 @@ impl NetTask {
                     }
                     prev_side_hash = header.hash();
                 }
+                // Request mainchain headers
+                tokio::spawn({
+                    let ctxt = ctxt.clone();
+                    let prev_main_hash = headers.last().unwrap().prev_main_hash;
+                    async move {
+                        if let Err(err) = request_ancestor_headers(
+                            &ctxt.env,
+                            &ctxt.archive,
+                            &ctxt.drivechain,
+                            prev_main_hash,
+                        )
+                        .await
+                        {
+                            let err = anyhow::anyhow!(err);
+                            tracing::error!(%addr, err = format!("{err:#}"), "Request ancestor headers error");
+                        }
+                    }
+                });
+                // Verify BMM
+                tokio::spawn({
+                    let ctxt = ctxt.clone();
+                    let headers = headers.clone();
+                    async move {
+                        for header in headers.clone() {
+                            match verify_bmm(
+                                &ctxt.env,
+                                &ctxt.archive,
+                                &ctxt.drivechain,
+                                header.clone(),
+                            )
+                            .await
+                            {
+                                Ok(true) => (),
+                                Ok(false) => {
+                                    tracing::warn!(
+                                        %addr,
+                                        ?header,
+                                        ?headers,
+                                        "Invalid response from peer; BMM verification failed"
+                                    );
+                                    let () = ctxt.net.remove_active_peer(addr);
+                                    break;
+                                }
+                                Err(err) => {
+                                    let err = anyhow::anyhow!(err);
+                                    tracing::error!(%addr, err = format!("{err:#}"), "Verify BMM error");
+                                }
+                            }
+                        }
+                    }
+                });
                 // Store new headers
                 let mut rwtxn = ctxt.env.write_txn()?;
                 for header in headers {
@@ -429,6 +630,54 @@ impl NetTask {
                             let err = anyhow::anyhow!(err);
                             tracing::error!(%addr, err = format!("{err:#}"), "Peer connection error");
                             let () = self.ctxt.net.remove_active_peer(addr);
+                        }
+                        PeerConnectionInfo::NeedBmmVerification(
+                            block_hashes,
+                        ) => {
+                            let headers: Vec<_> = {
+                                let rotxn = self.ctxt.env.read_txn()?;
+                                block_hashes
+                                    .into_iter()
+                                    .map(|block_hash| {
+                                        self.ctxt
+                                            .archive
+                                            .get_header(&rotxn, block_hash)
+                                    })
+                                    .transpose_into_fallible()
+                                    .collect()?
+                            };
+                            tokio::spawn({
+                                let ctxt = self.ctxt.clone();
+                                async move {
+                                    for header in headers {
+                                        if let Err(err) = verify_bmm(
+                                            &ctxt.env,
+                                            &ctxt.archive,
+                                            &ctxt.drivechain,
+                                            header,
+                                        )
+                                        .await
+                                        {
+                                            let err = anyhow::anyhow!(err);
+                                            tracing::error!(%addr, err = format!("{err:#}"), "Verify BMM error")
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                        PeerConnectionInfo::NeedMainchainAncestors(
+                            block_hash,
+                        ) => {
+                            tokio::spawn({
+                                let ctxt = self.ctxt.clone();
+                                async move {
+                                    let () = request_ancestor_headers(&ctxt.env, &ctxt.archive, &ctxt.drivechain, block_hash)
+                                    .unwrap_or_else(move |err| {
+                                        let err = anyhow::anyhow!(err);
+                                        tracing::error!(%addr, err = format!("{err:#}"), "Request ancestor headers error");
+                                    }).await;
+                                }
+                            });
                         }
                         PeerConnectionInfo::NewTipReady(new_tip) => {
                             let () = reorg_to_tip(

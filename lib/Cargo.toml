@@ -19,6 +19,7 @@ fallible-iterator = "0.3.0"
 futures = "0.3.30"
 heed = { git = "https://github.com/meilisearch/heed", tag = "v0.12.4", version = "0.12.4" }
 hex = { version = "0.4.3", features = ["serde"] }
+jsonrpsee = { version = "0.20.0" }
 parking_lot = "0.12.1"
 quinn = "0.10.1"
 rayon = "1.7.0"

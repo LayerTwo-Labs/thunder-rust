@@ -565,7 +565,7 @@ dependencies = [
 [[package]]
 name = "bip300301"
 version = "0.1.1"
-source = "git+https://github.com/Ash-L2L/bip300301.git?rev=d1da609b4c77d2b53bea2c8e922891b83612a03b#d1da609b4c77d2b53bea2c8e922891b83612a03b"
+source = "git+https://github.com/Ash-L2L/bip300301.git?rev=e47a263c8cbf9c520aa80f71788ee28e9f11bb62#e47a263c8cbf9c520aa80f71788ee28e9f11bb62"
 dependencies = [
  "base64 0.21.7",
  "bitcoin",
@@ -4210,7 +4210,7 @@ dependencies = [
 
 [[package]]
 name = "thunder"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "bincode",
@@ -4226,6 +4226,7 @@ dependencies = [
  "futures",
  "heed",
  "hex",
+ "jsonrpsee",
  "parking_lot",
  "quinn",
  "rayon",
@@ -4245,7 +4246,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_app"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -4278,7 +4279,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_app_cli"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "bip300301",
@@ -4291,7 +4292,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_app_rpc_api"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "bip300301",
  "jsonrpsee",
