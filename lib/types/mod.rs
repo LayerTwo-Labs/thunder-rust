@@ -1,6 +1,6 @@
 use bip300301::bitcoin;
 use borsh::BorshSerialize;
-use rustreexo::accumulator::node_hash::NodeHash;
+use rustreexo::accumulator::{node_hash::NodeHash, pollard::Pollard};
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering,
@@ -165,5 +165,38 @@ impl Ord for AggregatedWithdrawal {
 impl PartialOrd for AggregatedWithdrawal {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+#[derive(Debug, Default)]
+#[repr(transparent)]
+pub struct Accumulator(pub Pollard);
+
+impl<'de> Deserialize<'de> for Accumulator {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let bytes: Vec<u8> =
+            <Vec<_> as Deserialize>::deserialize(deserializer)?;
+        let pollard = Pollard::deserialize(&*bytes)
+            .inspect_err(|err| {
+                tracing::debug!("deserialize err: {err}\n bytes: {bytes:?}")
+            })
+            .map_err(<D::Error as serde::de::Error>::custom)?;
+        Ok(Self(pollard))
+    }
+}
+
+impl Serialize for Accumulator {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut bytes = Vec::new();
+        self.0
+            .serialize(&mut bytes)
+            .map_err(<S::Error as serde::ser::Error>::custom)?;
+        <Vec<_> as Serialize>::serialize(&bytes, serializer)
     }
 }

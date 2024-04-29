@@ -3642,9 +3642,8 @@ dependencies = [
 
 [[package]]
 name = "rustreexo"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4852cab7dec3e1d89bb3ce30ca3461f7d6baee2143d0460c07bf1a718af68997"
+version = "0.2.0"
+source = "git+https://github.com/Ash-L2L/rustreexo.git?rev=a3ac7d3ebe9749ebd0bb34c709e7616f83d573b3#a3ac7d3ebe9749ebd0bb34c709e7616f83d573b3"
 dependencies = [
  "bitcoin_hashes 0.12.0",
  "serde",

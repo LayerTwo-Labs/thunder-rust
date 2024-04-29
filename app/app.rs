@@ -153,9 +153,10 @@ impl App {
             .await?;
         let roots = {
             let mut accumulator = self.node.get_accumulator()?;
-            body.modify_pollard(&mut accumulator)
+            body.modify_pollard(&mut accumulator.0)
                 .map_err(Error::Utreexo)?;
             accumulator
+                .0
                 .get_roots()
                 .iter()
                 .map(|root| root.get_data())

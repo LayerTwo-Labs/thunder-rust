@@ -109,7 +109,7 @@ impl Net {
         let (server, _) = make_server_endpoint(bind_addr)?;
         let client = make_client_endpoint("0.0.0.0:0".parse()?)?;
         let active_peers = Arc::new(RwLock::new(HashMap::new()));
-        let known_peers = env.create_database(Some("utxos"))?;
+        let known_peers = env.create_database(Some("known_peers"))?;
         let (peer_info_tx, peer_info_rx) = mpsc::unbounded();
         let net = Net {
             server,

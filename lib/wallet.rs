@@ -10,9 +10,9 @@ use heed::{
     types::{OwnedType, SerdeBincode},
     Database, RoTxn,
 };
-use rustreexo::accumulator::{node_hash::NodeHash, pollard::Pollard};
+use rustreexo::accumulator::node_hash::NodeHash;
 
-use crate::types::{hash, PointedOutput};
+use crate::types::{hash, Accumulator, PointedOutput};
 pub use crate::{
     authorization::{get_address, Authorization},
     types::{
@@ -123,7 +123,7 @@ impl Wallet {
 
     pub fn create_withdrawal(
         &self,
-        accumulator: &Pollard,
+        accumulator: &Accumulator,
         main_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         value: u64,
         main_fee: u64,
@@ -141,7 +141,8 @@ impl Wallet {
             .collect();
         let input_utxo_hashes: Vec<NodeHash> =
             inputs.iter().map(|(_, hash)| hash.into()).collect();
-        let (proof, _) = accumulator
+        let proof = accumulator
+            .0
             .prove(&input_utxo_hashes)
             .map_err(Error::Utreexo)?;
         let outputs = vec![
@@ -167,7 +168,7 @@ impl Wallet {
 
     pub fn create_transaction(
         &self,
-        accumulator: &Pollard,
+        accumulator: &Accumulator,
         address: Address,
         value: u64,
         fee: u64,
@@ -183,7 +184,8 @@ impl Wallet {
             .collect();
         let input_utxo_hashes: Vec<NodeHash> =
             inputs.iter().map(|(_, hash)| hash.into()).collect();
-        let (proof, _) = accumulator
+        let proof = accumulator
+            .0
             .prove(&input_utxo_hashes)
             .map_err(Error::Utreexo)?;
         let outputs = vec![

@@ -1,9 +1,8 @@
 use std::collections::VecDeque;
 
 use heed::{types::SerdeBincode, Database, RoTxn, RwTxn};
-use rustreexo::accumulator::pollard::Pollard;
 
-use crate::types::{AuthorizedTransaction, OutPoint, Txid};
+use crate::types::{Accumulator, AuthorizedTransaction, OutPoint, Txid};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -104,7 +103,7 @@ impl MemPool {
     pub fn regenerate_proofs(
         &self,
         rwtxn: &mut RwTxn,
-        accumulator: &Pollard,
+        accumulator: &Accumulator,
     ) -> Result<(), Error> {
         let mut iter = self.transactions.iter_mut(rwtxn)?;
         while let Some(tx) = iter.next() {
@@ -115,9 +114,8 @@ impl MemPool {
                 .iter()
                 .map(|(_, utxo_hash)| utxo_hash.into())
                 .collect();
-            let (proof, _) =
-                accumulator.prove(&targets).map_err(Error::Utreexo)?;
-            tx.transaction.proof = proof;
+            tx.transaction.proof =
+                accumulator.0.prove(&targets).map_err(Error::Utreexo)?;
             unsafe { iter.put_current(&txid, &tx) }?;
         }
         Ok(())

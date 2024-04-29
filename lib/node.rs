@@ -10,8 +10,7 @@ use bip300301::bitcoin;
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::{stream, StreamExt, TryFutureExt};
 use heed::RwTxn;
-use rustreexo::accumulator::pollard::Pollard;
-use tokio::task::JoinHandle;
+use tokio::{task::JoinHandle, time::Duration};
 use tokio_stream::StreamNotifyClose;
 use tokio_util::task::LocalPoolHandle;
 
@@ -78,12 +77,13 @@ async fn connect_tip_(
         let () = state.connect_block(rwtxn, header, body)?;
     }
     let () = state.connect_two_way_peg_data(rwtxn, &two_way_peg_data)?;
+    let accumulator = state.get_accumulator(rwtxn)?;
     let () = archive.put_header(rwtxn, header)?;
     let () = archive.put_body(rwtxn, block_hash, body)?;
+    let () = archive.put_accumulator(rwtxn, block_hash, &accumulator)?;
     for transaction in &body.transactions {
         let () = mempool.delete(rwtxn, transaction.txid())?;
     }
-    let accumulator = state.get_accumulator(rwtxn)?;
     let () = mempool.regenerate_proofs(rwtxn, &accumulator)?;
     Ok(())
 }
@@ -105,7 +105,7 @@ async fn disconnect_tip_(
             .rev_iter(rwtxn)?
             .transpose_into_fallible()
             .find_map(|(_, (block_hash, applied_height))| {
-                if applied_height < height {
+                if applied_height < height - 1 {
                     Ok(Some(block_hash))
                 } else {
                     Ok(None)
@@ -117,6 +117,17 @@ async fn disconnect_tip_(
     };
     let () = state.disconnect_two_way_peg_data(rwtxn, &two_way_peg_data)?;
     let () = state.disconnect_tip(rwtxn, &tip_header, &tip_body)?;
+    // TODO: revert accumulator only necessary because rustreexo does not
+    // support undo yet
+    {
+        let new_tip = state.get_tip(rwtxn)?;
+        let accumulator = archive.get_accumulator(rwtxn, new_tip)?;
+        let () = state.utreexo_accumulator.put(
+            rwtxn,
+            &state::UnitKey,
+            &accumulator,
+        )?;
+    }
     for transaction in tip_body.authorized_transactions().iter().rev() {
         mempool.put(rwtxn, transaction)?;
     }
@@ -165,8 +176,8 @@ async fn reorg_to_tip(
     let common_ancestor = archive.last_common_ancestor(&rwtxn, tip, new_tip)?;
     // Check that all necessary bodies exist before disconnecting tip
     let blocks_to_apply: Vec<(Header, Body)> = archive
-        .ancestors(&rwtxn, tip)
-        .take_while(|block_hash| Ok(*block_hash != tip))
+        .ancestors(&rwtxn, new_tip)
+        .take_while(|block_hash| Ok(*block_hash != common_ancestor))
         .map(|block_hash| {
             let header = archive.get_header(&rwtxn, block_hash)?;
             let body = archive.get_body(&rwtxn, block_hash)?;
@@ -192,6 +203,7 @@ async fn reorg_to_tip(
     let tip = state.get_tip(&rwtxn)?;
     assert_eq!(tip, new_tip);
     rwtxn.commit()?;
+    tracing::info!("reorged to tip: {new_tip}");
     Ok(())
 }
 
@@ -210,6 +222,8 @@ struct NetTask {
 }
 
 impl NetTask {
+    const VERIFY_BMM_POLL_INTERVAL: Duration = Duration::from_secs(15);
+
     async fn handle_response(
         ctxt: &NetTaskContext,
         addr: SocketAddr,
@@ -234,6 +248,16 @@ impl NetTask {
                     let () = ctxt.net.remove_active_peer(addr);
                     return Ok(());
                 }
+                // verify bmm
+                // TODO: Spawn a task for this
+                let () = ctxt
+                    .drivechain
+                    .verify_bmm(
+                        &header.prev_main_hash,
+                        &block_hash.into(),
+                        Self::VERIFY_BMM_POLL_INTERVAL,
+                    )
+                    .await?;
                 if header.prev_side_hash == tip {
                     submit_block(
                         &ctxt.env,
@@ -263,7 +287,11 @@ impl NetTask {
                 },
             ) if req_block_hash == resp_block_hash => Ok(()),
             (
-                req @ PeerRequest::GetHeaders { end },
+                ref req @ PeerRequest::GetHeaders {
+                    ref start,
+                    end,
+                    height: Some(height),
+                },
                 PeerResponse::Headers(headers),
             ) => {
                 // check that the end header is as requested
@@ -273,9 +301,34 @@ impl NetTask {
                         let () = ctxt.net.remove_active_peer(addr);
                         return Ok(());
                     }
+                } else {
+                    tracing::warn!(%addr, ?req, "Invalid response from peer; missing end header");
+                    let () = ctxt.net.remove_active_peer(addr);
+                    return Ok(());
                 };
+                // Must be at least one header due to previous check
+                let start_hash = headers.first().unwrap().prev_side_hash;
+                // check that the first header is after a start block
+                if !(start.contains(&start_hash)
+                    || start_hash == BlockHash::default())
+                {
+                    tracing::warn!(%addr, ?req, ?start_hash, "Invalid response from peer; invalid start hash");
+                    let () = ctxt.net.remove_active_peer(addr);
+                    return Ok(());
+                }
+                // check that the end header height is as expected
+                {
+                    let rotxn = ctxt.env.read_txn()?;
+                    let start_height =
+                        ctxt.archive.get_height(&rotxn, start_hash)?;
+                    if start_height + headers.len() as u32 != height {
+                        tracing::warn!(%addr, ?req, ?start_hash, "Invalid response from peer; invalid end height");
+                        let () = ctxt.net.remove_active_peer(addr);
+                        return Ok(());
+                    }
+                }
                 // check that headers are sequential based on prev_side_hash
-                let mut prev_side_hash = BlockHash::default();
+                let mut prev_side_hash = start_hash;
                 for header in &headers {
                     if header.prev_side_hash != prev_side_hash {
                         tracing::warn!(%addr, ?req, ?headers,"Invalid response from peer; non-sequential headers");
@@ -293,10 +346,11 @@ impl NetTask {
                         .try_get_header(&rwtxn, block_hash)?
                         .is_none()
                     {
-                        if ctxt
-                            .archive
-                            .try_get_header(&rwtxn, header.prev_side_hash)?
-                            .is_some()
+                        if header.prev_side_hash == BlockHash::default()
+                            || ctxt
+                                .archive
+                                .try_get_header(&rwtxn, header.prev_side_hash)?
+                                .is_some()
                         {
                             ctxt.archive.put_header(&mut rwtxn, &header)?;
                         } else {
@@ -308,7 +362,11 @@ impl NetTask {
                 Ok(())
             }
             (
-                PeerRequest::GetHeaders { end },
+                PeerRequest::GetHeaders {
+                    start: _,
+                    end,
+                    height: _,
+                },
                 PeerResponse::NoHeader { block_hash },
             ) if end == block_hash => Ok(()),
             (
@@ -368,7 +426,8 @@ impl NetTask {
                 MailboxItem::PeerInfo(Some((addr, Some(peer_info)))) => {
                     match peer_info {
                         PeerConnectionInfo::Error(err) => {
-                            tracing::error!(%addr, %err, "Peer connection error");
+                            let err = anyhow::anyhow!(err);
+                            tracing::error!(%addr, err = format!("{err:#}"), "Peer connection error");
                             let () = self.ctxt.net.remove_active_peer(addr);
                         }
                         PeerConnectionInfo::NewTipReady(new_tip) => {
@@ -437,9 +496,10 @@ impl Node {
         let env = heed::EnvOpenOptions::new()
             .map_size(10 * 1024 * 1024) // 10MB
             .max_dbs(
-                crate::state::State::NUM_DBS
-                    + crate::archive::Archive::NUM_DBS
-                    + crate::mempool::MemPool::NUM_DBS,
+                State::NUM_DBS
+                    + Archive::NUM_DBS
+                    + MemPool::NUM_DBS
+                    + Net::NUM_DBS,
             )
             .open(env_path)?;
         let state = State::new(&env)?;
@@ -463,9 +523,10 @@ impl Node {
                 state: state.clone(),
             };
             || {
-                NetTask { ctxt, peer_info_rx }
-                    .run()
-                    .unwrap_or_else(|err| tracing::error!(%err))
+                NetTask { ctxt, peer_info_rx }.run().unwrap_or_else(|err| {
+                    let err = anyhow::anyhow!(err);
+                    tracing::error!(err = format!("{err:#}"))
+                })
             }
         });
         Ok(Self {
@@ -544,7 +605,7 @@ impl Node {
         Ok(utxos)
     }
 
-    pub fn get_accumulator(&self) -> Result<Pollard, Error> {
+    pub fn get_accumulator(&self) -> Result<Accumulator, Error> {
         let rotxn = self.env.read_txn()?;
         Ok(self.state.get_accumulator(&rotxn)?)
     }

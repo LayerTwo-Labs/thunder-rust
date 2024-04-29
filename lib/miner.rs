@@ -55,7 +55,7 @@ impl Miner {
         height: u32,
         header: Header,
         body: Body,
-    ) -> Result<(), Error> {
+    ) -> Result<bitcoin::Txid, Error> {
         let str_hash_prev = header.prev_main_hash.to_string();
         let critical_hash: [u8; 32] = header.hash().into();
         let critical_hash = bitcoin::BlockHash::from_byte_array(critical_hash);
@@ -77,11 +77,12 @@ impl Miner {
             .as_str()
             .map(|s| s.to_owned())
             .ok_or(Error::InvalidJson { json: value })?;
-        let _ =
+        let txid =
             bitcoin::Txid::from_str(&txid).map_err(bip300301::Error::from)?;
+        tracing::info!("created BMM tx: {txid}");
         assert_eq!(header.merkle_root, body.compute_merkle_root());
         self.block = Some((header, body));
-        Ok(())
+        Ok(txid)
     }
 
     pub async fn confirm_bmm(

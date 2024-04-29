@@ -1,9 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use heed::{
-    types::{OwnedType, SerdeBincode},
-    Database, RoTxn, RwTxn,
-};
+use heed::{types::SerdeBincode, Database, RoTxn, RwTxn};
 
 use bip300301::{
     bitcoin::{
@@ -11,18 +8,17 @@ use bip300301::{
     },
     TwoWayPegData, WithdrawalBundleStatus,
 };
-use rustreexo::accumulator::{
-    node_hash::NodeHash, pollard::Pollard, proof::Proof,
-};
+use rustreexo::accumulator::{node_hash::NodeHash, proof::Proof};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     authorization::Authorization,
     types::{
-        hash, Address, AggregatedWithdrawal, AuthorizedTransaction, BlockHash,
-        Body, FilledTransaction, GetAddress, GetValue, Header, InPoint,
-        MerkleRoot, OutPoint, Output, OutputContent, PointedOutput,
-        SpentOutput, Transaction, Txid, Verify, WithdrawalBundle,
+        hash, Accumulator, Address, AggregatedWithdrawal,
+        AuthorizedTransaction, BlockHash, Body, FilledTransaction, GetAddress,
+        GetValue, Header, InPoint, MerkleRoot, OutPoint, Output, OutputContent,
+        PointedOutput, SpentOutput, Transaction, Txid, Verify,
+        WithdrawalBundle,
     },
 };
 
@@ -110,41 +106,12 @@ impl Serialize for UnitKey {
     }
 }
 
-#[derive(Debug, Default)]
-#[repr(transparent)]
-pub struct Accumulator(pub Pollard);
-
-impl<'de> Deserialize<'de> for Accumulator {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let bytes: &[u8] = <&[u8] as Deserialize>::deserialize(deserializer)?;
-        let pollard = Pollard::deserialize(bytes)
-            .map_err(<D::Error as serde::de::Error>::custom)?;
-        Ok(Self(pollard))
-    }
-}
-
-impl Serialize for Accumulator {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let mut bytes = Vec::new();
-        self.0
-            .serialize(&mut bytes)
-            .map_err(<S::Error as serde::ser::Error>::custom)?;
-        bytes.serialize(serializer)
-    }
-}
-
 #[derive(Clone)]
 pub struct State {
     /// Current tip
     tip: Database<SerdeBincode<UnitKey>, SerdeBincode<BlockHash>>,
     /// Current height
-    height: Database<SerdeBincode<UnitKey>, OwnedType<u32>>,
+    height: Database<SerdeBincode<UnitKey>, SerdeBincode<u32>>,
     pub utxos: Database<SerdeBincode<OutPoint>, SerdeBincode<Output>>,
     pub stxos: Database<SerdeBincode<OutPoint>, SerdeBincode<SpentOutput>>,
     /// Pending withdrawal bundle and block height
@@ -152,12 +119,12 @@ pub struct State {
         Database<SerdeBincode<UnitKey>, SerdeBincode<(WithdrawalBundle, u32)>>,
     /// Mapping from block height to withdrawal bundle and status
     pub withdrawal_bundles: Database<
-        OwnedType<u32>,
+        SerdeBincode<u32>,
         SerdeBincode<(WithdrawalBundle, WithdrawalBundleStatus)>,
     >,
     /// deposit blocks and the height at which they were applied, keyed sequentially
     pub deposit_blocks:
-        Database<OwnedType<u32>, SerdeBincode<(bitcoin::BlockHash, u32)>>,
+        Database<SerdeBincode<u32>, SerdeBincode<(bitcoin::BlockHash, u32)>>,
     pub utreexo_accumulator:
         Database<SerdeBincode<UnitKey>, SerdeBincode<Accumulator>>,
 }
@@ -241,12 +208,11 @@ impl State {
     }
 
     /// Get the current Utreexo accumulator
-    pub fn get_accumulator(&self, rotxn: &RoTxn) -> Result<Pollard, Error> {
+    pub fn get_accumulator(&self, rotxn: &RoTxn) -> Result<Accumulator, Error> {
         let accumulator = self
             .utreexo_accumulator
             .get(rotxn, &UnitKey)?
-            .unwrap_or_default()
-            .0;
+            .unwrap_or_default();
         Ok(accumulator)
     }
 
@@ -262,8 +228,7 @@ impl State {
             .iter()
             .map(|(_, utxo_hash)| utxo_hash.into())
             .collect();
-        let (proof, _) = accumulator.prove(&targets).map_err(Error::Utreexo)?;
-        tx.proof = proof;
+        tx.proof = accumulator.0.prove(&targets).map_err(Error::Utreexo)?;
         Ok(())
     }
 
@@ -279,7 +244,7 @@ impl State {
         let accumulator = self.get_accumulator(rotxn)?;
         let targets: Vec<NodeHash> =
             utxos.into_iter().map(NodeHash::from).collect();
-        let (proof, _) = accumulator.prove(&targets).map_err(Error::Utreexo)?;
+        let proof = accumulator.0.prove(&targets).map_err(Error::Utreexo)?;
         Ok(proof)
     }
 
@@ -1012,6 +977,7 @@ impl State {
             .utreexo_accumulator
             .get(rwtxn, &UnitKey)?
             .unwrap_or_default();
+        tracing::debug!("Got acc");
         // New leaves for the accumulator
         let mut accumulator_add = Vec::<NodeHash>::new();
         // Accumulator leaves to delete

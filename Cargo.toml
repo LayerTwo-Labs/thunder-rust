@@ -19,6 +19,9 @@ version = "0.8.0"
 git = "https://github.com/Ash-L2L/bip300301.git"
 rev = "d1da609b4c77d2b53bea2c8e922891b83612a03b"
 
+[workspace.dependencies.rustreexo]
+git = "https://github.com/Ash-L2L/rustreexo.git"
+rev = "a3ac7d3ebe9749ebd0bb34c709e7616f83d573b3"
 
 [profile.release]
 # lto = "fat"
