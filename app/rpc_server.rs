@@ -131,8 +131,11 @@ impl RpcServer for RpcServerImpl {
         value_sats: u64,
         fee_sats: u64,
     ) -> RpcResult<Txid> {
-        let accumulator =
-            self.app.node.get_accumulator().map_err(convert_node_err)?;
+        let accumulator = self
+            .app
+            .node
+            .get_tip_accumulator()
+            .map_err(convert_node_err)?;
         let tx = self
             .app
             .wallet
@@ -150,8 +153,11 @@ impl RpcServer for RpcServerImpl {
         fee_sats: u64,
         mainchain_fee_sats: u64,
     ) -> RpcResult<Txid> {
-        let accumulator =
-            self.app.node.get_accumulator().map_err(convert_node_err)?;
+        let accumulator = self
+            .app
+            .node
+            .get_tip_accumulator()
+            .map_err(convert_node_err)?;
         let tx = self
             .app
             .wallet

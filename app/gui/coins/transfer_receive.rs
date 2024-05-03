@@ -17,7 +17,7 @@ fn create_transfer(
     amount: bitcoin::Amount,
     fee: bitcoin::Amount,
 ) -> anyhow::Result<()> {
-    let accumulator = app.node.get_accumulator()?;
+    let accumulator = app.node.get_tip_accumulator()?;
     let tx = app.wallet.create_transaction(
         &accumulator,
         dest,

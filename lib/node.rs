@@ -290,12 +290,9 @@ async fn submit_block(
     body: &Body,
 ) -> Result<(), Error> {
     let mut rwtxn = env.write_txn()?;
-    if archive
-        .try_get_main_header(&rwtxn, header.prev_main_hash)?
-        .is_none()
-    {
-        // Request mainchain headers
-    }
+    // Request mainchain headers if they do not exist
+    request_ancestor_headers(env, archive, drivechain, header.prev_main_hash)
+        .await?;
     let () = connect_tip_(
         &mut rwtxn, archive, drivechain, mempool, state, header, body,
     )
@@ -854,7 +851,7 @@ impl Node {
         Ok(utxos)
     }
 
-    pub fn get_accumulator(&self) -> Result<Accumulator, Error> {
+    pub fn get_tip_accumulator(&self) -> Result<Accumulator, Error> {
         let rotxn = self.env.read_txn()?;
         Ok(self.state.get_accumulator(&rotxn)?)
     }
@@ -863,6 +860,22 @@ impl Node {
         let rotxn = self.env.read_txn()?;
         let () = self.state.regenerate_proof(&rotxn, tx)?;
         Ok(())
+    }
+
+    pub fn try_get_accumulator(
+        &self,
+        block_hash: BlockHash,
+    ) -> Result<Option<Accumulator>, Error> {
+        let rotxn = self.env.read_txn()?;
+        Ok(self.archive.try_get_accumulator(&rotxn, block_hash)?)
+    }
+
+    pub fn get_accumulator(
+        &self,
+        block_hash: BlockHash,
+    ) -> Result<Accumulator, Error> {
+        let rotxn = self.env.read_txn()?;
+        Ok(self.archive.get_accumulator(&rotxn, block_hash)?)
     }
 
     pub fn try_get_header(

@@ -152,7 +152,7 @@ impl App {
             .get_mainchain_tip()
             .await?;
         let roots = {
-            let mut accumulator = self.node.get_accumulator()?;
+            let mut accumulator = self.node.get_tip_accumulator()?;
             body.modify_pollard(&mut accumulator.0)
                 .map_err(Error::Utreexo)?;
             accumulator
