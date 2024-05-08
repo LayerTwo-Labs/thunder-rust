@@ -25,8 +25,12 @@ impl MemPool {
     pub const NUM_DBS: u32 = 2;
 
     pub fn new(env: &heed::Env) -> Result<Self, Error> {
-        let transactions = env.create_database(Some("transactions"))?;
-        let spent_utxos = env.create_database(Some("spent_utxos"))?;
+        let mut rwtxn = env.write_txn()?;
+        let transactions =
+            env.create_database(&mut rwtxn, Some("transactions"))?;
+        let spent_utxos =
+            env.create_database(&mut rwtxn, Some("spent_utxos"))?;
+        rwtxn.commit()?;
         Ok(Self {
             transactions,
             spent_utxos,

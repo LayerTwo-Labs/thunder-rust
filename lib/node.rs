@@ -193,7 +193,7 @@ async fn request_two_way_peg_data(
 }
 
 async fn connect_tip_(
-    rwtxn: &mut RwTxn<'_, '_>,
+    rwtxn: &mut RwTxn<'_>,
     archive: &Archive,
     drivechain: &bip300301::Drivechain,
     mempool: &MemPool,
@@ -229,7 +229,7 @@ async fn connect_tip_(
 }
 
 async fn disconnect_tip_(
-    rwtxn: &mut RwTxn<'_, '_>,
+    rwtxn: &mut RwTxn<'_>,
     archive: &Archive,
     drivechain: &bip300301::Drivechain,
     mempool: &MemPool,
@@ -735,15 +735,17 @@ impl Node {
         let env_path = datadir.join("data.mdb");
         // let _ = std::fs::remove_dir_all(&env_path);
         std::fs::create_dir_all(&env_path)?;
-        let env = heed::EnvOpenOptions::new()
-            .map_size(10 * 1024 * 1024) // 10MB
-            .max_dbs(
-                State::NUM_DBS
-                    + Archive::NUM_DBS
-                    + MemPool::NUM_DBS
-                    + Net::NUM_DBS,
-            )
-            .open(env_path)?;
+        let env = unsafe {
+            heed::EnvOpenOptions::new()
+                .map_size(1024 * 1024 * 1024) // 1GB
+                .max_dbs(
+                    State::NUM_DBS
+                        + Archive::NUM_DBS
+                        + MemPool::NUM_DBS
+                        + Net::NUM_DBS,
+                )
+                .open(env_path)?
+        };
         let state = State::new(&env)?;
         let archive = Archive::new(&env)?;
         let mempool = MemPool::new(&env)?;

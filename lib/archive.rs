@@ -63,16 +63,20 @@ impl Archive {
     pub const NUM_DBS: u32 = 8;
 
     pub fn new(env: &heed::Env) -> Result<Self, Error> {
-        let accumulators = env.create_database(Some("accumulators"))?;
+        let mut rwtxn = env.write_txn()?;
+        let accumulators =
+            env.create_database(&mut rwtxn, Some("accumulators"))?;
         let block_hash_to_height =
-            env.create_database(Some("hash_to_height"))?;
+            env.create_database(&mut rwtxn, Some("hash_to_height"))?;
         let bmm_verifications =
-            env.create_database(Some("bmm_verifications"))?;
-        let bodies = env.create_database(Some("bodies"))?;
-        let deposits = env.create_database(Some("deposits"))?;
-        let headers = env.create_database(Some("headers"))?;
-        let main_headers = env.create_database(Some("main_headers"))?;
-        let total_work = env.create_database(Some("total_work"))?;
+            env.create_database(&mut rwtxn, Some("bmm_verifications"))?;
+        let bodies = env.create_database(&mut rwtxn, Some("bodies"))?;
+        let deposits = env.create_database(&mut rwtxn, Some("deposits"))?;
+        let headers = env.create_database(&mut rwtxn, Some("headers"))?;
+        let main_headers =
+            env.create_database(&mut rwtxn, Some("main_headers"))?;
+        let total_work = env.create_database(&mut rwtxn, Some("total_work"))?;
+        rwtxn.commit()?;
         Ok(Self {
             accumulators,
             block_hash_to_height,

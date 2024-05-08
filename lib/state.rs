@@ -134,17 +134,20 @@ impl State {
     pub const WITHDRAWAL_BUNDLE_FAILURE_GAP: u32 = 4;
 
     pub fn new(env: &heed::Env) -> Result<Self, Error> {
-        let tip = env.create_database(Some("tip"))?;
-        let height = env.create_database(Some("height"))?;
-        let utxos = env.create_database(Some("utxos"))?;
-        let stxos = env.create_database(Some("stxos"))?;
+        let mut rwtxn = env.write_txn()?;
+        let tip = env.create_database(&mut rwtxn, Some("tip"))?;
+        let height = env.create_database(&mut rwtxn, Some("height"))?;
+        let utxos = env.create_database(&mut rwtxn, Some("utxos"))?;
+        let stxos = env.create_database(&mut rwtxn, Some("stxos"))?;
         let pending_withdrawal_bundle =
-            env.create_database(Some("pending_withdrawal_bundle"))?;
+            env.create_database(&mut rwtxn, Some("pending_withdrawal_bundle"))?;
         let withdrawal_bundles =
-            env.create_database(Some("withdrawal_bundles"))?;
-        let deposit_blocks = env.create_database(Some("deposit_blocks"))?;
+            env.create_database(&mut rwtxn, Some("withdrawal_bundles"))?;
+        let deposit_blocks =
+            env.create_database(&mut rwtxn, Some("deposit_blocks"))?;
         let utreexo_accumulator =
-            env.create_database(Some("utreexo_accumulator"))?;
+            env.create_database(&mut rwtxn, Some("utreexo_accumulator"))?;
+        rwtxn.commit()?;
         Ok(Self {
             tip,
             height,
@@ -156,6 +159,7 @@ impl State {
             utreexo_accumulator,
         })
     }
+
     pub fn get_tip(&self, rotxn: &RoTxn) -> Result<BlockHash, Error> {
         let tip = self.tip.get(rotxn, &UnitKey)?.unwrap_or_default();
         Ok(tip)

@@ -7,7 +7,7 @@ use std::{
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::{channel::mpsc, StreamExt};
 use heed::{
-    types::{OwnedType, SerdeBincode},
+    types::{SerdeBincode, Unit},
     Database,
 };
 use parking_lot::RwLock;
@@ -95,7 +95,7 @@ pub struct Net {
     // None indicates that the stream has ended
     peer_info_tx:
         mpsc::UnboundedSender<(SocketAddr, Option<PeerConnectionInfo>)>,
-    known_peers: Database<SerdeBincode<SocketAddr>, OwnedType<()>>,
+    known_peers: Database<SerdeBincode<SocketAddr>, Unit>,
 }
 
 impl Net {
@@ -165,7 +165,10 @@ impl Net {
         let (server, _) = make_server_endpoint(bind_addr)?;
         let client = make_client_endpoint("0.0.0.0:0".parse()?)?;
         let active_peers = Arc::new(RwLock::new(HashMap::new()));
-        let known_peers = env.create_database(Some("known_peers"))?;
+        let mut rwtxn = env.write_txn()?;
+        let known_peers =
+            env.create_database(&mut rwtxn, Some("known_peers"))?;
+        rwtxn.commit()?;
         let (peer_info_tx, peer_info_rx) = mpsc::unbounded();
         let net = Net {
             server,
