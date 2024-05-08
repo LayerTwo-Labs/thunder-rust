@@ -1,8 +1,8 @@
 use std::cmp::Ordering;
 
 use bip300301::{
-    bitcoin::{self, block::Header as BitcoinHeader, hashes::Hash},
-    DepositInfo,
+    bitcoin::{self, hashes::Hash},
+    DepositInfo, Header as BitcoinHeader,
 };
 use fallible_iterator::FallibleIterator;
 use heed::{types::SerdeBincode, Database, RoTxn, RwTxn};
@@ -328,7 +328,7 @@ impl Archive {
         {
             return Err(Error::NoMainHeader(header.prev_blockhash));
         }
-        let block_hash = header.block_hash();
+        let block_hash = header.hash;
         let total_work =
             if header.prev_blockhash != bitcoin::BlockHash::all_zeros() {
                 let prev_work =
