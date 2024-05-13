@@ -54,7 +54,7 @@ pub struct Wallet {
     env: heed::Env,
     // Seed is always [u8; 64], but due to serde not implementing serialize
     // for [T; 64], use heed's `Bytes`
-    // FIXME: Don't store the seed in plaintext.
+    // TODO: Don't store the seed in plaintext.
     seed: Database<U8, Bytes>,
     pub address_to_index:
         Database<SerdeBincode<Address>, SerdeBincode<[u8; 4]>>,

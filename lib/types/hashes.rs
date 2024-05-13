@@ -20,7 +20,9 @@ pub type Hash = [u8; BLAKE3_LENGTH];
     Deserialize,
     Eq,
     Hash,
+    Ord,
     PartialEq,
+    PartialOrd,
     Serialize,
 )]
 pub struct BlockHash(pub Hash);

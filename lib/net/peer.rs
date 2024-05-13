@@ -1,6 +1,7 @@
 use std::{collections::HashSet, net::SocketAddr};
 
-use bip300301::bitcoin::{self, hashes::Hash};
+use bip300301::bitcoin::{self, hashes::Hash as _};
+use borsh::BorshSerialize;
 use fallible_iterator::FallibleIterator;
 use futures::{channel::mpsc, stream, StreamExt, TryFutureExt, TryStreamExt};
 use quinn::{Endpoint, SendStream};
@@ -16,7 +17,7 @@ use tokio_stream::wrappers::IntervalStream;
 use crate::{
     archive::{self, Archive},
     state::{self, State},
-    types::{AuthorizedTransaction, BlockHash, Body, Header, Txid},
+    types::{hash, AuthorizedTransaction, BlockHash, Body, Hash, Header, Txid},
 };
 
 #[derive(Debug, Error)]
@@ -73,10 +74,35 @@ impl From<mpsc::TrySendError<Request>> for ConnectionError {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+fn borsh_serialize_work<W>(
+    work: &bitcoin::Work,
+    writer: &mut W,
+) -> borsh::io::Result<()>
+where
+    W: borsh::io::Write,
+{
+    borsh::BorshSerialize::serialize(&work.to_le_bytes(), writer)
+}
+
+fn borsh_serialize_option_work<W>(
+    work: &Option<bitcoin::Work>,
+    writer: &mut W,
+) -> borsh::io::Result<()>
+where
+    W: borsh::io::Write,
+{
+    #[derive(BorshSerialize)]
+    struct BorshWrapper(
+        #[borsh(serialize_with = "borsh_serialize_work")] bitcoin::Work,
+    );
+    borsh::BorshSerialize::serialize(&work.map(BorshWrapper), writer)
+}
+
+#[derive(BorshSerialize, Clone, Debug, Default, Deserialize, Serialize)]
 pub struct PeerState {
     block_height: u32,
     tip: BlockHash,
+    #[borsh(serialize_with = "borsh_serialize_option_work")]
     total_work: Option<bitcoin::Work>,
 }
 
@@ -98,7 +124,7 @@ pub enum Response {
     TransactionRejected(Txid),
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize)]
 pub enum Request {
     Heartbeat(PeerState),
     GetBlock {
@@ -120,25 +146,14 @@ pub enum Request {
     },
 }
 
-impl Request {
-    fn expect_response(&self) -> bool {
-        match self {
-            Self::GetBlock { .. }
-            | Self::GetHeaders { .. }
-            | Self::PushTransaction { .. } => true,
-            Self::Heartbeat(_) => false,
-        }
-    }
-}
-
 #[must_use]
 #[derive(Debug)]
 pub enum Info {
     Error(ConnectionError),
-    /// Need BMM verification for the specified blocks
-    NeedBmmVerification(Vec<BlockHash>),
+    /// Need BMM verification for the specified block
+    NeedBmmVerification(BlockHash),
     /// Need Mainchain ancestors for the specified block hash
-    NeedMainchainAncestors(bitcoin::BlockHash),
+    NeedMainchainAncestors(BlockHash),
     /// New tip ready (body and header exist in archive, BMM verified)
     NewTipReady(BlockHash),
     NewTransaction(AuthorizedTransaction),
@@ -167,11 +182,36 @@ where
 pub struct Connection(pub(super) quinn::Connection);
 
 impl Connection {
-    pub const READ_LIMIT: usize = 1024;
+    // 100KB limit for reading requests (tx size could be ~100KB)
+    pub const READ_REQUEST_LIMIT: usize = 100 * 1024;
 
     pub const HEARTBEAT_SEND_INTERVAL: Duration = Duration::from_secs(1);
 
     pub const HEARTBEAT_TIMEOUT_INTERVAL: Duration = Duration::from_secs(5);
+
+    // 10MB limit for blocks
+    pub const READ_BLOCK_LIMIT: usize = 10 * 1024 * 1024;
+
+    // 1KB limit per header
+    pub const READ_HEADER_LIMIT: usize = 1024;
+
+    // 256B limit per tx ack (response size is ~192)
+    pub const READ_TX_ACK_LIMIT: usize = 256;
+
+    pub const fn read_response_limit(req: &Request) -> usize {
+        match req {
+            Request::GetBlock { .. } => Self::READ_BLOCK_LIMIT,
+            Request::GetHeaders {
+                height: Some(height),
+                ..
+            } => *height as usize * Self::READ_HEADER_LIMIT,
+            // Should have no response, so limit zero
+            Request::Heartbeat(_) => 0,
+            Request::PushTransaction { .. } => Self::READ_TX_ACK_LIMIT,
+            // Should never happen, so limit zero
+            Request::GetHeaders { height: None, .. } => 0,
+        }
+    }
 
     pub fn addr(&self) -> SocketAddr {
         self.0.remote_address()
@@ -190,7 +230,8 @@ impl Connection {
         &self,
     ) -> Result<(Request, SendStream), ConnectionError> {
         let (tx, mut rx) = self.0.accept_bi().await?;
-        let request_bytes = rx.read_to_end(Connection::READ_LIMIT).await?;
+        let request_bytes =
+            rx.read_to_end(Connection::READ_REQUEST_LIMIT).await?;
         let request: Request = bincode::deserialize(&request_bytes)?;
         Ok((request, tx))
     }
@@ -199,14 +240,14 @@ impl Connection {
         &self,
         message: &Request,
     ) -> Result<Option<Response>, ConnectionError> {
-        let expect_response = message.expect_response();
+        let read_response_limit = Self::read_response_limit(message);
         let (mut send, mut recv) = self.0.open_bi().await?;
         let message = bincode::serialize(message)?;
         send.write_all(&message).await?;
         send.finish().await?;
-        if expect_response {
-            let response = recv.read_to_end(Self::READ_LIMIT).await?;
-            let response: Response = bincode::deserialize(&response)?;
+        if read_response_limit > 0 {
+            let response_bytes = recv.read_to_end(read_response_limit).await?;
+            let response: Response = bincode::deserialize(&response_bytes)?;
             Ok(Some(response))
         } else {
             Ok(None)
@@ -234,7 +275,10 @@ struct ConnectionTask {
 impl ConnectionTask {
     async fn send_request(
         conn: &Connection,
-        info_tx: &mpsc::UnboundedSender<Info>,
+        response_tx: &mpsc::UnboundedSender<(
+            Result<Response, ConnectionError>,
+            Request,
+        )>,
         request: Request,
     ) {
         let resp = match conn.request(&request).await {
@@ -242,10 +286,9 @@ impl ConnectionTask {
             Err(err) => Err(err),
             Ok(None) => return,
         };
-        let info = resp.map(|resp| Info::Response(resp, request)).into();
-        if info_tx.unbounded_send(info).is_err() {
+        if response_tx.unbounded_send((resp, request)).is_err() {
             let addr = conn.addr();
-            tracing::error!(%addr, "Failed to send peer connection info")
+            tracing::error!(%addr, "Failed to send response")
         };
     }
 
@@ -319,7 +362,7 @@ impl ConnectionTask {
                     .try_get_main_header(&rotxn, header.prev_main_hash)?
             };
             let Some(_prev_main_header) = prev_main_header else {
-                let info = Info::NeedMainchainAncestors(header.prev_main_hash);
+                let info = Info::NeedMainchainAncestors(header.hash());
                 info_tx.unbounded_send(info)?;
                 return Ok(());
             };
@@ -335,57 +378,38 @@ impl ConnectionTask {
                 };
                 return Err(ConnectionError::PeerBan(ban_reason));
             }
-            let last_common_ancestor = {
-                let rotxn = ctxt.env.read_txn()?;
-                ctxt.archive.last_common_ancestor(
-                    &rotxn,
-                    tip,
-                    peer_state.tip,
-                )?
-            };
             // Verify BMM
             {
                 let rotxn = ctxt.env.read_txn()?;
-                let mut missing_bmm = Vec::new();
-                let mut ancestors =
-                    ctxt.archive.ancestors(&rotxn, peer_state.tip).take_while(
-                        |block_hash| Ok(*block_hash != last_common_ancestor),
-                    );
-                while let Some(block_hash) = ancestors.next()? {
-                    match ctxt
-                        .archive
-                        .try_get_bmm_verification(&rotxn, peer_state.tip)?
-                    {
-                        Some(false) => {
-                            let ban_reason =
-                                BanReason::BmmVerificationFailed(block_hash);
-                            return Err(ConnectionError::PeerBan(ban_reason));
-                        }
-                        Some(true) => (),
-                        None => missing_bmm.push(block_hash),
+                match ctxt
+                    .archive
+                    .try_get_bmm_verification(&rotxn, peer_state.tip)?
+                {
+                    Some(true) => (),
+                    Some(false) => {
+                        let ban_reason =
+                            BanReason::BmmVerificationFailed(peer_state.tip);
+                        return Err(ConnectionError::PeerBan(ban_reason));
+                    }
+                    None => {
+                        let info = Info::NeedBmmVerification(peer_state.tip);
+                        info_tx.unbounded_send(info)?;
+                        return Ok(());
                     }
                 }
-                if !missing_bmm.is_empty() {
-                    missing_bmm.reverse();
-                    let info = Info::NeedBmmVerification(missing_bmm);
-                    info_tx.unbounded_send(info)?;
-                    return Ok(());
-                }
             };
-            let missing_bodies: Vec<_> = {
+            let missing_bodies: Vec<BlockHash> = {
                 let rotxn = ctxt.env.read_txn()?;
-                ctxt.archive
-                    .ancestors(&rotxn, peer_state.tip)
-                    .take_while(|block_hash| {
-                        Ok(*block_hash != last_common_ancestor)
-                    })
-                    .filter_map(|block_hash| {
-                        match ctxt.archive.try_get_body(&rotxn, block_hash)? {
-                            Some(_) => Ok(None),
-                            None => Ok(Some(block_hash)),
-                        }
-                    })
-                    .collect()?
+                let common_ancestor = ctxt.archive.last_common_ancestor(
+                    &rotxn,
+                    tip,
+                    peer_state.tip,
+                )?;
+                ctxt.archive.get_missing_bodies(
+                    &rotxn,
+                    peer_state.tip,
+                    common_ancestor,
+                )?
             };
             if missing_bodies.is_empty() {
                 let info = Info::NewTipReady(peer_state.tip);
@@ -519,6 +543,7 @@ impl ConnectionTask {
             /// Signals that a heartbeat message should be sent to the peer
             Heartbeat,
             Request((Request, SendStream)),
+            Response(Result<Response, ConnectionError>, Request),
         }
         let forward_request_stream = self
             .forward_request_rx
@@ -543,22 +568,36 @@ impl ConnectionTask {
             }
         })
         .map_ok(MailboxItem::Request);
+        let (response_tx, response_rx) = mpsc::unbounded();
+        let response_stream =
+            response_rx.map(|(resp, req)| Ok(MailboxItem::Response(resp, req)));
         let mut mailbox_stream = stream::select_all([
             forward_request_stream.boxed(),
             heartbeat_stream.boxed(),
             request_stream.boxed(),
+            response_stream.boxed(),
         ]);
         // spawn child tasks on a JoinSet so that they are dropped alongside this task
         let mut task_set: JoinSet<()> = JoinSet::new();
+        // Do not repeat requests
+        let mut pending_request_hashes = HashSet::<Hash>::new();
         while let Some(mailbox_item) = mailbox_stream.try_next().await? {
             match mailbox_item {
                 MailboxItem::ForwardRequest(request) => {
+                    let request_hash = hash(&request);
+                    if !pending_request_hashes.insert(request_hash) {
+                        continue;
+                    }
                     task_set.spawn({
                         let connection = self.connection.clone();
-                        let info_tx = self.info_tx.clone();
+                        let response_tx = response_tx.clone();
                         async move {
-                            Self::send_request(&connection, &info_tx, request)
-                                .await
+                            Self::send_request(
+                                &connection,
+                                &response_tx,
+                                request,
+                            )
+                            .await
                         }
                     });
                 }
@@ -595,11 +634,11 @@ impl ConnectionTask {
                     });
                     task_set.spawn({
                         let connection = self.connection.clone();
-                        let info_tx = self.info_tx.clone();
+                        let response_tx = response_tx.clone();
                         async move {
                             Self::send_request(
                                 &connection,
-                                &info_tx,
+                                &response_tx,
                                 heartbeat_msg,
                             )
                             .await;
@@ -616,6 +655,15 @@ impl ConnectionTask {
                         request,
                     )
                     .await?;
+                }
+                MailboxItem::Response(resp, req) => {
+                    let request_hash = hash(&req);
+                    pending_request_hashes.remove(&request_hash);
+                    let info =
+                        resp.map(|resp| Info::Response(resp, req)).into();
+                    if self.info_tx.unbounded_send(info).is_err() {
+                        tracing::error!("Failed to send response info")
+                    };
                 }
             }
         }

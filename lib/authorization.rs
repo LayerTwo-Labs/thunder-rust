@@ -1,3 +1,4 @@
+use borsh::BorshSerialize;
 use rayon::iter::{IntoParallelRefIterator as _, ParallelIterator as _};
 use serde::{Deserialize, Serialize};
 
@@ -25,9 +26,33 @@ pub enum Error {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+fn borsh_serialize_verifying_key<W>(
+    vk: &VerifyingKey,
+    writer: &mut W,
+) -> borsh::io::Result<()>
+where
+    W: borsh::io::Write,
+{
+    borsh::BorshSerialize::serialize(&vk.to_bytes(), writer)
+}
+
+fn borsh_serialize_signature<W>(
+    sig: &Signature,
+    writer: &mut W,
+) -> borsh::io::Result<()>
+where
+    W: borsh::io::Write,
+{
+    borsh::BorshSerialize::serialize(&sig.to_bytes(), writer)
+}
+
+#[derive(
+    BorshSerialize, Debug, Clone, Deserialize, Eq, PartialEq, Serialize,
+)]
 pub struct Authorization {
+    #[borsh(serialize_with = "borsh_serialize_verifying_key")]
     pub verifying_key: VerifyingKey,
+    #[borsh(serialize_with = "borsh_serialize_signature")]
     pub signature: Signature,
 }
 
