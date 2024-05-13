@@ -10,8 +10,8 @@ pub struct Cli {
     /// If specified, the gui will not launch.
     #[arg(long)]
     pub headless: bool,
-    /// Log level, defaults to [`tracing::Level::Info`]
-    #[arg(default_value_t = tracing::Level::INFO, long)]
+    /// Log level, defaults to [`tracing::Level::Debug`]
+    #[arg(default_value_t = tracing::Level::DEBUG, long)]
     pub log_level: tracing::Level,
     /// address to use for P2P networking, defaults to 0.0.0.0:4000
     #[arg(short, long)]

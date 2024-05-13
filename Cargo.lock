@@ -4393,7 +4393,7 @@ dependencies = [
 
 [[package]]
 name = "thunder"
-version = "0.8.5"
+version = "0.8.6"
 dependencies = [
  "anyhow",
  "bincode",
@@ -4429,7 +4429,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_app"
-version = "0.8.5"
+version = "0.8.6"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -4462,7 +4462,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_app_cli"
-version = "0.8.5"
+version = "0.8.6"
 dependencies = [
  "anyhow",
  "bip300301",
@@ -4475,7 +4475,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_app_rpc_api"
-version = "0.8.5"
+version = "0.8.6"
 dependencies = [
  "bip300301",
  "jsonrpsee",
