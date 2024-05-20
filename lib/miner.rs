@@ -91,21 +91,28 @@ impl Miner {
 
     pub async fn confirm_bmm(
         &mut self,
-    ) -> Result<Option<(Header, Body)>, Error> {
+    ) -> Result<Option<(bitcoin::BlockHash, Header, Body)>, Error> {
         const VERIFY_BMM_POLL_INTERVAL: Duration = Duration::from_secs(15);
         if let Some((header, body)) = self.block.clone() {
-            let block_hash = header.hash().into();
+            let block_hash = header.hash();
             tracing::trace!(%block_hash, "verifying bmm...");
-            self.drivechain
+            let (bmm_verified, main_hash) = self
+                .drivechain
                 .verify_bmm_next_block(
                     header.prev_main_hash,
-                    block_hash,
+                    block_hash.into(),
                     VERIFY_BMM_POLL_INTERVAL,
                 )
                 .await?;
-            tracing::trace!(%block_hash, "verified bmm");
-            self.block = None;
-            return Ok(Some((header, body)));
+            if bmm_verified {
+                tracing::trace!(%block_hash, "verified bmm");
+                self.block = None;
+                return Ok(Some((main_hash, header, body)));
+            } else {
+                tracing::trace!(%block_hash, "bmm verification failed");
+                self.block = None;
+                return Ok(None);
+            }
         }
         Ok(None)
     }
