@@ -3802,8 +3802,8 @@ dependencies = [
 
 [[package]]
 name = "rustreexo"
-version = "0.2.0"
-source = "git+https://github.com/Ash-L2L/rustreexo.git?rev=a3ac7d3ebe9749ebd0bb34c709e7616f83d573b3#a3ac7d3ebe9749ebd0bb34c709e7616f83d573b3"
+version = "0.1.0"
+source = "git+https://github.com/Ash-L2L/rustreexo.git?rev=6e220fd89b33b60d9ab9099926683c3010a62ede#6e220fd89b33b60d9ab9099926683c3010a62ede"
 dependencies = [
  "bitcoin_hashes 0.12.0",
  "serde",
@@ -4393,7 +4393,7 @@ dependencies = [
 
 [[package]]
 name = "thunder"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "anyhow",
  "bincode",
@@ -4429,7 +4429,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_app"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -4462,7 +4462,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_app_cli"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "anyhow",
  "bip300301",
@@ -4475,7 +4475,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_app_rpc_api"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "bip300301",
  "jsonrpsee",

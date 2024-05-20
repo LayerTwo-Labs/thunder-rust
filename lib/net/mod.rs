@@ -167,7 +167,21 @@ impl Net {
         let active_peers = Arc::new(RwLock::new(HashMap::new()));
         let mut rwtxn = env.write_txn()?;
         let known_peers =
-            env.create_database(&mut rwtxn, Some("known_peers"))?;
+            match env.open_database(&rwtxn, Some("known_peers"))? {
+                Some(known_peers) => known_peers,
+                None => {
+                    let known_peers =
+                        env.create_database(&mut rwtxn, Some("known_peers"))?;
+                    const SEED_NODE_ADDR: SocketAddr = SocketAddr::new(
+                        std::net::IpAddr::V4(std::net::Ipv4Addr::new(
+                            172, 105, 148, 135,
+                        )),
+                        3820,
+                    );
+                    known_peers.put(&mut rwtxn, &SEED_NODE_ADDR, &())?;
+                    known_peers
+                }
+            };
         rwtxn.commit()?;
         let (peer_info_tx, peer_info_rx) = mpsc::unbounded();
         let net = Net {
