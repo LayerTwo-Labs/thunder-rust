@@ -27,6 +27,7 @@ use peer::{
 };
 pub use peer::{
     ConnectionError as PeerConnectionError, Info as PeerConnectionInfo,
+    InternalMessage as PeerConnectionMessage, PeerStateId,
     Request as PeerRequest, Response as PeerResponse,
 };
 
@@ -48,6 +49,8 @@ pub enum Error {
     Heed(#[from] heed::Error),
     #[error("quinn error")]
     Io(#[from] std::io::Error),
+    #[error("peer connection not found for {0}")]
+    MissingPeerConnection(SocketAddr),
     #[error("peer connection")]
     PeerConnection(#[from] PeerConnectionError),
     #[error("quinn rustls error")]
@@ -255,6 +258,26 @@ impl Net {
         Ok(())
     }
 
+    // Push an internal message to the specified peer
+    pub fn push_internal_message(
+        &self,
+        message: PeerConnectionMessage,
+        addr: SocketAddr,
+    ) -> Result<(), Error> {
+        let active_peers_read = self.active_peers.read();
+        let Some(peer_connection_handle) = active_peers_read.get(&addr) else {
+            return Err(Error::MissingPeerConnection(addr));
+        };
+        if let Err(send_err) = peer_connection_handle
+            .internal_message_tx
+            .unbounded_send(message)
+        {
+            let message = send_err.into_inner();
+            tracing::error!("Failed to push internal message to peer connection {addr}: {message:?}")
+        }
+        Ok(())
+    }
+
     // Push a request to the specified peers
     pub fn push_request(
         &self,
@@ -268,8 +291,8 @@ impl Net {
                 continue;
             };
             if let Err(_send_err) = peer_connection_handle
-                .forward_request_tx
-                .unbounded_send(request.clone())
+                .internal_message_tx
+                .unbounded_send(request.clone().into())
             {
                 tracing::warn!(
                     "Failed to push request to peer at {addr}: {request:?}"
@@ -289,11 +312,12 @@ impl Net {
             .iter()
             .filter(|(addr, _)| !exclude.contains(addr))
             .for_each(|(addr, peer_connection_handle)| {
+                let request = PeerRequest::PushTransaction {
+                    transaction: tx.clone(),
+                };
                 if let Err(_send_err) = peer_connection_handle
-                    .forward_request_tx
-                    .unbounded_send(PeerRequest::PushTransaction {
-                        transaction: tx.clone(),
-                    })
+                    .internal_message_tx
+                    .unbounded_send(request.into())
                 {
                     let txid = tx.transaction.txid();
                     tracing::warn!("Failed to push tx {txid} to peer at {addr}")

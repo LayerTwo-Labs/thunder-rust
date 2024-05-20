@@ -1,13 +1,16 @@
-use std::{cmp::Ordering, collections::HashSet};
+use std::{
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+};
 
 use bip300301::{
     bitcoin::{self, hashes::Hash},
     DepositInfo, Header as BitcoinHeader,
 };
-use fallible_iterator::FallibleIterator;
+use fallible_iterator::{FallibleIterator, IteratorExt};
 use heed::{types::SerdeBincode, Database, RoTxn, RwTxn};
 
-use crate::types::{Accumulator, BlockHash, Body, Header};
+use crate::types::{Accumulator, BlockHash, BmmResult, Body, Header, Tip};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -30,16 +33,20 @@ pub enum Error {
     },
     #[error("unknown block hash: {0}")]
     NoBlockHash(BlockHash),
+    #[error("no BMM result with block {0}")]
+    NoBmmResult(BlockHash),
     #[error("no block body with hash {0}")]
     NoBody(BlockHash),
-    #[error("no BMM verification result with for block {0}")]
-    NoBmmVerification(BlockHash),
     #[error("no deposits info for block {0}")]
     NoDepositsInfo(bitcoin::BlockHash),
     #[error("no header with hash {0}")]
     NoHeader(BlockHash),
     #[error("no height info for block hash {0}")]
     NoHeight(BlockHash),
+    #[error("unknown mainchain block hash: {0}")]
+    NoMainBlockHash(bitcoin::BlockHash),
+    #[error("no BMM commitments data for mainchain block {0}")]
+    NoMainBmmCommitments(bitcoin::BlockHash),
     #[error("no mainchain header with hash {0}")]
     NoMainHeader(bitcoin::BlockHash),
     #[error("no height info for mainchain block hash {0}")]
@@ -50,10 +57,15 @@ pub enum Error {
 pub struct Archive {
     accumulators: Database<SerdeBincode<BlockHash>, SerdeBincode<Accumulator>>,
     block_hash_to_height: Database<SerdeBincode<BlockHash>, SerdeBincode<u32>>,
-    /// BMM verification status for each header.
-    /// A status of false indicates that verification failed.
+    /// BMM results for each header.
     /// All ancestors of any block should always be present.
-    bmm_verifications: Database<SerdeBincode<BlockHash>, SerdeBincode<bool>>,
+    /// All relevant mainchain headers should exist in `main_headers`.
+    /// Note that it is possible for a block to have BMM commitments in several
+    /// different mainchain blocks, if there are any mainchain forks.
+    bmm_results: Database<
+        SerdeBincode<BlockHash>,
+        SerdeBincode<HashMap<bitcoin::BlockHash, BmmResult>>,
+    >,
     bodies: Database<SerdeBincode<BlockHash>, SerdeBincode<Body>>,
     /// Deposits by mainchain block, sorted first-to-last in each block
     deposits: Database<
@@ -82,21 +94,38 @@ pub struct Archive {
     headers: Database<SerdeBincode<BlockHash>, SerdeBincode<Header>>,
     main_block_hash_to_height:
         Database<SerdeBincode<bitcoin::BlockHash>, SerdeBincode<u32>>,
+    /// BMM commitments in each mainchain block.
+    /// All ancestors must be present.
+    /// Mainchain blocks MUST be present in `main_headers`, but not all
+    /// mainchain headers will be present, if the blocks are not available.
+    /// BMM commitments do not imply existence of a sidechain block header.
+    /// BMM commitments do not imply BMM validity of a sidechain block,
+    /// as BMM commitments for ancestors may not exist.
+    main_bmm_commitments: Database<
+        SerdeBincode<bitcoin::BlockHash>,
+        SerdeBincode<Option<BlockHash>>,
+    >,
     /// Mainchain headers. All ancestors of any header should always be present
     main_headers:
         Database<SerdeBincode<bitcoin::BlockHash>, SerdeBincode<BitcoinHeader>>,
+    /// Mainchain successor blocks. ALL known block hashes, INCLUDING the zero hash,
+    /// MUST be present.
+    main_successors: Database<
+        SerdeBincode<bitcoin::BlockHash>,
+        SerdeBincode<HashSet<bitcoin::BlockHash>>,
+    >,
     /// Successor blocks. ALL known block hashes, INCLUDING the zero hash,
     /// MUST be present.
     successors:
         Database<SerdeBincode<BlockHash>, SerdeBincode<HashSet<BlockHash>>>,
-    /// Total work for mainchain headers.
+    /// Total work for mainchain headers with BMM verifications.
     /// All ancestors of any block should always be present
     total_work:
         Database<SerdeBincode<bitcoin::BlockHash>, SerdeBincode<bitcoin::Work>>,
 }
 
 impl Archive {
-    pub const NUM_DBS: u32 = 12;
+    pub const NUM_DBS: u32 = 14;
 
     pub fn new(env: &heed::Env) -> Result<Self, Error> {
         let mut rwtxn = env.write_txn()?;
@@ -104,8 +133,8 @@ impl Archive {
             env.create_database(&mut rwtxn, Some("accumulators"))?;
         let block_hash_to_height =
             env.create_database(&mut rwtxn, Some("hash_to_height"))?;
-        let bmm_verifications =
-            env.create_database(&mut rwtxn, Some("bmm_verifications"))?;
+        let bmm_results =
+            env.create_database(&mut rwtxn, Some("bmm_results"))?;
         let bodies = env.create_database(&mut rwtxn, Some("bodies"))?;
         let deposits = env.create_database(&mut rwtxn, Some("deposits"))?;
         let exponential_ancestors =
@@ -115,8 +144,22 @@ impl Archive {
         let headers = env.create_database(&mut rwtxn, Some("headers"))?;
         let main_block_hash_to_height =
             env.create_database(&mut rwtxn, Some("main_hash_to_height"))?;
+        let main_bmm_commitments =
+            env.create_database(&mut rwtxn, Some("main_bmm_commitments"))?;
         let main_headers =
             env.create_database(&mut rwtxn, Some("main_headers"))?;
+        let main_successors =
+            env.create_database(&mut rwtxn, Some("main_successors"))?;
+        if main_successors
+            .get(&rwtxn, &bitcoin::BlockHash::all_zeros())?
+            .is_none()
+        {
+            main_successors.put(
+                &mut rwtxn,
+                &bitcoin::BlockHash::all_zeros(),
+                &HashSet::new(),
+            )?;
+        }
         let successors = env.create_database(&mut rwtxn, Some("successors"))?;
         if successors.get(&rwtxn, &BlockHash::default())?.is_none() {
             successors.put(
@@ -130,14 +173,16 @@ impl Archive {
         Ok(Self {
             accumulators,
             block_hash_to_height,
-            bmm_verifications,
+            bmm_results,
             bodies,
             deposits,
             exponential_ancestors,
             exponential_main_ancestors,
             headers,
+            main_bmm_commitments,
             main_block_hash_to_height,
             main_headers,
+            main_successors,
             successors,
             total_work,
         })
@@ -188,27 +233,37 @@ impl Archive {
             .ok_or(Error::NoHeight(block_hash))
     }
 
-    pub fn try_get_bmm_verification(
+    pub fn get_bmm_results(
         &self,
         rotxn: &RoTxn,
         block_hash: BlockHash,
-    ) -> Result<Option<bool>, Error> {
-        if block_hash == BlockHash::default() {
-            Ok(Some(true))
-        } else {
-            self.bmm_verifications
-                .get(rotxn, &block_hash)
-                .map_err(Error::from)
-        }
+    ) -> Result<HashMap<bitcoin::BlockHash, BmmResult>, Error> {
+        let results = self
+            .bmm_results
+            .get(rotxn, &block_hash)
+            .map_err(Error::from)?
+            .unwrap_or_default();
+        Ok(results)
     }
 
-    pub fn get_bmm_verification(
+    pub fn try_get_bmm_result(
         &self,
         rotxn: &RoTxn,
         block_hash: BlockHash,
-    ) -> Result<bool, Error> {
-        self.try_get_bmm_verification(rotxn, block_hash)?
-            .ok_or(Error::NoBmmVerification(block_hash))
+        main_hash: bitcoin::BlockHash,
+    ) -> Result<Option<BmmResult>, Error> {
+        let results = self.get_bmm_results(rotxn, block_hash)?;
+        Ok(results.get(&main_hash).copied())
+    }
+
+    pub fn get_bmm_result(
+        &self,
+        rotxn: &RoTxn,
+        block_hash: BlockHash,
+        main_hash: bitcoin::BlockHash,
+    ) -> Result<BmmResult, Error> {
+        self.try_get_bmm_result(rotxn, block_hash, main_hash)?
+            .ok_or(Error::NoBmmResult(block_hash))
     }
 
     pub fn try_get_body(
@@ -265,6 +320,24 @@ impl Archive {
             .ok_or(Error::NoHeader(block_hash))
     }
 
+    pub fn try_get_main_bmm_commitment(
+        &self,
+        rotxn: &RoTxn,
+        main_hash: bitcoin::BlockHash,
+    ) -> Result<Option<Option<BlockHash>>, Error> {
+        let commitments = self.main_bmm_commitments.get(rotxn, &main_hash)?;
+        Ok(commitments)
+    }
+
+    pub fn get_main_bmm_commitment(
+        &self,
+        rotxn: &RoTxn,
+        main_hash: bitcoin::BlockHash,
+    ) -> Result<Option<BlockHash>, Error> {
+        self.try_get_main_bmm_commitment(rotxn, main_hash)?
+            .ok_or(Error::NoMainBmmCommitments(main_hash))
+    }
+
     pub fn try_get_main_height(
         &self,
         rotxn: &RoTxn,
@@ -306,6 +379,24 @@ impl Archive {
             .ok_or(Error::NoMainHeader(block_hash))
     }
 
+    pub fn try_get_main_successors(
+        &self,
+        rotxn: &RoTxn,
+        block_hash: bitcoin::BlockHash,
+    ) -> Result<Option<HashSet<bitcoin::BlockHash>>, Error> {
+        let successors = self.main_successors.get(rotxn, &block_hash)?;
+        Ok(successors)
+    }
+
+    pub fn get_main_successors(
+        &self,
+        rotxn: &RoTxn,
+        block_hash: bitcoin::BlockHash,
+    ) -> Result<HashSet<bitcoin::BlockHash>, Error> {
+        self.try_get_main_successors(rotxn, block_hash)?
+            .ok_or(Error::NoMainBlockHash(block_hash))
+    }
+
     pub fn try_get_successors(
         &self,
         rotxn: &RoTxn,
@@ -340,6 +431,36 @@ impl Archive {
     ) -> Result<bitcoin::Work, Error> {
         self.try_get_total_work(rotxn, block_hash)?
             .ok_or(Error::NoMainHeader(block_hash))
+    }
+
+    /// Try to get the best valid mainchain verification for the specified block.
+    pub fn try_get_best_main_verification(
+        &self,
+        rotxn: &RoTxn,
+        block_hash: BlockHash,
+    ) -> Result<Option<bitcoin::BlockHash>, Error> {
+        let verifications = self.get_bmm_results(rotxn, block_hash)?;
+        verifications
+            .into_iter()
+            .filter_map(|(main_hash, bmm_result)| {
+                if bmm_result == BmmResult::Verified {
+                    Some(Ok(main_hash))
+                } else {
+                    None
+                }
+            })
+            .transpose_into_fallible()
+            .max_by_key(|main_hash| self.get_total_work(rotxn, *main_hash))
+    }
+
+    /// Try to get the best valid mainchain verification for the specified block.
+    pub fn get_best_main_verification(
+        &self,
+        rotxn: &RoTxn,
+        block_hash: BlockHash,
+    ) -> Result<bitcoin::BlockHash, Error> {
+        self.try_get_best_main_verification(rotxn, block_hash)?
+            .ok_or(Error::NoBmmResult(block_hash))
     }
 
     pub fn get_nth_ancestor(
@@ -403,6 +524,24 @@ impl Archive {
             }
         }
         Ok(block_hash)
+    }
+
+    /// Get block locator for the specified block hash
+    pub fn get_block_locator(
+        &self,
+        rotxn: &RoTxn,
+        block_hash: BlockHash,
+    ) -> Result<Vec<BlockHash>, Error> {
+        if block_hash == BlockHash::default() {
+            return Ok(Vec::new());
+        }
+        let header = self.get_header(rotxn, block_hash)?;
+        let mut res =
+            self.exponential_ancestors.get(rotxn, &block_hash)?.unwrap();
+        res.reverse();
+        res.push(header.prev_side_hash);
+        res.reverse();
+        Ok(res)
     }
 
     /// Returns true if the second specified block is a descendant of the first
@@ -470,18 +609,6 @@ impl Archive {
         Ok(())
     }
 
-    /// Store a BMM verification result
-    pub fn put_bmm_verification(
-        &self,
-        rwtxn: &mut RwTxn,
-        block_hash: BlockHash,
-        verification_result: bool,
-    ) -> Result<(), Error> {
-        self.bmm_verifications
-            .put(rwtxn, &block_hash, &verification_result)?;
-        Ok(())
-    }
-
     /// Store a block body. The header must already exist.
     pub fn put_body(
         &self,
@@ -515,6 +642,12 @@ impl Archive {
         Ok(())
     }
 
+    /// Store a header.
+    ///
+    /// The following predicates MUST be met before calling this function:
+    /// * Ancestor headers MUST be stored
+    /// * BMM commitments MUST be stored for mainchain header where
+    ///   `main_header.prev_blockhash == header.prev_main_hash`
     pub fn put_header(
         &self,
         rwtxn: &mut RwTxn,
@@ -540,7 +673,13 @@ impl Archive {
                 &pred_successors,
             )?;
         }
-        self.successors.put(rwtxn, &block_hash, &HashSet::new())?;
+        // Store successors
+        {
+            let successors = self
+                .try_get_successors(rwtxn, block_hash)?
+                .unwrap_or_default();
+            self.successors.put(rwtxn, &block_hash, &successors)?;
+        }
         // populate exponential ancestors
         let mut exponential_ancestors = Vec::<BlockHash>::new();
         if height >= 2 {
@@ -563,6 +702,119 @@ impl Archive {
             &block_hash,
             &exponential_ancestors,
         )?;
+        // Populate BMM verifications
+        {
+            let mut bmm_results = self.get_bmm_results(rwtxn, block_hash)?;
+            let parent_bmm_results =
+                self.get_bmm_results(rwtxn, header.prev_side_hash)?;
+            let main_blocks =
+                self.get_main_successors(rwtxn, header.prev_main_hash)?;
+            for main_block in main_blocks {
+                let Some(commitment) =
+                    self.get_main_bmm_commitment(rwtxn, main_block)?
+                else {
+                    tracing::trace!(%block_hash, "Failed BMM @ {main_block}: missing commitment");
+                    bmm_results.insert(main_block, BmmResult::Failed);
+                    continue;
+                };
+                if commitment != block_hash {
+                    tracing::trace!(%block_hash, "Failed BMM @ {main_block}: commitment to other block ({commitment})");
+                    bmm_results.insert(main_block, BmmResult::Failed);
+                    continue;
+                }
+                let main_header = self.get_main_header(rwtxn, main_block)?;
+                if header.prev_main_hash != main_header.prev_blockhash {
+                    tracing::trace!(%block_hash, "Failed BMM @ {main_block}: should be impossible?");
+                    bmm_results.insert(main_block, BmmResult::Failed);
+                    continue;
+                }
+                if header.prev_side_hash == BlockHash::default() {
+                    tracing::trace!(%block_hash, "Verified BMM @ {main_block}: no parent");
+                    bmm_results.insert(main_block, BmmResult::Verified);
+                    continue;
+                }
+                // Check if there is a valid BMM commitment to the parent in the
+                // main ancestry
+                let main_ancestry_contains_valid_bmm_commitment_to_parent =
+                    parent_bmm_results
+                        .iter()
+                        .map(Ok)
+                        .transpose_into_fallible()
+                        .any(|(bmm_block, bmm_result)| {
+                            let parent_verified = *bmm_result
+                                == BmmResult::Verified
+                                && self.is_main_descendant(
+                                    rwtxn, *bmm_block, main_block,
+                                )?;
+                            Result::<bool, Error>::Ok(parent_verified)
+                        })?;
+                if main_ancestry_contains_valid_bmm_commitment_to_parent {
+                    tracing::trace!(%block_hash, "Verified BMM @ {main_block}: verified parent");
+                    bmm_results.insert(main_block, BmmResult::Verified);
+                    continue;
+                } else {
+                    tracing::trace!(%block_hash, "Failed BMM @ {main_block}: no valid BMM commitment to parent in main ancestry");
+                    bmm_results.insert(main_block, BmmResult::Failed);
+                    continue;
+                }
+            }
+            self.bmm_results.put(rwtxn, &block_hash, &bmm_results)?;
+        }
+        Ok(())
+    }
+
+    /// All ancestors MUST be present.
+    /// Mainchain blocks MUST be present in `main_headers`.
+    pub fn put_main_bmm_commitment(
+        &self,
+        rwtxn: &mut RwTxn,
+        main_hash: bitcoin::BlockHash,
+        commitment: Option<BlockHash>,
+    ) -> Result<(), Error> {
+        let main_header = self.get_main_header(rwtxn, main_hash)?;
+        if main_header.prev_blockhash != bitcoin::BlockHash::all_zeros() {
+            let _ = self
+                .get_main_bmm_commitment(rwtxn, main_header.prev_blockhash)?;
+        }
+        self.main_bmm_commitments
+            .put(rwtxn, &main_hash, &commitment)?;
+        let Some(commitment) = commitment else {
+            return Ok(());
+        };
+        let Some(header) = self.try_get_header(rwtxn, commitment)? else {
+            return Ok(());
+        };
+        let bmm_result = if header.prev_main_hash != main_header.prev_blockhash
+        {
+            BmmResult::Failed
+        } else if header.prev_side_hash == BlockHash::default() {
+            BmmResult::Verified
+        } else {
+            // Check if there is a valid BMM commitment to the parent in the
+            // main ancestry
+            let parent_bmm_results =
+                self.get_bmm_results(rwtxn, header.prev_side_hash)?;
+            let main_ancestry_contains_valid_bmm_commitment_to_parent =
+                parent_bmm_results
+                    .into_iter()
+                    .map(Ok)
+                    .transpose_into_fallible()
+                    .any(|(bmm_block, bmm_result)| {
+                        let parent_verified = bmm_result == BmmResult::Verified
+                            && self.is_main_descendant(
+                                rwtxn, bmm_block, main_hash,
+                            )?;
+                        Result::<bool, Error>::Ok(parent_verified)
+                    })?;
+            if main_ancestry_contains_valid_bmm_commitment_to_parent {
+                BmmResult::Verified
+            } else {
+                BmmResult::Failed
+            }
+        };
+        let mut bmm_results = self.get_bmm_results(rwtxn, commitment)?;
+        bmm_results.insert(main_hash, bmm_result);
+        self.bmm_results.put(rwtxn, &commitment, &bmm_results)?;
         Ok(())
     }
 
@@ -593,6 +845,24 @@ impl Archive {
             .put(rwtxn, &block_hash, &height)?;
         self.main_headers.put(rwtxn, &block_hash, header)?;
         self.total_work.put(rwtxn, &block_hash, &total_work)?;
+        // Add to successors for predecessor
+        {
+            let mut pred_successors =
+                self.get_main_successors(rwtxn, header.prev_blockhash)?;
+            pred_successors.insert(block_hash);
+            self.main_successors.put(
+                rwtxn,
+                &header.prev_blockhash,
+                &pred_successors,
+            )?;
+        }
+        // Store successors
+        {
+            let successors = self
+                .try_get_main_successors(rwtxn, block_hash)?
+                .unwrap_or_default();
+            self.main_successors.put(rwtxn, &block_hash, &successors)?;
+        }
         // populate exponential ancestors
         let mut exponential_ancestors = Vec::<bitcoin::BlockHash>::new();
         if height >= 2 {
@@ -809,6 +1079,7 @@ impl Archive {
     }
 
     /// Compares two potential tips and returns the better tip, if there is one.
+    /// Headers for each tip MUST exist.
     /// It is possible that neither tip is better, eg. if the mainchain lineage
     /// is not shared and the tip with greater total work had lower height before
     /// the common mainchain ancestor.
@@ -826,119 +1097,226 @@ impl Archive {
     pub fn better_tip(
         &self,
         rotxn: &RoTxn,
-        block_hash0: BlockHash,
-        block_hash1: BlockHash,
-    ) -> Result<Option<BlockHash>, Error> {
+        tip0: Tip,
+        tip1: Tip,
+    ) -> Result<Option<Tip>, Error> {
+        if tip0 == tip1 {
+            return Ok(None);
+        }
+        let block_hash0 = tip0.block_hash;
+        let block_hash1 = tip1.block_hash;
         let height0 = self.get_height(rotxn, block_hash0)?;
         let height1 = self.get_height(rotxn, block_hash1)?;
         match (height0, height1) {
             (0, 0) => return Ok(None),
-            (0, _) => return Ok(Some(block_hash1)),
-            (_, 0) => return Ok(Some(block_hash0)),
+            (0, _) => return Ok(Some(tip1)),
+            (_, 0) => return Ok(Some(tip0)),
             (_, _) => (),
         }
-        let header0 = self.get_header(rotxn, block_hash0)?;
-        let header1 = self.get_header(rotxn, block_hash1)?;
-        if self.shared_mainchain_lineage(
-            rotxn,
-            header0.prev_main_hash,
-            header1.prev_main_hash,
-        )? {
-            match height0.cmp(&height1) {
-                Ordering::Less => Ok(Some(block_hash1)),
-                Ordering::Greater => Ok(Some(block_hash0)),
-                Ordering::Equal => {
-                    let work0 =
-                        self.get_total_work(rotxn, header0.prev_main_hash)?;
-                    let work1 =
-                        self.get_total_work(rotxn, header1.prev_main_hash)?;
-                    match work0.cmp(&work1) {
-                        Ordering::Less => Ok(Some(block_hash1)),
-                        Ordering::Greater => Ok(Some(block_hash0)),
-                        Ordering::Equal => Ok(None),
-                    }
+        let work0 = self.get_total_work(rotxn, tip0.main_block_hash)?;
+        let work1 = self.get_total_work(rotxn, tip1.main_block_hash)?;
+        match (work0.cmp(&work1), height0.cmp(&height1)) {
+            (Ordering::Less | Ordering::Equal, Ordering::Less) => {
+                // No ancestor of tip0 can have greater height,
+                // so tip1 is better.
+                Ok(Some(tip1))
+            }
+            (Ordering::Equal | Ordering::Greater, Ordering::Greater) => {
+                // No ancestor of tip1 can have greater height,
+                // so tip0 is better.
+                Ok(Some(tip0))
+            }
+            (Ordering::Less, Ordering::Equal) => {
+                // Within the same mainchain lineage, prefer lower work
+                // Otherwise, prefer tip with greater work
+                if self.shared_mainchain_lineage(
+                    rotxn,
+                    tip0.main_block_hash,
+                    tip1.main_block_hash,
+                )? {
+                    Ok(Some(tip0))
+                } else {
+                    Ok(Some(tip1))
                 }
             }
-        } else {
-            let work0 = self.get_total_work(rotxn, header0.prev_main_hash)?;
-            let work1 = self.get_total_work(rotxn, header1.prev_main_hash)?;
-            match (height0.cmp(&height1), work0.cmp(&work1)) {
-                (Ordering::Less, Ordering::Equal) => Ok(Some(block_hash1)),
-                (Ordering::Greater, Ordering::Equal) => Ok(Some(block_hash0)),
-                (Ordering::Less | Ordering::Equal, Ordering::Less) => {
-                    Ok(Some(block_hash1))
+            (Ordering::Greater, Ordering::Equal) => {
+                // Within the same mainchain lineage, prefer lower work
+                // Otherwise, prefer tip with greater work
+                if !self.shared_mainchain_lineage(
+                    rotxn,
+                    tip0.main_block_hash,
+                    tip1.main_block_hash,
+                )? {
+                    Ok(Some(tip0))
+                } else {
+                    Ok(Some(tip1))
                 }
-                (Ordering::Greater | Ordering::Equal, Ordering::Greater) => {
-                    Ok(Some(block_hash0))
-                }
-                (Ordering::Less, Ordering::Greater)
-                | (Ordering::Greater, Ordering::Less)
-                | (Ordering::Equal, Ordering::Equal) => {
-                    let common_mainchain_ancestor = self
-                        .last_common_main_ancestor(
+            }
+            (Ordering::Less, Ordering::Greater) => {
+                // Need to check if tip0 ancestor before common
+                // mainchain ancestor had greater or equal height
+                let main_ancestor = self.last_common_main_ancestor(
+                    rotxn,
+                    tip0.main_block_hash,
+                    tip1.main_block_hash,
+                )?;
+                let tip0_ancestor_height = self
+                    .ancestors(rotxn, block_hash0)
+                    .find_map(|tip0_ancestor| {
+                        if tip0_ancestor == BlockHash::default() {
+                            return Ok(Some(0));
+                        }
+                        let header = self.get_header(rotxn, tip0_ancestor)?;
+                        if !self.is_main_descendant(
                             rotxn,
-                            header0.prev_main_hash,
-                            header1.prev_main_hash,
-                        )?;
-                    let common_mainchain_ancestor_height =
-                        self.get_main_height(rotxn, common_mainchain_ancestor)?;
-                    let height_before_common_mainchain_ancestor0 = self
-                        .ancestors(rotxn, block_hash0)
-                        .find_map(|block_hash| {
-                            if block_hash == BlockHash::default() {
-                                return Ok(Some(0));
-                            };
-                            let header = self.get_header(rotxn, block_hash)?;
-                            let main_height = self.get_main_height(
+                            header.prev_main_hash,
+                            main_ancestor,
+                        )? {
+                            return Ok(None);
+                        }
+                        if header.prev_main_hash == main_ancestor {
+                            return Ok(None);
+                        }
+                        self.get_height(rotxn, tip0_ancestor).map(Some)
+                    })?
+                    .unwrap();
+                if tip0_ancestor_height >= height1 {
+                    Ok(Some(tip0))
+                } else {
+                    Ok(Some(tip1))
+                }
+            }
+            (Ordering::Greater, Ordering::Less) => {
+                // Need to check if tip1 ancestor before common
+                // mainchain ancestor had greater or equal height
+                let main_ancestor = self.last_common_main_ancestor(
+                    rotxn,
+                    tip0.main_block_hash,
+                    tip1.main_block_hash,
+                )?;
+                let tip1_ancestor_height = self
+                    .ancestors(rotxn, block_hash1)
+                    .find_map(|tip1_ancestor| {
+                        if tip1_ancestor == BlockHash::default() {
+                            return Ok(Some(0));
+                        }
+                        let header = self.get_header(rotxn, tip1_ancestor)?;
+                        if !self.is_main_descendant(
+                            rotxn,
+                            header.prev_main_hash,
+                            main_ancestor,
+                        )? {
+                            return Ok(None);
+                        }
+                        if header.prev_main_hash == main_ancestor {
+                            return Ok(None);
+                        }
+                        self.get_height(rotxn, tip1_ancestor).map(Some)
+                    })?
+                    .unwrap();
+                if tip1_ancestor_height < height0 {
+                    Ok(Some(tip0))
+                } else {
+                    Ok(Some(tip1))
+                }
+            }
+            (Ordering::Equal, Ordering::Equal) => {
+                // If tip0 is the same as tip1, return tip0
+                if block_hash0 == block_hash1 {
+                    return Ok(Some(tip0));
+                }
+                // Need to compare tip0 ancestor and tip1 ancestor
+                // before common mainchain ancestor
+                let main_ancestor = self.last_common_main_ancestor(
+                    rotxn,
+                    tip0.main_block_hash,
+                    tip1.main_block_hash,
+                )?;
+                let main_ancestor_height =
+                    self.get_main_height(rotxn, main_ancestor)?;
+                let (tip0_ancestor_height, tip0_ancestor_work) = self
+                    .ancestors(rotxn, block_hash0)
+                    .find_map(|tip0_ancestor| {
+                        if tip0_ancestor == BlockHash::default() {
+                            return Ok(Some((0, None)));
+                        }
+                        let header = self.get_header(rotxn, tip0_ancestor)?;
+                        if !self.is_main_descendant(
+                            rotxn,
+                            header.prev_main_hash,
+                            main_ancestor,
+                        )? {
+                            return Ok(None);
+                        }
+                        if header.prev_main_hash == main_ancestor {
+                            return Ok(None);
+                        }
+                        let height = self.get_height(rotxn, tip0_ancestor)?;
+                        // Find mainchain block hash to get total work
+                        let main_block = {
+                            let prev_height = self.get_main_height(
                                 rotxn,
                                 header.prev_main_hash,
                             )?;
-                            if main_height > common_mainchain_ancestor_height {
-                                return Ok(None);
-                            };
-                            let height = self.get_height(rotxn, block_hash)?;
-                            Ok(Some(height))
-                        })?
-                        .unwrap();
-                    let height_before_common_mainchain_ancestor1 = self
-                        .ancestors(rotxn, block_hash1)
-                        .find_map(|block_hash| {
-                            if block_hash == BlockHash::default() {
-                                return Ok(Some(0));
-                            };
-                            let header = self.get_header(rotxn, block_hash)?;
-                            let main_height = self.get_main_height(
+                            let height = prev_height + 1;
+                            self.get_nth_main_ancestor(
+                                rotxn,
+                                main_ancestor,
+                                main_ancestor_height - height,
+                            )?
+                        };
+                        let work = self.get_total_work(rotxn, main_block)?;
+                        Ok(Some((height, Some(work))))
+                    })?
+                    .unwrap();
+                let (tip1_ancestor_height, tip1_ancestor_work) = self
+                    .ancestors(rotxn, block_hash1)
+                    .find_map(|tip1_ancestor| {
+                        if tip1_ancestor == BlockHash::default() {
+                            return Ok(Some((0, None)));
+                        }
+                        let header = self.get_header(rotxn, tip1_ancestor)?;
+                        if !self.is_main_descendant(
+                            rotxn,
+                            header.prev_main_hash,
+                            main_ancestor,
+                        )? {
+                            return Ok(None);
+                        }
+                        if header.prev_main_hash == main_ancestor {
+                            return Ok(None);
+                        }
+                        let height = self.get_height(rotxn, tip1_ancestor)?;
+                        // Find mainchain block hash to get total work
+                        let main_block = {
+                            let prev_height = self.get_main_height(
                                 rotxn,
                                 header.prev_main_hash,
                             )?;
-                            if main_height > common_mainchain_ancestor_height {
-                                return Ok(None);
-                            };
-                            let height = self.get_height(rotxn, block_hash)?;
-                            Ok(Some(height))
-                        })?
-                        .unwrap();
-                    match (
-                        work0.cmp(&work1),
-                        height_before_common_mainchain_ancestor0
-                            .cmp(&height_before_common_mainchain_ancestor1),
-                    ) {
-                        (Ordering::Less, Ordering::Less | Ordering::Equal) => {
-                            Ok(Some(block_hash1))
-                        }
-                        (Ordering::Less, Ordering::Greater) => Ok(None),
-                        (
-                            Ordering::Greater,
-                            Ordering::Greater | Ordering::Equal,
-                        ) => Ok(Some(block_hash0)),
-                        (Ordering::Greater, Ordering::Less) => Ok(None),
-                        (Ordering::Equal, Ordering::Less) => {
-                            Ok(Some(block_hash1))
-                        }
-                        (Ordering::Equal, Ordering::Greater) => {
-                            Ok(Some(block_hash0))
-                        }
-                        (Ordering::Equal, Ordering::Equal) => Ok(None),
+                            let height = prev_height + 1;
+                            self.get_nth_main_ancestor(
+                                rotxn,
+                                main_ancestor,
+                                main_ancestor_height - height,
+                            )?
+                        };
+                        let work = self.get_total_work(rotxn, main_block)?;
+                        Ok(Some((height, Some(work))))
+                    })?
+                    .unwrap();
+                match (
+                    tip0_ancestor_work.cmp(&tip1_ancestor_work),
+                    tip0_ancestor_height.cmp(&tip1_ancestor_height),
+                ) {
+                    (Ordering::Less | Ordering::Equal, Ordering::Equal)
+                    | (_, Ordering::Greater) => {
+                        // tip1 is not better
+                        Ok(Some(tip0))
+                    }
+                    (Ordering::Greater, Ordering::Equal)
+                    | (_, Ordering::Less) => {
+                        // tip1 is better
+                        Ok(Some(tip1))
                     }
                 }
             }

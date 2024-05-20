@@ -1,6 +1,11 @@
-use std::{collections::HashSet, net::SocketAddr};
+use std::{
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+    fmt::Debug,
+    net::SocketAddr,
+};
 
-use bip300301::bitcoin::{self, hashes::Hash as _};
+use bip300301::bitcoin::{self, hashes::Hash as _, Work};
 use borsh::BorshSerialize;
 use fallible_iterator::FallibleIterator;
 use futures::{channel::mpsc, stream, StreamExt, TryFutureExt, TryStreamExt};
@@ -17,18 +22,26 @@ use tokio_stream::wrappers::IntervalStream;
 use crate::{
     archive::{self, Archive},
     state::{self, State},
-    types::{hash, AuthorizedTransaction, BlockHash, Body, Hash, Header, Txid},
+    types::{
+        hash, AuthorizedTransaction, BlockHash, BmmResult, Body, Hash, Header,
+        Tip, Txid,
+    },
 };
 
 #[derive(Debug, Error)]
 pub enum BanReason {
-    #[error("BMM verification failed for block {0}")]
-    BmmVerificationFailed(BlockHash),
-    #[error("Incorrect total work for block {block_hash}: {total_work:?}")]
-    IncorrectTotalWork {
-        block_hash: BlockHash,
-        total_work: Option<bitcoin::Work>,
-    },
+    #[error(
+        "BMM verification failed for block hash {} at {}",
+        .0.block_hash,
+        .0.main_block_hash
+    )]
+    BmmVerificationFailed(Tip),
+    #[error(
+        "Incorrect total work for block {} at {}: {total_work:?}",
+        tip.block_hash,
+        tip.main_block_hash
+    )]
+    IncorrectTotalWork { tip: Tip, total_work: Option<Work> },
 }
 
 #[must_use]
@@ -46,14 +59,16 @@ pub enum ConnectionError {
     HeartbeatTimeout,
     #[error("heed error")]
     Heed(#[from] heed::Error),
+    #[error("missing peer state for id {0}")]
+    MissingPeerState(PeerStateId),
     #[error("peer should be banned; {0}")]
     PeerBan(#[from] BanReason),
     #[error("read to end error")]
     ReadToEnd(#[from] quinn::ReadToEndError),
     #[error("send datagram error")]
     SendDatagram(#[from] quinn::SendDatagramError),
-    #[error("send forward request error")]
-    SendForwardRequest,
+    #[error("send internal message error")]
+    SendInternalMessage,
     #[error("send info error")]
     SendInfo,
     #[error("state error")]
@@ -68,16 +83,13 @@ impl From<mpsc::TrySendError<Info>> for ConnectionError {
     }
 }
 
-impl From<mpsc::TrySendError<Request>> for ConnectionError {
-    fn from(_: mpsc::TrySendError<Request>) -> Self {
-        Self::SendForwardRequest
+impl From<mpsc::TrySendError<InternalMessage>> for ConnectionError {
+    fn from(_: mpsc::TrySendError<InternalMessage>) -> Self {
+        Self::SendInternalMessage
     }
 }
 
-fn borsh_serialize_work<W>(
-    work: &bitcoin::Work,
-    writer: &mut W,
-) -> borsh::io::Result<()>
+fn borsh_serialize_work<W>(work: &Work, writer: &mut W) -> borsh::io::Result<()>
 where
     W: borsh::io::Write,
 {
@@ -85,25 +97,42 @@ where
 }
 
 fn borsh_serialize_option_work<W>(
-    work: &Option<bitcoin::Work>,
+    work: &Option<Work>,
     writer: &mut W,
 ) -> borsh::io::Result<()>
 where
     W: borsh::io::Write,
 {
     #[derive(BorshSerialize)]
-    struct BorshWrapper(
-        #[borsh(serialize_with = "borsh_serialize_work")] bitcoin::Work,
-    );
+    struct BorshWrapper(#[borsh(serialize_with = "borsh_serialize_work")] Work);
     borsh::BorshSerialize::serialize(&work.map(BorshWrapper), writer)
 }
 
-#[derive(BorshSerialize, Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(
+    BorshSerialize, Clone, Copy, Debug, Default, Deserialize, Serialize,
+)]
 pub struct PeerState {
     block_height: u32,
-    tip: BlockHash,
+    tip: Tip,
     #[borsh(serialize_with = "borsh_serialize_option_work")]
-    total_work: Option<bitcoin::Work>,
+    total_work: Option<Work>,
+}
+
+/// Unique identifier for a peer state
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[repr(transparent)]
+pub struct PeerStateId(Hash);
+
+impl From<&PeerState> for PeerStateId {
+    fn from(peer_state: &PeerState) -> Self {
+        Self(hash(peer_state))
+    }
+}
+
+impl std::fmt::Display for PeerStateId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -129,6 +158,19 @@ pub enum Request {
     Heartbeat(PeerState),
     GetBlock {
         block_hash: BlockHash,
+        /// Mainchain descendant tip that we are requesting the block to reach.
+        /// Only relevant for the requester, so serialization is skipped
+        #[borsh(skip)]
+        #[serde(skip)]
+        descendant_tip: Option<Tip>,
+        /// Ancestor block. If no bodies are missing between `descendant_tip`
+        /// and `ancestor`, then `descendant_tip` is ready to apply.
+        /// Only relevant for the requester, so serialization is skipped
+        ancestor: Option<BlockHash>,
+        /// Only relevant for the requester, so serialization is skipped
+        #[borsh(skip)]
+        #[serde(skip)]
+        peer_state_id: Option<PeerStateId>,
     },
     /// Request headers up to [`end`]
     GetHeaders {
@@ -138,26 +180,38 @@ pub enum Request {
         end: BlockHash,
         /// Height is only relevant for the requester,
         /// so serialization is skipped
+        #[borsh(skip)]
         #[serde(skip)]
         height: Option<u32>,
+        /// Only relevant for the requester, so serialization is skipped
+        #[borsh(skip)]
+        #[serde(skip)]
+        peer_state_id: Option<PeerStateId>,
     },
     PushTransaction {
         transaction: AuthorizedTransaction,
     },
 }
 
+/// Info to send to the net task / node
 #[must_use]
 #[derive(Debug)]
 pub enum Info {
     Error(ConnectionError),
-    /// Need BMM verification for the specified block
-    NeedBmmVerification(BlockHash),
-    /// Need Mainchain ancestors for the specified block hash
-    NeedMainchainAncestors(BlockHash),
+    /// Need BMM verification for the specified tip
+    NeedBmmVerification {
+        main_hash: bitcoin::BlockHash,
+        peer_state_id: PeerStateId,
+    },
+    /// Need Mainchain ancestors for the specified tip
+    NeedMainchainAncestors {
+        main_hash: bitcoin::BlockHash,
+        peer_state_id: PeerStateId,
+    },
     /// New tip ready (body and header exist in archive, BMM verified)
-    NewTipReady(BlockHash),
+    NewTipReady(Tip),
     NewTransaction(AuthorizedTransaction),
-    Response(Response, Request),
+    Response(Box<(Response, Request)>),
 }
 
 impl From<ConnectionError> for Info {
@@ -175,6 +229,31 @@ where
             Ok(value) => value.into(),
             Err(err) => Self::Error(err),
         }
+    }
+}
+
+/// Message received from the connection task / net task / node
+#[derive(Clone, Debug)]
+pub enum InternalMessage {
+    /// Indicates if a BMM verification request completed.
+    /// Does not indicate that BMM was verified successfully.
+    BmmVerification {
+        res: Result<(), bip300301::BlockNotFoundError>,
+        peer_state_id: PeerStateId,
+    },
+    /// Forward a request
+    ForwardRequest(Request),
+    /// Indicates that mainchain ancestors are now available
+    MainchainAncestors(PeerStateId),
+    /// Indicates that the requested headers are now available
+    Headers(PeerStateId),
+    /// Indicates that all requested missing block bodies are now available
+    BodiesAvailable(PeerStateId),
+}
+
+impl From<Request> for InternalMessage {
+    fn from(request: Request) -> Self {
+        Self::ForwardRequest(request)
     }
 }
 
@@ -265,11 +344,10 @@ struct ConnectionTask {
     connection: Connection,
     ctxt: ConnectionContext,
     info_tx: mpsc::UnboundedSender<Info>,
-    peer_state: Option<PeerState>,
-    /// Push a request to forward to the peer
-    forward_request_tx: mpsc::UnboundedSender<Request>,
-    /// Receive requests to forward to the peer
-    forward_request_rx: mpsc::UnboundedReceiver<Request>,
+    /// Push an internal message from connection task / net task / node
+    internal_message_tx: mpsc::UnboundedSender<InternalMessage>,
+    /// Receive an internal message from connection task / net task / node
+    internal_message_rx: mpsc::UnboundedReceiver<InternalMessage>,
 }
 
 impl ConnectionTask {
@@ -303,124 +381,490 @@ impl ConnectionTask {
             .map_err(ConnectionError::from)
     }
 
-    /// If a new tip is announced with greater height than the current tip:
-    /// * If the header does not exist, request it
-    /// * Verify height of the new tip.
-    /// * If the previous mainchain header does not exist, request it
-    /// * Verify PoW
-    /// * Verify BMM
-    /// * If ancestor bodies do not exist, request them
-    /// * Attempt to apply the new tip
-    async fn handle_heartbeat(
+    /// * Request any missing mainchain headers
+    /// * Check claimed work
+    /// * Request BMM commitments if necessary
+    /// * Check that BMM commitment matches peer tip
+    /// * Check if peer tip is better, requesting headers if necessary
+    /// * If peer tip is better:
+    ///   * request headers if missing
+    ///   * verify BMM
+    ///   * request missing bodies
+    ///   * notify net task / node that new tip is ready
+    async fn handle_peer_state(
         ctxt: &ConnectionContext,
         info_tx: &mpsc::UnboundedSender<Info>,
-        forward_request_tx: &mpsc::UnboundedSender<Request>,
+        internal_message_tx: &mpsc::UnboundedSender<InternalMessage>,
         peer_state: &PeerState,
     ) -> Result<(), ConnectionError> {
+        if peer_state.tip.main_block_hash == bitcoin::BlockHash::all_zeros() {
+            // Nothing to do in this case
+            return Ok(());
+        }
+        let Some(peer_total_work) = peer_state.total_work else {
+            // Peer should send total work if they send a main tip
+            let ban_reason = BanReason::IncorrectTotalWork {
+                tip: peer_state.tip,
+                total_work: None,
+            };
+            return Err(ConnectionError::PeerBan(ban_reason));
+        };
         let (tip, tip_height, total_work) = {
             let rotxn = ctxt.env.read_txn()?;
             let tip = ctxt.state.get_tip(&rotxn)?;
             let tip_height = ctxt.state.get_height(&rotxn)?;
-            let total_work = match ctxt.archive.try_get_header(&rotxn, tip)? {
-                None => None,
-                Some(header)
-                    if header.prev_main_hash
-                        == bitcoin::BlockHash::all_zeros() =>
-                {
-                    None
-                }
-                Some(header) => Some(
-                    ctxt.archive
-                        .get_total_work(&rotxn, header.prev_main_hash)?,
-                ),
+            let (bmm_verification, total_work) = if tip == BlockHash::default()
+            {
+                (bitcoin::BlockHash::all_zeros(), None)
+            } else {
+                let bmm_verification =
+                    ctxt.archive.get_best_main_verification(&rotxn, tip)?;
+                let work =
+                    ctxt.archive.get_total_work(&rotxn, bmm_verification)?;
+                (bmm_verification, Some(work))
+            };
+            let tip = Tip {
+                block_hash: tip,
+                main_block_hash: bmm_verification,
             };
             (tip, tip_height, total_work)
         };
-        let peer_height = peer_state.block_height;
-        if peer_height > tip_height
-            || (peer_height == tip_height && peer_state.total_work > total_work)
+        // Check claimed work and request mainchain headers and BMM commitments
+        // if necessary
         {
-            let header = {
-                let rotxn = ctxt.env.read_txn()?;
-                ctxt.archive.try_get_header(&rotxn, peer_state.tip)?
-            };
-            let Some(header) = header else {
-                // Request headers
-                let request = Request::GetHeaders {
-                    // TODO: provide alternative start points
-                    start: HashSet::new(),
-                    end: peer_state.tip,
-                    height: Some(peer_state.block_height),
-                };
-                forward_request_tx.unbounded_send(request)?;
-                return Ok(());
-            };
-            // Check mainchain headers
-            let prev_main_header = {
-                let rotxn = ctxt.env.read_txn()?;
-                ctxt.archive
-                    .try_get_main_header(&rotxn, header.prev_main_hash)?
-            };
-            let Some(_prev_main_header) = prev_main_header else {
-                let info = Info::NeedMainchainAncestors(header.hash());
-                info_tx.unbounded_send(info)?;
-                return Ok(());
-            };
-            // Check PoW
-            let prev_main_total_work = {
-                let rotxn = ctxt.env.read_txn()?;
-                ctxt.archive.get_total_work(&rotxn, header.prev_main_hash)?
-            };
-            if Some(prev_main_total_work) != peer_state.total_work {
-                let ban_reason = BanReason::IncorrectTotalWork {
-                    block_hash: peer_state.tip,
-                    total_work: peer_state.total_work,
-                };
-                return Err(ConnectionError::PeerBan(ban_reason));
-            }
-            // Verify BMM
+            let rotxn = ctxt.env.read_txn()?;
+            match ctxt
+                .archive
+                .try_get_main_header(&rotxn, peer_state.tip.main_block_hash)?
             {
-                let rotxn = ctxt.env.read_txn()?;
-                match ctxt
-                    .archive
-                    .try_get_bmm_verification(&rotxn, peer_state.tip)?
-                {
-                    Some(true) => (),
-                    Some(false) => {
+                None => {
+                    let info = Info::NeedMainchainAncestors {
+                        main_hash: peer_state.tip.main_block_hash,
+                        peer_state_id: peer_state.into(),
+                    };
+                    info_tx.unbounded_send(info)?;
+                    return Ok(());
+                }
+                Some(_main_header) => {
+                    let computed_total_work = ctxt.archive.get_total_work(
+                        &rotxn,
+                        peer_state.tip.main_block_hash,
+                    )?;
+                    if peer_total_work != computed_total_work {
+                        let ban_reason = BanReason::IncorrectTotalWork {
+                            tip: peer_state.tip,
+                            total_work: Some(peer_total_work),
+                        };
+                        return Err(ConnectionError::PeerBan(ban_reason));
+                    }
+                    if peer_state.tip.block_hash == BlockHash::default() {
+                        // Nothing else to do in this case
+                        return Ok(());
+                    }
+                    let Some(bmm_commitment) =
+                        ctxt.archive.try_get_main_bmm_commitment(
+                            &rotxn,
+                            peer_state.tip.main_block_hash,
+                        )?
+                    else {
+                        let info = Info::NeedBmmVerification {
+                            main_hash: peer_state.tip.main_block_hash,
+                            peer_state_id: peer_state.into(),
+                        };
+                        info_tx.unbounded_send(info)?;
+                        return Ok(());
+                    };
+                    if bmm_commitment != Some(peer_state.tip.block_hash) {
                         let ban_reason =
                             BanReason::BmmVerificationFailed(peer_state.tip);
                         return Err(ConnectionError::PeerBan(ban_reason));
                     }
-                    None => {
-                        let info = Info::NeedBmmVerification(peer_state.tip);
-                        info_tx.unbounded_send(info)?;
+                }
+            }
+        }
+        // Check if the peer tip is better, requesting headers if necessary
+        match (
+            total_work.cmp(&Some(peer_total_work)),
+            tip_height.cmp(&peer_state.block_height),
+        ) {
+            (Ordering::Less | Ordering::Equal, Ordering::Less) => {
+                // No tip ancestor can have greater height,
+                // so peer tip is better.
+                // Request headers if necessary
+                let rotxn = ctxt.env.read_txn()?;
+                if ctxt
+                    .archive
+                    .try_get_header(&rotxn, peer_state.tip.block_hash)?
+                    .is_none()
+                {
+                    let start = HashSet::from_iter(
+                        ctxt.archive
+                            .get_block_locator(&rotxn, tip.block_hash)?,
+                    );
+                    let request = Request::GetHeaders {
+                        start,
+                        end: peer_state.tip.block_hash,
+                        height: Some(peer_state.block_height),
+                        peer_state_id: Some(peer_state.into()),
+                    };
+                    internal_message_tx.unbounded_send(request.into())?;
+                    return Ok(());
+                }
+            }
+            (Ordering::Equal | Ordering::Greater, Ordering::Greater) => {
+                // No peer tip ancestor can have greater height,
+                // so tip is better.
+                // Nothing to do in this case
+                return Ok(());
+            }
+            (Ordering::Less, Ordering::Equal) => {
+                // Within the same mainchain lineage, prefer lower work
+                // Otherwise, prefer tip with greater work
+                let rotxn = ctxt.env.read_txn()?;
+                if ctxt.archive.shared_mainchain_lineage(
+                    &rotxn,
+                    tip.main_block_hash,
+                    peer_state.tip.main_block_hash,
+                )? {
+                    // Nothing to do in this case
+                    return Ok(());
+                }
+                // Request headers if necessary
+                if ctxt
+                    .archive
+                    .try_get_header(&rotxn, peer_state.tip.block_hash)?
+                    .is_none()
+                {
+                    let start = HashSet::from_iter(
+                        ctxt.archive
+                            .get_block_locator(&rotxn, tip.block_hash)?,
+                    );
+                    let request = Request::GetHeaders {
+                        start,
+                        end: peer_state.tip.block_hash,
+                        height: Some(peer_state.block_height),
+                        peer_state_id: Some(peer_state.into()),
+                    };
+                    internal_message_tx.unbounded_send(request.into())?;
+                    return Ok(());
+                }
+            }
+            (Ordering::Greater, Ordering::Equal) => {
+                // Within the same mainchain lineage, prefer lower work
+                // Otherwise, prefer tip with greater work
+                let rotxn = ctxt.env.read_txn()?;
+                if !ctxt.archive.shared_mainchain_lineage(
+                    &rotxn,
+                    tip.main_block_hash,
+                    peer_state.tip.main_block_hash,
+                )? {
+                    // Nothing to do in this case
+                    return Ok(());
+                }
+                // Request headers if necessary
+                if ctxt
+                    .archive
+                    .try_get_header(&rotxn, peer_state.tip.block_hash)?
+                    .is_none()
+                {
+                    let start = HashSet::from_iter(
+                        ctxt.archive
+                            .get_block_locator(&rotxn, tip.block_hash)?,
+                    );
+                    let request = Request::GetHeaders {
+                        start,
+                        end: peer_state.tip.block_hash,
+                        height: Some(peer_state.block_height),
+                        peer_state_id: Some(peer_state.into()),
+                    };
+                    internal_message_tx.unbounded_send(request.into())?;
+                    return Ok(());
+                }
+            }
+            (Ordering::Less, Ordering::Greater) => {
+                // Need to check if tip ancestor before common
+                // mainchain ancestor had greater or equal height
+                let rotxn = ctxt.env.read_txn()?;
+                let main_ancestor = ctxt.archive.last_common_main_ancestor(
+                    &rotxn,
+                    tip.main_block_hash,
+                    peer_state.tip.main_block_hash,
+                )?;
+                let tip_ancestor_height = ctxt
+                    .archive
+                    .ancestors(&rotxn, tip.block_hash)
+                    .find_map(|tip_ancestor| {
+                        if tip_ancestor == BlockHash::default() {
+                            return Ok(Some(0));
+                        }
+                        let header =
+                            ctxt.archive.get_header(&rotxn, tip_ancestor)?;
+                        if !ctxt.archive.is_main_descendant(
+                            &rotxn,
+                            header.prev_main_hash,
+                            main_ancestor,
+                        )? {
+                            return Ok(None);
+                        }
+                        if header.prev_main_hash == main_ancestor {
+                            return Ok(None);
+                        }
+                        ctxt.archive.get_height(&rotxn, tip_ancestor).map(Some)
+                    })?
+                    .unwrap();
+                if tip_ancestor_height >= peer_state.block_height {
+                    // Nothing to do in this case
+                    return Ok(());
+                }
+                // Request headers if necessary
+                if ctxt
+                    .archive
+                    .try_get_header(&rotxn, peer_state.tip.block_hash)?
+                    .is_none()
+                {
+                    let start = HashSet::from_iter(
+                        ctxt.archive
+                            .get_block_locator(&rotxn, tip.block_hash)?,
+                    );
+                    let request = Request::GetHeaders {
+                        start,
+                        end: peer_state.tip.block_hash,
+                        height: Some(peer_state.block_height),
+                        peer_state_id: Some(peer_state.into()),
+                    };
+                    internal_message_tx.unbounded_send(request.into())?;
+                    return Ok(());
+                }
+            }
+            (Ordering::Greater, Ordering::Less) => {
+                // Need to check if peer's tip ancestor before common
+                // mainchain ancestor had greater or equal height
+                let rotxn = ctxt.env.read_txn()?;
+                if ctxt
+                    .archive
+                    .try_get_header(&rotxn, peer_state.tip.block_hash)?
+                    .is_none()
+                {
+                    let start = HashSet::from_iter(
+                        ctxt.archive
+                            .get_block_locator(&rotxn, tip.block_hash)?,
+                    );
+                    let request = Request::GetHeaders {
+                        start,
+                        end: peer_state.tip.block_hash,
+                        height: Some(peer_state.block_height),
+                        peer_state_id: Some(peer_state.into()),
+                    };
+                    internal_message_tx.unbounded_send(request.into())?;
+                    return Ok(());
+                }
+                let main_ancestor = ctxt.archive.last_common_main_ancestor(
+                    &rotxn,
+                    tip.main_block_hash,
+                    peer_state.tip.main_block_hash,
+                )?;
+                let peer_tip_ancestor_height = ctxt
+                    .archive
+                    .ancestors(&rotxn, peer_state.tip.block_hash)
+                    .find_map(|peer_tip_ancestor| {
+                        if peer_tip_ancestor == BlockHash::default() {
+                            return Ok(Some(0));
+                        }
+                        let header = ctxt
+                            .archive
+                            .get_header(&rotxn, peer_tip_ancestor)?;
+                        if !ctxt.archive.is_main_descendant(
+                            &rotxn,
+                            header.prev_main_hash,
+                            main_ancestor,
+                        )? {
+                            return Ok(None);
+                        }
+                        if header.prev_main_hash == main_ancestor {
+                            return Ok(None);
+                        }
+                        ctxt.archive
+                            .get_height(&rotxn, peer_tip_ancestor)
+                            .map(Some)
+                    })?
+                    .unwrap();
+                if peer_tip_ancestor_height < tip_height {
+                    // Nothing to do in this case
+                    return Ok(());
+                }
+            }
+            (Ordering::Equal, Ordering::Equal) => {
+                // If the peer tip is the same as the tip, nothing to do
+                if peer_state.tip.block_hash == tip.block_hash {
+                    return Ok(());
+                }
+                // Need to compare tip ancestor and peer's tip ancestor
+                // before common mainchain ancestor
+                let rotxn = ctxt.env.read_txn()?;
+                if ctxt
+                    .archive
+                    .try_get_header(&rotxn, peer_state.tip.block_hash)?
+                    .is_none()
+                {
+                    let start = HashSet::from_iter(
+                        ctxt.archive
+                            .get_block_locator(&rotxn, tip.block_hash)?,
+                    );
+                    let request = Request::GetHeaders {
+                        start,
+                        end: peer_state.tip.block_hash,
+                        height: Some(peer_state.block_height),
+                        peer_state_id: Some(peer_state.into()),
+                    };
+                    internal_message_tx.unbounded_send(request.into())?;
+                    return Ok(());
+                }
+                let main_ancestor = ctxt.archive.last_common_main_ancestor(
+                    &rotxn,
+                    tip.main_block_hash,
+                    peer_state.tip.main_block_hash,
+                )?;
+                let main_ancestor_height =
+                    ctxt.archive.get_main_height(&rotxn, main_ancestor)?;
+                let (tip_ancestor_height, tip_ancestor_work) = ctxt
+                    .archive
+                    .ancestors(&rotxn, tip.block_hash)
+                    .find_map(|tip_ancestor| {
+                        if tip_ancestor == BlockHash::default() {
+                            return Ok(Some((0, None)));
+                        }
+                        let header =
+                            ctxt.archive.get_header(&rotxn, tip_ancestor)?;
+                        if !ctxt.archive.is_main_descendant(
+                            &rotxn,
+                            header.prev_main_hash,
+                            main_ancestor,
+                        )? {
+                            return Ok(None);
+                        }
+                        if header.prev_main_hash == main_ancestor {
+                            return Ok(None);
+                        }
+                        let height =
+                            ctxt.archive.get_height(&rotxn, tip_ancestor)?;
+                        // Find mainchain block hash to get total work
+                        let main_block = {
+                            let prev_height = ctxt.archive.get_main_height(
+                                &rotxn,
+                                header.prev_main_hash,
+                            )?;
+                            let height = prev_height + 1;
+                            ctxt.archive.get_nth_main_ancestor(
+                                &rotxn,
+                                main_ancestor,
+                                main_ancestor_height - height,
+                            )?
+                        };
+                        let work =
+                            ctxt.archive.get_total_work(&rotxn, main_block)?;
+                        Ok(Some((height, Some(work))))
+                    })?
+                    .unwrap();
+                let (peer_tip_ancestor_height, peer_tip_ancestor_work) = ctxt
+                    .archive
+                    .ancestors(&rotxn, peer_state.tip.block_hash)
+                    .find_map(|peer_tip_ancestor| {
+                        if peer_tip_ancestor == BlockHash::default() {
+                            return Ok(Some((0, None)));
+                        }
+                        let header = ctxt
+                            .archive
+                            .get_header(&rotxn, peer_tip_ancestor)?;
+                        if !ctxt.archive.is_main_descendant(
+                            &rotxn,
+                            header.prev_main_hash,
+                            main_ancestor,
+                        )? {
+                            return Ok(None);
+                        }
+                        if header.prev_main_hash == main_ancestor {
+                            return Ok(None);
+                        }
+                        let height = ctxt
+                            .archive
+                            .get_height(&rotxn, peer_tip_ancestor)?;
+                        // Find mainchain block hash to get total work
+                        let main_block = {
+                            let prev_height = ctxt.archive.get_main_height(
+                                &rotxn,
+                                header.prev_main_hash,
+                            )?;
+                            let height = prev_height + 1;
+                            ctxt.archive.get_nth_main_ancestor(
+                                &rotxn,
+                                main_ancestor,
+                                main_ancestor_height - height,
+                            )?
+                        };
+                        let work =
+                            ctxt.archive.get_total_work(&rotxn, main_block)?;
+                        Ok(Some((height, Some(work))))
+                    })?
+                    .unwrap();
+                match (
+                    tip_ancestor_work.cmp(&peer_tip_ancestor_work),
+                    tip_ancestor_height.cmp(&peer_tip_ancestor_height),
+                ) {
+                    (Ordering::Less | Ordering::Equal, Ordering::Equal)
+                    | (_, Ordering::Greater) => {
+                        // Peer tip is not better, nothing to do
                         return Ok(());
                     }
+                    (Ordering::Greater, Ordering::Equal)
+                    | (_, Ordering::Less) => {
+                        // Peer tip is better
+                    }
                 }
-            };
-            let missing_bodies: Vec<BlockHash> = {
-                let rotxn = ctxt.env.read_txn()?;
-                let common_ancestor = ctxt.archive.last_common_ancestor(
-                    &rotxn,
-                    tip,
-                    peer_state.tip,
-                )?;
-                ctxt.archive.get_missing_bodies(
-                    &rotxn,
-                    peer_state.tip,
-                    common_ancestor,
-                )?
-            };
-            if missing_bodies.is_empty() {
-                let info = Info::NewTipReady(peer_state.tip);
-                info_tx.unbounded_send(info)?;
-            } else {
-                // Request missing bodies
-                missing_bodies.into_iter().try_for_each(|block_hash| {
-                    let request = Request::GetBlock { block_hash };
-                    forward_request_tx.unbounded_send(request)
-                })?;
             }
+        }
+        // Check BMM now that headers are available
+        {
+            let rotxn = ctxt.env.read_txn()?;
+            let Some(BmmResult::Verified) = ctxt.archive.try_get_bmm_result(
+                &rotxn,
+                peer_state.tip.block_hash,
+                peer_state.tip.main_block_hash,
+            )?
+            else {
+                let ban_reason =
+                    BanReason::BmmVerificationFailed(peer_state.tip);
+                return Err(ConnectionError::PeerBan(ban_reason));
+            };
+        }
+        // Request missing bodies, or notify that a new tip is ready
+        let (common_ancestor, missing_bodies): (BlockHash, Vec<BlockHash>) = {
+            let rotxn = ctxt.env.read_txn()?;
+            let common_ancestor = ctxt.archive.last_common_ancestor(
+                &rotxn,
+                tip.block_hash,
+                peer_state.tip.block_hash,
+            )?;
+            let missing_bodies = ctxt.archive.get_missing_bodies(
+                &rotxn,
+                peer_state.tip.block_hash,
+                common_ancestor,
+            )?;
+            (common_ancestor, missing_bodies)
+        };
+        if missing_bodies.is_empty() {
+            let info = Info::NewTipReady(peer_state.tip);
+            info_tx.unbounded_send(info)?;
+        } else {
+            // Request missing bodies
+            missing_bodies.into_iter().try_for_each(|block_hash| {
+                let request = Request::GetBlock {
+                    block_hash,
+                    descendant_tip: Some(peer_state.tip),
+                    peer_state_id: Some(peer_state.into()),
+                    ancestor: Some(common_ancestor),
+                };
+                internal_message_tx.unbounded_send(request.into())
+            })?;
         }
         Ok(())
     }
@@ -505,30 +949,40 @@ impl ConnectionTask {
     async fn handle_request(
         ctxt: &ConnectionContext,
         info_tx: &mpsc::UnboundedSender<Info>,
-        forward_request_tx: &mpsc::UnboundedSender<Request>,
-        peer_state: &mut Option<PeerState>,
+        internal_message_tx: &mpsc::UnboundedSender<InternalMessage>,
+        peer_state: &mut Option<PeerStateId>,
+        // Map associating peer state hashes to peer state
+        peer_states: &mut HashMap<PeerStateId, PeerState>,
         response_tx: SendStream,
         request: Request,
     ) -> Result<(), ConnectionError> {
         match request {
             Request::Heartbeat(new_peer_state) => {
-                let () = Self::handle_heartbeat(
-                    ctxt,
-                    info_tx,
-                    forward_request_tx,
-                    &new_peer_state,
-                )
-                .await?;
-                *peer_state = Some(new_peer_state);
+                let new_peer_state_id = (&new_peer_state).into();
+                peer_states.insert(new_peer_state_id, new_peer_state);
+                if *peer_state != Some(new_peer_state_id) {
+                    let () = Self::handle_peer_state(
+                        ctxt,
+                        info_tx,
+                        internal_message_tx,
+                        &new_peer_state,
+                    )
+                    .await?;
+                    *peer_state = Some(new_peer_state_id);
+                }
                 Ok(())
             }
-            Request::GetBlock { block_hash } => {
-                Self::handle_get_block(ctxt, response_tx, block_hash).await
-            }
+            Request::GetBlock {
+                block_hash,
+                descendant_tip: _,
+                ancestor: _,
+                peer_state_id: _,
+            } => Self::handle_get_block(ctxt, response_tx, block_hash).await,
             Request::GetHeaders {
                 start,
                 end,
                 height: _,
+                peer_state_id: _,
             } => Self::handle_get_headers(ctxt, response_tx, start, end).await,
             Request::PushTransaction { transaction } => {
                 Self::handle_push_tx(ctxt, info_tx, response_tx, transaction)
@@ -537,17 +991,18 @@ impl ConnectionTask {
         }
     }
 
-    async fn run(mut self) -> Result<(), ConnectionError> {
+    async fn run(self) -> Result<(), ConnectionError> {
         enum MailboxItem {
-            ForwardRequest(Request),
+            /// Internal messages from the connection task / net task / node
+            InternalMessage(InternalMessage),
             /// Signals that a heartbeat message should be sent to the peer
             Heartbeat,
             Request((Request, SendStream)),
             Response(Result<Response, ConnectionError>, Request),
         }
-        let forward_request_stream = self
-            .forward_request_rx
-            .map(|request| Ok(MailboxItem::ForwardRequest(request)));
+        let internal_message_stream = self
+            .internal_message_rx
+            .map(|msg| Ok(MailboxItem::InternalMessage(msg)));
         let heartbeat_stream =
             IntervalStream::new(interval(Connection::HEARTBEAT_SEND_INTERVAL))
                 .map(|_| Ok(MailboxItem::Heartbeat));
@@ -572,18 +1027,24 @@ impl ConnectionTask {
         let response_stream =
             response_rx.map(|(resp, req)| Ok(MailboxItem::Response(resp, req)));
         let mut mailbox_stream = stream::select_all([
-            forward_request_stream.boxed(),
+            internal_message_stream.boxed(),
             heartbeat_stream.boxed(),
             request_stream.boxed(),
             response_stream.boxed(),
         ]);
         // spawn child tasks on a JoinSet so that they are dropped alongside this task
         let mut task_set: JoinSet<()> = JoinSet::new();
+        // current peer state
+        let mut peer_state = Option::<PeerStateId>::None;
+        // known peer states
+        let mut peer_states = HashMap::<PeerStateId, PeerState>::new();
         // Do not repeat requests
         let mut pending_request_hashes = HashSet::<Hash>::new();
         while let Some(mailbox_item) = mailbox_stream.try_next().await? {
             match mailbox_item {
-                MailboxItem::ForwardRequest(request) => {
+                MailboxItem::InternalMessage(
+                    InternalMessage::ForwardRequest(request),
+                ) => {
                     let request_hash = hash(&request);
                     if !pending_request_hashes.insert(request_hash) {
                         continue;
@@ -601,29 +1062,68 @@ impl ConnectionTask {
                         }
                     });
                 }
+                MailboxItem::InternalMessage(
+                    InternalMessage::BmmVerification { res, peer_state_id },
+                ) => {
+                    if let Err(block_not_found) = res {
+                        tracing::warn!("{block_not_found}");
+                        continue;
+                    }
+                    let Some(peer_state) = peer_states.get(&peer_state_id)
+                    else {
+                        return Err(ConnectionError::MissingPeerState(
+                            peer_state_id,
+                        ));
+                    };
+                    let () = Self::handle_peer_state(
+                        &self.ctxt,
+                        &self.info_tx,
+                        &self.internal_message_tx,
+                        peer_state,
+                    )
+                    .await?;
+                }
+                MailboxItem::InternalMessage(
+                    InternalMessage::MainchainAncestors(peer_state_id)
+                    | InternalMessage::Headers(peer_state_id)
+                    | InternalMessage::BodiesAvailable(peer_state_id),
+                ) => {
+                    let Some(peer_state) = peer_states.get(&peer_state_id)
+                    else {
+                        return Err(ConnectionError::MissingPeerState(
+                            peer_state_id,
+                        ));
+                    };
+                    let () = Self::handle_peer_state(
+                        &self.ctxt,
+                        &self.info_tx,
+                        &self.internal_message_tx,
+                        peer_state,
+                    )
+                    .await?;
+                }
                 MailboxItem::Heartbeat => {
                     let (tip, tip_height, total_work) = {
                         let rotxn = self.ctxt.env.read_txn()?;
                         let tip = self.ctxt.state.get_tip(&rotxn)?;
                         let tip_height = self.ctxt.state.get_height(&rotxn)?;
-                        let total_work = match self
-                            .ctxt
-                            .archive
-                            .try_get_header(&rotxn, tip)?
-                        {
-                            None => None,
-                            Some(header)
-                                if header.prev_main_hash
-                                    == bitcoin::BlockHash::all_zeros() =>
-                            {
-                                None
-                            }
-                            Some(header) => {
-                                Some(self.ctxt.archive.get_total_work(
-                                    &rotxn,
-                                    header.prev_main_hash,
-                                )?)
-                            }
+                        let (bmm_verification, total_work) =
+                            if tip == BlockHash::default() {
+                                (bitcoin::BlockHash::all_zeros(), None)
+                            } else {
+                                let bmm_verification = self
+                                    .ctxt
+                                    .archive
+                                    .get_best_main_verification(&rotxn, tip)?;
+                                let work = self
+                                    .ctxt
+                                    .archive
+                                    .get_total_work(&rotxn, bmm_verification)?;
+                                (bmm_verification, Some(work))
+                            };
+                        let tip = Tip {
+                            block_hash: tip,
+                            main_block_hash: bmm_verification,
                         };
                         (tip, tip_height, total_work)
                     };
@@ -649,8 +1149,9 @@ impl ConnectionTask {
                     let () = Self::handle_request(
                         &self.ctxt,
                         &self.info_tx,
-                        &self.forward_request_tx,
-                        &mut self.peer_state,
+                        &self.internal_message_tx,
+                        &mut peer_state,
+                        &mut peer_states,
                         response_tx,
                         request,
                     )
@@ -659,8 +1160,9 @@ impl ConnectionTask {
                 MailboxItem::Response(resp, req) => {
                     let request_hash = hash(&req);
                     pending_request_hashes.remove(&request_hash);
-                    let info =
-                        resp.map(|resp| Info::Response(resp, req)).into();
+                    let info = resp
+                        .map(|resp| Info::Response(Box::new((resp, req))))
+                        .into();
                     if self.info_tx.unbounded_send(info).is_err() {
                         tracing::error!("Failed to send response info")
                     };
@@ -674,7 +1176,8 @@ impl ConnectionTask {
 /// Connection killed on drop
 pub struct ConnectionHandle {
     task: JoinHandle<()>,
-    pub forward_request_tx: mpsc::UnboundedSender<Request>,
+    /// Push messages from connection task / net task / node
+    pub internal_message_tx: mpsc::UnboundedSender<InternalMessage>,
 }
 
 impl Drop for ConnectionHandle {
@@ -688,19 +1191,18 @@ pub fn handle(
     ctxt: ConnectionContext,
     connection: Connection,
 ) -> (ConnectionHandle, mpsc::UnboundedReceiver<Info>) {
-    let (forward_request_tx, forward_request_rx) = mpsc::unbounded();
+    let (internal_message_tx, internal_message_rx) = mpsc::unbounded();
     let (info_tx, info_rx) = mpsc::unbounded();
     let connection_task = {
         let info_tx = info_tx.clone();
-        let forward_request_tx = forward_request_tx.clone();
+        let internal_message_tx = internal_message_tx.clone();
         move || async move {
             let connection_task = ConnectionTask {
                 connection,
                 ctxt,
                 info_tx,
-                peer_state: None,
-                forward_request_tx,
-                forward_request_rx,
+                internal_message_tx,
+                internal_message_rx,
             };
             connection_task.run().await
         }
@@ -716,7 +1218,7 @@ pub fn handle(
     });
     let connection_handle = ConnectionHandle {
         task,
-        forward_request_tx,
+        internal_message_tx,
     };
     (connection_handle, info_rx)
 }
@@ -726,20 +1228,19 @@ pub fn connect(
     addr: SocketAddr,
     ctxt: ConnectionContext,
 ) -> (ConnectionHandle, mpsc::UnboundedReceiver<Info>) {
-    let (forward_request_tx, forward_request_rx) = mpsc::unbounded();
+    let (internal_message_tx, internal_message_rx) = mpsc::unbounded();
     let (info_tx, info_rx) = mpsc::unbounded();
     let connection_task = {
         let info_tx = info_tx.clone();
-        let forward_request_tx = forward_request_tx.clone();
+        let internal_message_tx = internal_message_tx.clone();
         move || async move {
             let connection = Connection::new(&endpoint, addr).await?;
             let connection_task = ConnectionTask {
                 connection,
                 ctxt,
                 info_tx,
-                peer_state: None,
-                forward_request_tx,
-                forward_request_rx,
+                internal_message_tx,
+                internal_message_rx,
             };
             connection_task.run().await
         }
@@ -755,7 +1256,7 @@ pub fn connect(
     });
     let connection_handle = ConnectionHandle {
         task,
-        forward_request_tx,
+        internal_message_tx,
     };
     (connection_handle, info_rx)
 }

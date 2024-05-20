@@ -9,7 +9,6 @@ use bip300301::{
     TwoWayPegData, WithdrawalBundleStatus,
 };
 use rustreexo::accumulator::{node_hash::NodeHash, proof::Proof};
-use serde::{Deserialize, Serialize};
 
 use crate::{
     authorization::Authorization,
@@ -20,6 +19,7 @@ use crate::{
         PointedOutput, SpentOutput, Transaction, Txid, Verify,
         WithdrawalBundle,
     },
+    util::UnitKey,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -79,31 +79,6 @@ pub enum Error {
     TooManySigops,
     #[error("wrong public key for address")]
     WrongPubKeyForAddress,
-}
-
-/// Unit key. LMDB can't use zero-sized keys, so this encodes to a single byte
-#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
-pub struct UnitKey;
-
-impl<'de> Deserialize<'de> for UnitKey {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        // Deserialize any byte (ignoring it) and return UnitKey
-        let _ = u8::deserialize(deserializer)?;
-        Ok(UnitKey)
-    }
-}
-
-impl Serialize for UnitKey {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        // Always serialize to the same arbitrary byte
-        serializer.serialize_u8(0x69)
-    }
 }
 
 #[derive(Clone)]
@@ -873,7 +848,7 @@ impl State {
         header: &Header,
         body: &Body,
     ) -> Result<(), Error> {
-        let tip_hash = self.tip.get(rwtxn, &UnitKey)?.unwrap_or_default();
+        let tip_hash = self.get_tip(rwtxn)?;
         if tip_hash != header.prev_side_hash {
             let err = InvalidHeaderError::PrevSideHash {
                 expected: tip_hash,

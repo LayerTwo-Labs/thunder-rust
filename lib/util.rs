@@ -2,6 +2,7 @@
 
 use futures::Stream;
 use heed::{Database, DefaultComparator, RoTxn, RwTxn};
+use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 
@@ -20,6 +21,31 @@ pub mod watchable {
 }
 
 pub use watchable::Watchable;
+
+/// Unit key. LMDB can't use zero-sized keys, so this encodes to a single byte
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
+pub struct UnitKey;
+
+impl<'de> Deserialize<'de> for UnitKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Deserialize any byte (ignoring it) and return UnitKey
+        let _ = u8::deserialize(deserializer)?;
+        Ok(UnitKey)
+    }
+}
+
+impl Serialize for UnitKey {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        // Always serialize to the same arbitrary byte
+        serializer.serialize_u8(0x69)
+    }
+}
 
 /// Heed DB augmented with watchable signals
 #[derive(Debug)]

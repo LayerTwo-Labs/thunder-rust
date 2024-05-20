@@ -15,9 +15,9 @@ use crate::{
     net::{self, Net},
     state::{self, State},
     types::{
-        Accumulator, Address, AuthorizedTransaction, BlockHash, Body, GetValue,
-        Header, OutPoint, Output, SpentOutput, Transaction, Txid,
-        WithdrawalBundle,
+        Accumulator, Address, AuthorizedTransaction, BlockHash, BmmResult,
+        Body, GetValue, Header, OutPoint, Output, SpentOutput, Tip,
+        Transaction, Txid, WithdrawalBundle,
     },
 };
 
@@ -429,6 +429,7 @@ impl Node {
     /// or was rejected as the new tip.
     pub async fn submit_block(
         &self,
+        main_block_hash: bitcoin::BlockHash,
         header: &Header,
         body: &Body,
     ) -> Result<bool, Error> {
@@ -437,35 +438,56 @@ impl Node {
         if header.prev_side_hash != BlockHash::default()
             && self.try_get_header(header.prev_side_hash)?.is_none()
         {
-            tracing::error!(
+            tracing::error!(%block_hash,
                 "Rejecting block {block_hash} due to missing ancestor headers",
             );
             return Ok(false);
-        } else {
-            let mut rwtxn = self.env.write_txn()?;
-            let () = self.archive.put_header(&mut rwtxn, header)?;
-            rwtxn.commit()?;
         }
         // Request mainchain headers if they do not exist
         let _: mainchain_task::Response = self
             .mainchain_task
             .request_oneshot(mainchain_task::Request::AncestorHeaders(
-                header.hash(),
+                main_block_hash,
             ))
             .map_err(|_| Error::SendMainchainTaskRequest)?
             .await
             .map_err(|_| Error::ReceiveMainchainTaskResponse)?;
         // Verify BMM
-        let _: mainchain_task::Response = self
+        let mainchain_task::Response::VerifyBmm(_, res) = self
             .mainchain_task
-            .request_oneshot(mainchain_task::Request::VerifyBmm(block_hash))
+            .request_oneshot(mainchain_task::Request::VerifyBmm(
+                main_block_hash,
+            ))
             .map_err(|_| Error::SendMainchainTaskRequest)?
             .await
-            .map_err(|_| Error::ReceiveMainchainTaskResponse)?;
+            .map_err(|_| Error::ReceiveMainchainTaskResponse)?
+        else {
+            panic!("should be impossible")
+        };
+        if let Err(bip300301::BlockNotFoundError(missing_block)) = res {
+            tracing::error!(%block_hash,
+                "Rejecting block {block_hash} due to missing mainchain block {missing_block}",
+            );
+            return Ok(false);
+        }
+        // Write header
+        tracing::trace!("Storing header: {block_hash}");
+        {
+            let mut rwtxn = self.env.write_txn()?;
+            let () = self.archive.put_header(&mut rwtxn, header)?;
+            rwtxn.commit()?;
+        }
+        tracing::trace!("Stored header: {block_hash}");
+        // Check BMM
         {
             let rotxn = self.env.read_txn()?;
-            if !self.archive.get_bmm_verification(&rotxn, block_hash)? {
-                tracing::error!(
+            if self.archive.get_bmm_result(
+                &rotxn,
+                block_hash,
+                main_block_hash,
+            )? == BmmResult::Failed
+            {
+                tracing::error!(%block_hash,
                     "Rejecting block {block_hash} due to failing BMM verification",
                 );
                 return Ok(false);
@@ -486,7 +508,7 @@ impl Node {
             if !(missing_bodies.is_empty()
                 || missing_bodies == vec![block_hash])
             {
-                tracing::error!(
+                tracing::error!(%block_hash,
                     "Rejecting block {block_hash} due to missing ancestor bodies",
                 );
                 return Ok(false);
@@ -499,7 +521,11 @@ impl Node {
             }
         }
         // Submit new tip
-        if !self.net_task.new_tip_ready_confirm(header.hash()).await? {
+        let new_tip = Tip {
+            block_hash,
+            main_block_hash,
+        };
+        if !self.net_task.new_tip_ready_confirm(new_tip).await? {
             return Ok(false);
         };
         let rotxn = self.env.read_txn()?;

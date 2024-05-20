@@ -26,10 +26,12 @@ use crate::{
     archive::{self, Archive},
     mempool::{self, MemPool},
     net::{
-        self, Net, PeerConnectionInfo, PeerInfoRx, PeerRequest, PeerResponse,
+        self, Net, PeerConnectionInfo, PeerConnectionMessage, PeerInfoRx,
+        PeerRequest, PeerResponse, PeerStateId,
     },
     state::{self, State},
-    types::{BlockHash, Body, Header},
+    types::{BlockHash, BmmResult, Body, Header, Tip},
+    util::UnitKey,
 };
 
 #[derive(Debug, Error)]
@@ -132,11 +134,10 @@ async fn disconnect_tip_(
     {
         let new_tip = state.get_tip(rwtxn)?;
         let accumulator = archive.get_accumulator(rwtxn, new_tip)?;
-        let () = state.utreexo_accumulator.put(
-            rwtxn,
-            &state::UnitKey,
-            &accumulator,
-        )?;
+        let () =
+            state
+                .utreexo_accumulator
+                .put(rwtxn, &UnitKey, &accumulator)?;
     }
     for transaction in tip_body.authorized_transactions().iter().rev() {
         mempool.put(rwtxn, transaction)?;
@@ -156,19 +157,28 @@ async fn reorg_to_tip(
     drivechain: &bip300301::Drivechain,
     mempool: &MemPool,
     state: &State,
-    new_tip: BlockHash,
+    new_tip: Tip,
 ) -> Result<bool, Error> {
     let mut rwtxn = env.write_txn()?;
-    let tip = state.get_tip(&rwtxn)?;
+    let tip_hash = state.get_tip(&rwtxn)?;
     let tip_height = state.get_height(&rwtxn)?;
-    // check that new tip is better than current tip
-    if archive.better_tip(&rwtxn, tip, new_tip)? != Some(new_tip) {
-        return Ok(false);
+    if tip_hash != BlockHash::default() {
+        let bmm_verification =
+            archive.get_best_main_verification(&rwtxn, tip_hash)?;
+        let tip = Tip {
+            block_hash: tip_hash,
+            main_block_hash: bmm_verification,
+        };
+        // check that new tip is better than current tip
+        if archive.better_tip(&rwtxn, tip, new_tip)? != Some(new_tip) {
+            return Ok(false);
+        }
     }
-    let common_ancestor = archive.last_common_ancestor(&rwtxn, tip, new_tip)?;
+    let common_ancestor =
+        archive.last_common_ancestor(&rwtxn, tip_hash, new_tip.block_hash)?;
     // Check that all necessary bodies exist before disconnecting tip
     let blocks_to_apply: Vec<(Header, Body)> = archive
-        .ancestors(&rwtxn, new_tip)
+        .ancestors(&rwtxn, new_tip.block_hash)
         .take_while(|block_hash| Ok(*block_hash != common_ancestor))
         .map(|block_hash| {
             let header = archive.get_header(&rwtxn, block_hash)?;
@@ -193,9 +203,9 @@ async fn reorg_to_tip(
         .await?;
     }
     let tip = state.get_tip(&rwtxn)?;
-    assert_eq!(tip, new_tip);
+    assert_eq!(tip, new_tip.block_hash);
     rwtxn.commit()?;
-    tracing::info!("reorged to tip: {new_tip}");
+    tracing::info!("synced to tip: {}", new_tip.block_hash);
     Ok(true)
 }
 
@@ -217,18 +227,20 @@ struct NetTaskContext {
 /// An optional oneshot sender can be used receive the result of attempting
 /// to reorg to the new tip, on the corresponding oneshot receiver.
 type NewTipReadyMessage =
-    (BlockHash, Option<SocketAddr>, Option<oneshot::Sender<bool>>);
+    (Tip, Option<SocketAddr>, Option<oneshot::Sender<bool>>);
 
 struct NetTask {
     ctxt: NetTaskContext,
     /// Receive a request to forward to the mainchain task, with the address of
-    /// the peer connection that caused the request
+    /// the peer connection that caused the request, and the peer state ID of
+    /// the request
     forward_mainchain_task_request_rx:
-        UnboundedReceiver<(mainchain_task::Request, SocketAddr)>,
+        UnboundedReceiver<(mainchain_task::Request, SocketAddr, PeerStateId)>,
     /// Push a request to forward to the mainchain task, with the address of
-    /// the peer connection that caused the request
+    /// the peer connection that caused the request, and the peer state ID of
+    /// the request
     forward_mainchain_task_request_tx:
-        UnboundedSender<(mainchain_task::Request, SocketAddr)>,
+        UnboundedSender<(mainchain_task::Request, SocketAddr, PeerStateId)>,
     mainchain_task_response_rx: UnboundedReceiver<mainchain_task::Response>,
     /// Receive a tip that is ready to reorg to, with the address of the peer
     /// connection that caused the request, if it originated from a peer.
@@ -253,14 +265,7 @@ impl NetTask {
         // Attempt to switch to a descendant tip once a body has been
         // stored, if all other ancestor bodies are available.
         // Each descendant tip maps to the peers that sent that tip.
-        descendant_tips: &mut HashMap<
-            BlockHash,
-            HashMap<BlockHash, HashSet<SocketAddr>>,
-        >,
-        forward_mainchain_task_request_tx: &UnboundedSender<(
-            mainchain_task::Request,
-            SocketAddr,
-        )>,
+        descendant_tips: &mut HashMap<Tip, HashMap<Tip, HashSet<SocketAddr>>>,
         new_tip_ready_tx: &UnboundedSender<NewTipReadyMessage>,
         addr: SocketAddr,
         resp: PeerResponse,
@@ -268,7 +273,12 @@ impl NetTask {
     ) -> Result<(), Error> {
         match (req, resp) {
             (
-                req @ PeerRequest::GetBlock { block_hash },
+                req @ PeerRequest::GetBlock {
+                    block_hash,
+                    descendant_tip: Some(descendant_tip),
+                    ancestor: Some(ancestor),
+                    peer_state_id: Some(peer_state_id),
+                },
                 ref resp @ PeerResponse::Block {
                     ref header,
                     ref body,
@@ -286,18 +296,62 @@ impl NetTask {
                         ctxt.archive.put_body(&mut rwtxn, block_hash, body)?;
                     rwtxn.commit()?;
                 }
+                // Notify the peer connection if all requested block bodies are
+                // now available
+                {
+                    let rotxn = ctxt.env.read_txn()?;
+                    let missing_bodies = ctxt
+                        .archive
+                        .get_missing_bodies(&rotxn, block_hash, ancestor)?;
+                    if missing_bodies.is_empty() {
+                        let message = PeerConnectionMessage::BodiesAvailable(
+                            peer_state_id,
+                        );
+                        let () =
+                            ctxt.net.push_internal_message(message, addr)?;
+                    }
+                }
                 // Check if any new tips can be applied,
                 // and send new tip ready if so
                 {
                     let rotxn = ctxt.env.read_txn()?;
-                    let tip = ctxt.state.get_tip(&rotxn)?;
-                    if header.prev_side_hash == tip {
+                    let tip_hash = ctxt.state.get_tip(&rotxn)?;
+                    // Find the BMM verification that is an ancestor of
+                    // `main_descendant_tip`
+                    let main_block_hash = ctxt
+                        .archive
+                        .get_bmm_results(&rotxn, block_hash)?
+                        .into_iter()
+                        .map(Result::<_, Error>::Ok)
+                        .transpose_into_fallible()
+                        .find_map(|(main_block_hash, bmm_result)| {
+                            match bmm_result {
+                                BmmResult::Failed => Ok(None),
+                                BmmResult::Verified => {
+                                    if ctxt.archive.is_main_descendant(
+                                        &rotxn,
+                                        main_block_hash,
+                                        descendant_tip.main_block_hash,
+                                    )? {
+                                        Ok(Some(main_block_hash))
+                                    } else {
+                                        Ok(None)
+                                    }
+                                }
+                            }
+                        })?
+                        .unwrap();
+                    let block_tip = Tip {
+                        block_hash,
+                        main_block_hash,
+                    };
+                    if header.prev_side_hash == tip_hash {
                         let () = new_tip_ready_tx
-                            .unbounded_send((block_hash, Some(addr), None))
+                            .unbounded_send((block_tip, Some(addr), None))
                             .map_err(|_| Error::SendNewTipReady)?;
                     }
                     let Some(descendant_tips) =
-                        descendant_tips.remove(&block_hash)
+                        descendant_tips.remove(&block_tip)
                     else {
                         return Ok(());
                     };
@@ -305,12 +359,12 @@ impl NetTask {
                         let common_ancestor =
                             ctxt.archive.last_common_ancestor(
                                 &rotxn,
-                                descendant_tip,
-                                tip,
+                                descendant_tip.block_hash,
+                                tip_hash,
                             )?;
                         let missing_bodies = ctxt.archive.get_missing_bodies(
                             &rotxn,
-                            descendant_tip,
+                            descendant_tip.block_hash,
                             common_ancestor,
                         )?;
                         if missing_bodies.is_empty() {
@@ -326,12 +380,14 @@ impl NetTask {
                         }
                     }
                 }
-
                 Ok(())
             }
             (
                 PeerRequest::GetBlock {
                     block_hash: req_block_hash,
+                    descendant_tip: Some(_),
+                    ancestor: Some(_),
+                    peer_state_id: Some(_),
                 },
                 PeerResponse::NoBlock {
                     block_hash: resp_block_hash,
@@ -342,6 +398,7 @@ impl NetTask {
                     ref start,
                     end,
                     height: Some(height),
+                    peer_state_id: Some(peer_state_id),
                 },
                 PeerResponse::Headers(headers),
             ) => {
@@ -410,12 +467,9 @@ impl NetTask {
                     }
                 }
                 rwtxn.commit()?;
-                // Request mainchain headers
-                let request =
-                    mainchain_task::Request::AncestorHeaders(end_header_hash);
-                let () = forward_mainchain_task_request_tx
-                    .unbounded_send((request, addr))
-                    .map_err(|_| Error::ForwardMainchainTaskRequest)?;
+                // Notify peer connection that headers are available
+                let message = PeerConnectionMessage::Headers(peer_state_id);
+                let () = ctxt.net.push_internal_message(message, addr)?;
                 Ok(())
             }
             (
@@ -423,6 +477,7 @@ impl NetTask {
                     start: _,
                     end,
                     height: _,
+                    peer_state_id: _,
                 },
                 PeerResponse::NoHeader { block_hash },
             ) if end == block_hash => Ok(()),
@@ -453,18 +508,18 @@ impl NetTask {
         enum MailboxItem {
             AcceptConnection(Result<(), Error>),
             // Forward a mainchain task request, along with the peer that
-            // caused the request
-            ForwardMainchainTaskRequest(mainchain_task::Request, SocketAddr),
+            // caused the request, and the peer state ID of the request
+            ForwardMainchainTaskRequest(
+                mainchain_task::Request,
+                SocketAddr,
+                PeerStateId,
+            ),
             MainchainTaskResponse(mainchain_task::Response),
             // Apply new tip from peer or self.
             // An optional oneshot sender can be used receive the result of
             // attempting to reorg to the new tip, on the corresponding oneshot
             // receiver.
-            NewTipReady(
-                BlockHash,
-                Option<SocketAddr>,
-                Option<oneshot::Sender<bool>>,
-            ),
+            NewTipReady(Tip, Option<SocketAddr>, Option<oneshot::Sender<bool>>),
             PeerInfo(Option<(SocketAddr, Option<PeerConnectionInfo>)>),
         }
         let accept_connections = stream::try_unfold((), |()| {
@@ -479,8 +534,12 @@ impl NetTask {
         .map(MailboxItem::AcceptConnection);
         let forward_request_stream = self
             .forward_mainchain_task_request_rx
-            .map(|(request, addr)| {
-                MailboxItem::ForwardMainchainTaskRequest(request, addr)
+            .map(|(request, addr, peer_state_id)| {
+                MailboxItem::ForwardMainchainTaskRequest(
+                    request,
+                    addr,
+                    peer_state_id,
+                )
             });
         let mainchain_task_response_stream = self
             .mainchain_task_response_rx
@@ -502,20 +561,25 @@ impl NetTask {
         // stored, if all other ancestor bodies are available.
         // Each descendant tip maps to the peers that sent that tip.
         let mut descendant_tips =
-            HashMap::<BlockHash, HashMap<BlockHash, HashSet<SocketAddr>>>::new(
-            );
+            HashMap::<Tip, HashMap<Tip, HashSet<SocketAddr>>>::new();
         // Map associating mainchain task requests with the peer(s) that
-        // caused the request
-        let mut mainchain_task_request_sources =
-            HashMap::<mainchain_task::Request, HashSet<SocketAddr>>::new();
+        // caused the request, and the request peer state ID
+        let mut mainchain_task_request_sources = HashMap::<
+            mainchain_task::Request,
+            HashSet<(SocketAddr, PeerStateId)>,
+        >::new();
         while let Some(mailbox_item) = mailbox_stream.next().await {
             match mailbox_item {
                 MailboxItem::AcceptConnection(res) => res?,
-                MailboxItem::ForwardMainchainTaskRequest(request, peer) => {
+                MailboxItem::ForwardMainchainTaskRequest(
+                    request,
+                    peer,
+                    peer_state_id,
+                ) => {
                     mainchain_task_request_sources
                         .entry(request)
                         .or_default()
-                        .insert(peer);
+                        .insert((peer, peer_state_id));
                     let () = self
                         .ctxt
                         .mainchain_task
@@ -523,133 +587,46 @@ impl NetTask {
                         .map_err(|_| Error::SendMainchainTaskRequest)?;
                 }
                 MailboxItem::MainchainTaskResponse(response) => {
-                    let request = response.0;
-                    match request {
-                        mainchain_task::Request::AncestorHeaders(
-                            block_hash,
+                    let request = response.into();
+                    match response {
+                        mainchain_task::Response::AncestorHeaders(
+                            _block_hash,
                         ) => {
                             let Some(sources) =
                                 mainchain_task_request_sources.remove(&request)
                             else {
                                 continue;
                             };
-                            // request verify BMM
-                            for addr in sources {
-                                let request =
-                                    mainchain_task::Request::VerifyBmm(
-                                        block_hash,
+                            for (addr, peer_state_id) in sources {
+                                let message =
+                                    PeerConnectionMessage::MainchainAncestors(
+                                        peer_state_id,
                                     );
                                 let () = self
-                                    .forward_mainchain_task_request_tx
-                                    .unbounded_send((request, addr))
-                                    .map_err(|_| {
-                                        Error::ForwardMainchainTaskRequest
-                                    })?;
+                                    .ctxt
+                                    .net
+                                    .push_internal_message(message, addr)?;
                             }
                         }
-                        mainchain_task::Request::VerifyBmm(block_hash) => {
+                        mainchain_task::Response::VerifyBmm(
+                            _block_hash,
+                            res,
+                        ) => {
                             let Some(sources) =
                                 mainchain_task_request_sources.remove(&request)
                             else {
                                 continue;
                             };
-                            let verify_bmm_result = {
-                                let rotxn = self.ctxt.env.read_txn()?;
-                                self.ctxt
-                                    .archive
-                                    .get_bmm_verification(&rotxn, block_hash)?
-                            };
-                            if !verify_bmm_result {
-                                for addr in &sources {
-                                    tracing::warn!(
-                                        %addr,
-                                        %block_hash,
-                                        "Invalid response from peer; BMM verification failed"
-                                    );
-                                    let () =
-                                        self.ctxt.net.remove_active_peer(*addr);
-                                }
-                            }
-                            let missing_bodies: Vec<BlockHash> = {
-                                let rotxn = self.ctxt.env.read_txn()?;
-                                let tip = self.ctxt.state.get_tip(&rotxn)?;
-                                let last_common_ancestor =
-                                    self.ctxt.archive.last_common_ancestor(
-                                        &rotxn, tip, block_hash,
-                                    )?;
-                                self.ctxt.archive.get_missing_bodies(
-                                    &rotxn,
-                                    block_hash,
-                                    last_common_ancestor,
-                                )?
-                            };
-                            if missing_bodies.is_empty() {
-                                for addr in sources {
-                                    let () = self
-                                        .new_tip_ready_tx
-                                        .unbounded_send((
-                                            block_hash,
-                                            Some(addr),
-                                            None,
-                                        ))
-                                        .map_err(|_| Error::SendNewTipReady)?;
-                                }
-                            } else {
-                                let rotxn = self.ctxt.env.read_txn()?;
-                                // Request missing bodies, update descendent tips
-                                for missing_body in missing_bodies {
-                                    descendant_tips
-                                        .entry(missing_body)
-                                        .or_default()
-                                        .entry(block_hash)
-                                        .or_default()
-                                        .extend(&sources);
-                                    // tips descended from the missing body,
-                                    // that are alo ancestors of `block_hash`
-                                    let lineage_tips: Vec<BlockHash> =
-                                        descendant_tips[&missing_body]
-                                            .keys()
-                                            .map(Ok)
-                                            .transpose_into_fallible()
-                                            .filter(|tip| {
-                                                self.ctxt.archive.is_descendant(
-                                                    &rotxn, **tip, block_hash,
-                                                )
-                                            })
-                                            .cloned()
-                                            .collect()?;
-                                    for lineage_tip in lineage_tips.into_iter()
-                                    {
-                                        let updated_sources: HashSet<
-                                            SocketAddr,
-                                        > = descendant_tips[&missing_body]
-                                            [&lineage_tip]
-                                            .difference(&sources)
-                                            .cloned()
-                                            .collect();
-                                        if updated_sources.is_empty() {
-                                            descendant_tips
-                                                .get_mut(&missing_body)
-                                                .unwrap()
-                                                .remove(&lineage_tip);
-                                        } else {
-                                            descendant_tips
-                                                .get_mut(&missing_body)
-                                                .unwrap()
-                                                .insert(
-                                                    lineage_tip,
-                                                    updated_sources,
-                                                );
-                                        }
-                                    }
-                                    let request = PeerRequest::GetBlock {
-                                        block_hash: missing_body,
+                            for (addr, peer_state_id) in sources {
+                                let message =
+                                    PeerConnectionMessage::BmmVerification {
+                                        res,
+                                        peer_state_id,
                                     };
-                                    let () = self
-                                        .ctxt
-                                        .net
-                                        .push_request(request, &sources);
-                                }
+                                let () = self
+                                    .ctxt
+                                    .net
+                                    .push_internal_message(message, addr)?;
                             }
                         }
                     }
@@ -686,26 +663,30 @@ impl NetTask {
                             tracing::error!(%addr, err = format!("{err:#}"), "Peer connection error");
                             let () = self.ctxt.net.remove_active_peer(addr);
                         }
-                        PeerConnectionInfo::NeedBmmVerification(block_hash) => {
+                        PeerConnectionInfo::NeedBmmVerification {
+                            main_hash,
+                            peer_state_id,
+                        } => {
                             let request =
-                                mainchain_task::Request::VerifyBmm(block_hash);
+                                mainchain_task::Request::VerifyBmm(main_hash);
                             let () = self
                                 .forward_mainchain_task_request_tx
-                                .unbounded_send((request, addr))
+                                .unbounded_send((request, addr, peer_state_id))
                                 .map_err(|_| {
                                     Error::ForwardMainchainTaskRequest
                                 })?;
                         }
-                        PeerConnectionInfo::NeedMainchainAncestors(
-                            block_hash,
-                        ) => {
+                        PeerConnectionInfo::NeedMainchainAncestors {
+                            main_hash,
+                            peer_state_id,
+                        } => {
                             let request =
                                 mainchain_task::Request::AncestorHeaders(
-                                    block_hash,
+                                    main_hash,
                                 );
                             let () = self
                                 .forward_mainchain_task_request_tx
-                                .unbounded_send((request, addr))
+                                .unbounded_send((request, addr, peer_state_id))
                                 .map_err(|_| {
                                     Error::ForwardMainchainTaskRequest
                                 })?;
@@ -729,11 +710,11 @@ impl NetTask {
                                 .net
                                 .push_tx(HashSet::from_iter([addr]), new_tx);
                         }
-                        PeerConnectionInfo::Response(resp, req) => {
+                        PeerConnectionInfo::Response(boxed) => {
+                            let (resp, req) = *boxed;
                             let () = Self::handle_response(
                                 &self.ctxt,
                                 &mut descendant_tips,
-                                &self.forward_mainchain_task_request_tx,
                                 &self.new_tip_ready_tx,
                                 addr,
                                 resp,
@@ -814,7 +795,7 @@ impl NetTaskHandle {
 
     /// Push a tip that is ready to reorg to.
     #[allow(dead_code)]
-    pub fn new_tip_ready(&self, new_tip: BlockHash) -> Result<(), Error> {
+    pub fn new_tip_ready(&self, new_tip: Tip) -> Result<(), Error> {
         self.new_tip_ready_tx
             .unbounded_send((new_tip, None, None))
             .map_err(|_| Error::SendNewTipReady)
@@ -826,7 +807,7 @@ impl NetTaskHandle {
     /// A result of Ok(false) indicates that the tip was not reorged to.
     pub async fn new_tip_ready_confirm(
         &self,
-        new_tip: BlockHash,
+        new_tip: Tip,
     ) -> Result<bool, Error> {
         let (oneshot_tx, oneshot_rx) = oneshot::channel();
         let () = self

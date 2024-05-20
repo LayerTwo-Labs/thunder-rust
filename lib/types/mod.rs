@@ -1,4 +1,4 @@
-use bip300301::bitcoin;
+use bip300301::bitcoin::{self, hashes::Hash as _};
 use borsh::BorshSerialize;
 use rustreexo::accumulator::{node_hash::NodeHash, pollard::Pollard};
 use serde::{Deserialize, Serialize};
@@ -200,5 +200,39 @@ impl Serialize for Accumulator {
             .serialize(&mut bytes)
             .map_err(<S::Error as serde::ser::Error>::custom)?;
         <Vec<_> as Serialize>::serialize(&bytes, serializer)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum BmmResult {
+    Verified,
+    Failed,
+}
+
+/// A tip refers to both a sidechain block AND the mainchain block that commits
+/// to it.
+#[derive(
+    BorshSerialize,
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    Hash,
+    PartialEq,
+    Serialize,
+)]
+pub struct Tip {
+    pub block_hash: BlockHash,
+    #[borsh(serialize_with = "borsh_serialize_bitcoin_block_hash")]
+    pub main_block_hash: bitcoin::BlockHash,
+}
+
+impl Default for Tip {
+    fn default() -> Self {
+        Self {
+            block_hash: BlockHash::default(),
+            main_block_hash: bitcoin::BlockHash::all_zeros(),
+        }
     }
 }

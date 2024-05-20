@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use bip300301::{
     bitcoin::{self, hashes::Hash as _},
+    client::{BlockCommitment, SidechainId},
     Drivechain, Header as BitcoinHeader,
 };
 use fallible_iterator::FallibleIterator;
@@ -18,11 +19,11 @@ use thiserror::Error;
 use tokio::{
     spawn,
     task::{self, JoinHandle},
-    time::Duration,
 };
 
 use crate::{
     archive::{self, Archive},
+    node::THIS_SIDECHAIN,
     types::BlockHash,
 };
 
@@ -30,14 +31,33 @@ use crate::{
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum Request {
     /// Request missing mainchain ancestor headers
-    AncestorHeaders(BlockHash),
+    AncestorHeaders(bitcoin::BlockHash),
     /// Request recursive BMM verification
-    VerifyBmm(BlockHash),
+    VerifyBmm(bitcoin::BlockHash),
 }
 
-/// Response indicating that a request has been fulfilled successfully
+/// Response indicating that a request has been fulfilled
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct Response(pub Request);
+pub(super) enum Response {
+    AncestorHeaders(bitcoin::BlockHash),
+    VerifyBmm(
+        bitcoin::BlockHash,
+        Result<(), bip300301::BlockNotFoundError>,
+    ),
+}
+
+impl From<Response> for Request {
+    fn from(resp: Response) -> Self {
+        match resp {
+            Response::AncestorHeaders(block_hash) => {
+                Request::AncestorHeaders(block_hash)
+            }
+            Response::VerifyBmm(block_hash, _) => {
+                Request::VerifyBmm(block_hash)
+            }
+        }
+    }
+}
 
 #[derive(Debug, Error)]
 enum Error {
@@ -70,120 +90,150 @@ impl MainchainTask {
         env: &heed::Env,
         archive: &Archive,
         drivechain: &bip300301::Drivechain,
-        mut block_hash: bitcoin::BlockHash,
+        block_hash: bitcoin::BlockHash,
     ) -> Result<(), Error> {
-        tracing::debug!("requesting ancestor headers for {block_hash}");
+        if block_hash == bitcoin::BlockHash::all_zeros() {
+            return Ok(());
+        } else {
+            let rotxn = env.read_txn()?;
+            if archive.try_get_main_header(&rotxn, block_hash)?.is_some() {
+                return Ok(());
+            }
+        }
+        let mut current_block_hash = block_hash;
+        let mut current_height = None;
         let mut headers: Vec<BitcoinHeader> = Vec::new();
+        tracing::debug!(%block_hash, "requesting ancestor headers");
         loop {
-            if block_hash == bitcoin::BlockHash::all_zeros() {
+            if let Some(current_height) = current_height {
+                tracing::trace!(%block_hash, "requesting ancestor headers: {current_block_hash}({current_height})")
+            }
+            let header = drivechain.get_header(current_block_hash).await?;
+            current_block_hash = header.prev_blockhash;
+            current_height = header.height.checked_sub(1);
+            headers.push(header);
+            if current_block_hash == bitcoin::BlockHash::all_zeros() {
                 break;
             } else {
                 let rotxn = env.read_txn()?;
-                if archive.try_get_main_header(&rotxn, block_hash)?.is_some() {
+                if archive
+                    .try_get_main_header(&rotxn, current_block_hash)?
+                    .is_some()
+                {
                     break;
                 }
             }
-            let header = drivechain.get_header(block_hash).await?;
-            block_hash = header.prev_blockhash;
-            headers.push(header);
         }
         headers.reverse();
-        if headers.is_empty() {
+        // Writing all headers during IBD can starve archive readers.
+        tracing::trace!(%block_hash, "storing ancestor headers");
+        task::block_in_place(|| {
+            let mut rwtxn = env.write_txn()?;
+            headers.into_iter().try_for_each(|header| {
+                archive.put_main_header(&mut rwtxn, &header)
+            })?;
+            rwtxn.commit()?;
+            tracing::trace!(%block_hash, "stored ancestor headers");
             Ok(())
+        })
+    }
+
+    /// Request ancestor BMM commitments from the mainchain node,
+    /// up to and including the specified block.
+    /// Mainchain headers for the specified block and all ancestors MUST exist
+    /// in the archive.
+    async fn request_bmm_commitments(
+        env: &heed::Env,
+        archive: &Archive,
+        drivechain: &bip300301::Drivechain,
+        main_hash: bitcoin::BlockHash,
+    ) -> Result<Result<(), bip300301::BlockNotFoundError>, Error> {
+        if main_hash == bitcoin::BlockHash::all_zeros() {
+            return Ok(Ok(()));
         } else {
-            // Writing all headers during IBD can starve archive readers.
-            task::block_in_place(|| {
-                let mut rwtxn = env.write_txn()?;
-                headers.into_iter().try_for_each(|header| {
-                    archive.put_main_header(&mut rwtxn, &header)
-                })?;
-                rwtxn.commit()?;
-                Ok(())
-            })
-        }
-    }
-
-    /// Attempt to verify bmm for the specified block,
-    /// and store the verification result
-    async fn verify_bmm(
-        env: &heed::Env,
-        archive: &Archive,
-        drivechain: &bip300301::Drivechain,
-        block_hash: BlockHash,
-    ) -> Result<bool, Error> {
-        const VERIFY_BMM_POLL_INTERVAL: Duration = Duration::from_secs(15);
-        let header = {
             let rotxn = env.read_txn()?;
-            archive.get_header(&rotxn, block_hash)?
-        };
-        let (res, _next_block_hash) = drivechain
-            .verify_bmm_next_block(
-                header.prev_main_hash,
-                block_hash.into(),
-                VERIFY_BMM_POLL_INTERVAL,
-            )
-            .await?;
-        let mut rwtxn = env.write_txn()?;
-        let () = archive.put_bmm_verification(&mut rwtxn, block_hash, res)?;
-        rwtxn.commit()?;
-        Ok(res)
-    }
-
-    /// Attempt to verify bmm recursively up to the specified block,
-    /// and store the verification results
-    async fn recursive_verify_bmm(
-        env: &heed::Env,
-        archive: &Archive,
-        drivechain: &bip300301::Drivechain,
-        block_hash: BlockHash,
-    ) -> Result<(), Error> {
-        tracing::debug!(
-            "requesting recursive BMM verification for {block_hash}"
-        );
-        let blocks_to_verify: Vec<BlockHash> = {
+            if archive
+                .try_get_main_bmm_commitment(&rotxn, main_hash)?
+                .is_some()
+            {
+                return Ok(Ok(()));
+            }
+        }
+        let mut missing_commitments: Vec<_> = {
             let rotxn = env.read_txn()?;
             archive
-                .ancestors(&rotxn, block_hash)
+                .main_ancestors(&rotxn, main_hash)
                 .take_while(|block_hash| {
-                    archive
-                        .try_get_bmm_verification(&rotxn, *block_hash)
-                        .map(|bmm_verification| bmm_verification.is_none())
+                    Ok(*block_hash != bitcoin::BlockHash::all_zeros()
+                        && archive
+                            .try_get_main_bmm_commitment(&rotxn, *block_hash)?
+                            .is_none())
                 })
                 .collect()?
         };
-        let mut blocks_to_verify_iter = blocks_to_verify.into_iter().rev();
-        while let Some(block_hash) = blocks_to_verify_iter.next() {
-            if !Self::verify_bmm(env, archive, drivechain, block_hash).await? {
-                // mark descendent blocks as BMM failed,
-                // no need to request from mainchain node
+        missing_commitments.reverse();
+        tracing::debug!(%main_hash, "requesting ancestor bmm commitments");
+        for missing_commitment in missing_commitments {
+            tracing::trace!(%main_hash,
+                "requesting ancestor bmm commitment: {missing_commitment}"
+            );
+            let commitments: Vec<BlockHash> = match drivechain
+                .get_block_commitments(missing_commitment)
+                .await?
+            {
+                Ok(commitments) => commitments
+                    .into_iter()
+                    .filter_map(|(_, commitment)| match commitment {
+                        BlockCommitment::BmmHStar {
+                            commitment,
+                            sidechain_id: SidechainId(THIS_SIDECHAIN),
+                            prev_bytes: _,
+                        } => Some(commitment.into()),
+                        BlockCommitment::BmmHStar { .. }
+                        | BlockCommitment::ScdbUpdateBytes { .. }
+                        | BlockCommitment::WitnessCommitment { .. }
+                        | BlockCommitment::SidechainProposal
+                        | BlockCommitment::SidechainActivationAck { .. } => {
+                            None
+                        }
+                    })
+                    .collect(),
+                Err(block_not_found) => return Ok(Err(block_not_found)),
+            };
+            // Should never be more than one commitment
+            assert!(commitments.len() <= 1);
+            let commitment = commitments.first().copied();
+            tracing::trace!(%main_hash,
+                "storing ancestor bmm commitment: {missing_commitment}"
+            );
+            {
                 let mut rwtxn = env.write_txn()?;
-                for block_hash in blocks_to_verify_iter {
-                    let () = archive
-                        .put_bmm_verification(&mut rwtxn, block_hash, false)?;
-                }
+                archive.put_main_bmm_commitment(
+                    &mut rwtxn,
+                    missing_commitment,
+                    commitment,
+                )?;
                 rwtxn.commit()?;
-                break;
             }
+            tracing::trace!(%main_hash,
+                "stored ancestor bmm commitment: {missing_commitment}"
+            );
         }
-        Ok(())
+        Ok(Ok(()))
     }
 
     async fn run(mut self) -> Result<(), Error> {
         while let Some((request, response_tx)) = self.request_rx.next().await {
             match request {
-                Request::AncestorHeaders(block_hash) => {
-                    let header = {
-                        let rotxn = self.env.read_txn()?;
-                        self.archive.get_header(&rotxn, block_hash)?
-                    };
+                Request::AncestorHeaders(main_block_hash) => {
                     let () = Self::request_ancestor_headers(
                         &self.env,
                         &self.archive,
                         &self.drivechain,
-                        header.prev_main_hash,
+                        main_block_hash,
                     )
                     .await?;
-                    let response = Response(request);
+                    let response = Response::AncestorHeaders(main_block_hash);
                     if let Some(response_tx) = response_tx {
                         response_tx
                             .send(response)
@@ -195,14 +245,16 @@ impl MainchainTask {
                     }
                 }
                 Request::VerifyBmm(block_hash) => {
-                    let () = Self::recursive_verify_bmm(
-                        &self.env,
-                        &self.archive,
-                        &self.drivechain,
+                    let response = Response::VerifyBmm(
                         block_hash,
-                    )
-                    .await?;
-                    let response = Response(request);
+                        Self::request_bmm_commitments(
+                            &self.env,
+                            &self.archive,
+                            &self.drivechain,
+                            block_hash,
+                        )
+                        .await?,
+                    );
                     if let Some(response_tx) = response_tx {
                         response_tx
                             .send(response)

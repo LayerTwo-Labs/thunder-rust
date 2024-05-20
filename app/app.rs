@@ -181,9 +181,14 @@ impl App {
             .await?;
         // miner_write.generate().await?;
         tracing::trace!("confirming bmm...");
-        if let Some((header, body)) = miner_write.confirm_bmm().await? {
-            tracing::trace!("confirmed bmm, submitting block");
-            self.node.submit_block(&header, &body).await?;
+        if let Some((main_hash, header, body)) =
+            miner_write.confirm_bmm().await?
+        {
+            tracing::trace!(
+                "confirmed bmm, submitting block {}",
+                header.hash()
+            );
+            self.node.submit_block(main_hash, &header, &body).await?;
         }
         drop(miner_write);
         self.update_wallet()?;
