@@ -1342,7 +1342,7 @@ version = "0.2.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ef5282ad69563b5fc40319526ba27e0e7363d552a896f0297d54f767717f9b95"
 dependencies = [
- "litrs",
+ "litrs 0.4.1",
 ]
 
 [[package]]
@@ -2364,6 +2364,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "include_path"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6259e6c697973f2b71f03a5af7d94ca6de0f1efa96c398c1a2e170952abfd0ca"
+dependencies = [
+ "litrs 0.2.3",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2696,6 +2705,15 @@ name = "linux-raw-sys"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "01cda141df6706de531b6c46c3a33ecca755538219bd484262fa09410c13539c"
+
+[[package]]
+name = "litrs"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9275e0933cf8bb20f008924c0cb07a0692fe54d8064996520bf998de9eb79aa"
+dependencies = [
+ "proc-macro2",
+]
 
 [[package]]
 name = "litrs"
@@ -4404,7 +4422,7 @@ dependencies = [
 
 [[package]]
 name = "thunder"
-version = "0.8.8"
+version = "0.8.9"
 dependencies = [
  "anyhow",
  "bincode",
@@ -4441,7 +4459,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_app"
-version = "0.8.8"
+version = "0.8.9"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -4453,6 +4471,7 @@ dependencies = [
  "eframe",
  "futures",
  "human-size",
+ "include_path",
  "jsonrpsee",
  "parking_lot",
  "poll-promise",
@@ -4475,7 +4494,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_app_cli"
-version = "0.8.8"
+version = "0.8.9"
 dependencies = [
  "anyhow",
  "bip300301",
@@ -4489,7 +4508,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_app_rpc_api"
-version = "0.8.8"
+version = "0.8.9"
 dependencies = [
  "bip300301",
  "jsonrpsee",

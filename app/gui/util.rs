@@ -1,6 +1,31 @@
 use std::borrow::Borrow;
 
-use eframe::egui::{self, InnerResponse, Response, Ui};
+use bip300301::bitcoin;
+use eframe::egui::{self, Color32, InnerResponse, Response, Ui};
+
+/// Bitcoin Orange Color
+pub const BITCOIN_ORANGE: Color32 = Color32::from_rgb(0xf7, 0x93, 0x1a);
+
+/// Unicode BTC symbol (U+20BF)
+pub const BTC_UNICODE: char = '\u{20bf}';
+
+/// Font-Awesome Bitcoin Logo symbol (U+F10F)
+/// Note that this symbol is wider than other glyphs, often taking up as much
+/// space as 3 chars.
+pub const BITCOIN_LOGO_FA: char = '\u{f10f}';
+
+/// Show a [`bitcoin::Amount`]
+pub fn show_btc_amount(amount: bitcoin::Amount) -> String {
+    format!(
+        "{BTC_UNICODE}{}",
+        amount.to_string_in(bitcoin::Denomination::Bitcoin)
+    )
+}
+
+/// Show a Bitcoin amount from sats
+pub fn show_btc_amount_from_sats(sats: u64) -> String {
+    show_btc_amount(bitcoin::Amount::from_sat(sats))
+}
 
 // extension for InnerResponse<Response> and InnerResponse<Option<Response>>
 pub trait InnerResponseExt {
