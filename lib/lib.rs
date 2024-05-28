@@ -1,3 +1,4 @@
+#![feature(impl_trait_in_assoc_type)]
 #![feature(let_chains)]
 
 pub mod archive;
@@ -8,6 +9,7 @@ pub mod net;
 pub mod node;
 pub mod state;
 pub mod types;
+pub mod util;
 pub mod wallet;
 
 pub use bip300301;

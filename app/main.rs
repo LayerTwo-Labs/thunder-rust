@@ -11,6 +11,7 @@ mod cli;
 mod gui;
 mod line_buffer;
 mod rpc_server;
+mod util;
 
 use line_buffer::{LineBuffer, LineBufferWriter};
 

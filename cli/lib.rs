@@ -19,8 +19,14 @@ pub enum Command {
     GenerateMnemonic,
     /// Get a new address
     GetNewAddress,
+    /// Get wallet addresses, sorted by base58 encoding
+    GetWalletAddresses,
+    /// Get wallet UTXOs
+    GetWalletUtxos,
     /// Get the current block count
     GetBlockcount,
+    /// List all UTXOs
+    ListUtxos,
     /// Attempt to mine a sidechain block
     Mine {
         #[arg(long)]
@@ -89,9 +95,21 @@ impl Cli {
                 let address = rpc_client.get_new_address().await?;
                 format!("{address}")
             }
+            Command::GetWalletAddresses => {
+                let addresses = rpc_client.get_wallet_addresses().await?;
+                serde_json::to_string_pretty(&addresses)?
+            }
+            Command::GetWalletUtxos => {
+                let utxos = rpc_client.get_wallet_utxos().await?;
+                serde_json::to_string_pretty(&utxos)?
+            }
             Command::GetBlockcount => {
                 let blockcount = rpc_client.getblockcount().await?;
                 format!("{blockcount}")
+            }
+            Command::ListUtxos => {
+                let utxos = rpc_client.list_utxos().await?;
+                serde_json::to_string_pretty(&utxos)?
             }
             Command::Mine { fee_sats } => {
                 let () = rpc_client.mine(fee_sats).await?;

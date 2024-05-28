@@ -36,7 +36,7 @@ pub enum Error {
 #[derive(Clone)]
 pub struct App {
     pub node: Arc<Node>,
-    pub wallet: Arc<Wallet>,
+    pub wallet: Wallet,
     pub miner: Arc<TokioRwLock<Miner>>,
     pub utxos: Arc<RwLock<HashMap<OutPoint, Output>>>,
     pub transaction: Arc<RwLock<Transaction>>,
@@ -85,7 +85,7 @@ impl App {
         };
         Ok(Self {
             node: Arc::new(node),
-            wallet: Arc::new(wallet),
+            wallet,
             miner: Arc::new(TokioRwLock::new(miner)),
             utxos: Arc::new(RwLock::new(utxos)),
             transaction: Arc::new(RwLock::new(Transaction {

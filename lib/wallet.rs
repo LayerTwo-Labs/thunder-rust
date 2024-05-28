@@ -6,19 +6,24 @@ use std::{
 use bip300301::bitcoin;
 use byteorder::{BigEndian, ByteOrder};
 use ed25519_dalek_bip32::{ChildIndex, DerivationPath, ExtendedSigningKey};
+use futures::{Stream, StreamExt};
 use heed::{
     types::{Bytes, SerdeBincode, U8},
-    Database, RoTxn,
+    RoTxn,
 };
 use rustreexo::accumulator::node_hash::NodeHash;
+use tokio_stream::{wrappers::WatchStream, StreamMap};
 
-use crate::types::{hash, Accumulator, PointedOutput};
 pub use crate::{
     authorization::{get_address, Authorization},
     types::{
         Address, AuthorizedTransaction, GetValue, InPoint, OutPoint, Output,
         OutputContent, SpentOutput, Transaction,
     },
+};
+use crate::{
+    types::{hash, Accumulator, PointedOutput},
+    util::{EnvExt, Watchable, WatchableDb},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -55,13 +60,13 @@ pub struct Wallet {
     // Seed is always [u8; 64], but due to serde not implementing serialize
     // for [T; 64], use heed's `Bytes`
     // TODO: Don't store the seed in plaintext.
-    seed: Database<U8, Bytes>,
-    pub address_to_index:
-        Database<SerdeBincode<Address>, SerdeBincode<[u8; 4]>>,
-    pub index_to_address:
-        Database<SerdeBincode<[u8; 4]>, SerdeBincode<Address>>,
-    pub utxos: Database<SerdeBincode<OutPoint>, SerdeBincode<Output>>,
-    pub stxos: Database<SerdeBincode<OutPoint>, SerdeBincode<SpentOutput>>,
+    seed: WatchableDb<U8, Bytes>,
+    /// Map each address to it's index
+    address_to_index: WatchableDb<SerdeBincode<Address>, SerdeBincode<[u8; 4]>>,
+    /// Map each address index to an address
+    index_to_address: WatchableDb<SerdeBincode<[u8; 4]>, SerdeBincode<Address>>,
+    utxos: WatchableDb<SerdeBincode<OutPoint>, SerdeBincode<Output>>,
+    stxos: WatchableDb<SerdeBincode<OutPoint>, SerdeBincode<SpentOutput>>,
 }
 
 impl Wallet {
@@ -76,13 +81,13 @@ impl Wallet {
                 .open(path)?
         };
         let mut rwtxn = env.write_txn()?;
-        let seed_db = env.create_database(&mut rwtxn, Some("seed"))?;
+        let seed_db = env.create_watchable_db(&mut rwtxn, "seed")?;
         let address_to_index =
-            env.create_database(&mut rwtxn, Some("address_to_index"))?;
+            env.create_watchable_db(&mut rwtxn, "address_to_index")?;
         let index_to_address =
-            env.create_database(&mut rwtxn, Some("index_to_address"))?;
-        let utxos = env.create_database(&mut rwtxn, Some("utxos"))?;
-        let stxos = env.create_database(&mut rwtxn, Some("stxos"))?;
+            env.create_watchable_db(&mut rwtxn, "index_to_address")?;
+        let utxos = env.create_watchable_db(&mut rwtxn, "utxos")?;
+        let stxos = env.create_watchable_db(&mut rwtxn, "stxos")?;
         rwtxn.commit()?;
         Ok(Self {
             env,
@@ -96,19 +101,19 @@ impl Wallet {
 
     /// Overwrite the seed, or set it if it does not already exist.
     pub fn overwrite_seed(&self, seed: &[u8; 64]) -> Result<(), Error> {
-        let mut txn = self.env.write_txn()?;
-        self.seed.put(&mut txn, &0, seed)?;
-        self.address_to_index.clear(&mut txn)?;
-        self.index_to_address.clear(&mut txn)?;
-        self.utxos.clear(&mut txn)?;
-        self.stxos.clear(&mut txn)?;
-        txn.commit()?;
+        let mut rwtxn = self.env.write_txn()?;
+        self.seed.put(&mut rwtxn, &0, seed)?;
+        self.address_to_index.clear(&mut rwtxn)?;
+        self.index_to_address.clear(&mut rwtxn)?;
+        self.utxos.clear(&mut rwtxn)?;
+        self.stxos.clear(&mut rwtxn)?;
+        rwtxn.commit()?;
         Ok(())
     }
 
     pub fn has_seed(&self) -> Result<bool, Error> {
-        let txn = self.env.read_txn()?;
-        Ok(self.seed.get(&txn, &0)?.is_some())
+        let rotxn = self.env.read_txn()?;
+        Ok(self.seed.try_get(&rotxn, &0)?.is_some())
     }
 
     /// Set the seed, if it does not already exist
@@ -259,7 +264,7 @@ impl Wallet {
     ) -> Result<(), Error> {
         let mut txn = self.env.write_txn()?;
         for (outpoint, inpoint) in spent {
-            let output = self.utxos.get(&txn, outpoint)?;
+            let output = self.utxos.try_get(&txn, outpoint)?;
             if let Some(output) = output {
                 self.utxos.delete(&mut txn, outpoint)?;
                 let spent_output = SpentOutput {
@@ -323,13 +328,13 @@ impl Wallet {
         let mut authorizations = vec![];
         for (outpoint, _) in &transaction.inputs {
             let spent_utxo =
-                self.utxos.get(&txn, outpoint)?.ok_or(Error::NoUtxo)?;
+                self.utxos.try_get(&txn, outpoint)?.ok_or(Error::NoUtxo)?;
             let index = self
                 .address_to_index
-                .get(&txn, &spent_utxo.address)?
+                .try_get(&txn, &spent_utxo.address)?
                 .ok_or(Error::NoIndex {
-                address: spent_utxo.address,
-            })?;
+                    address: spent_utxo.address,
+                })?;
             let index = BigEndian::read_u32(&index);
             let signing_key = self.get_signing_key(&txn, index)?;
             let signature =
@@ -374,10 +379,10 @@ impl Wallet {
 
     fn get_signing_key(
         &self,
-        txn: &RoTxn,
+        rotxn: &RoTxn,
         index: u32,
     ) -> Result<ed25519_dalek::SigningKey, Error> {
-        let seed = self.seed.get(txn, &0)?.ok_or(Error::NoSeed)?;
+        let seed = self.seed.try_get(rotxn, &0)?.ok_or(Error::NoSeed)?;
         let xpriv = ExtendedSigningKey::from_seed(seed)?;
         let derivation_path = DerivationPath::new([
             ChildIndex::Hardened(1),
@@ -387,5 +392,37 @@ impl Wallet {
         ]);
         let xsigning_key = xpriv.derive(&derivation_path)?;
         Ok(xsigning_key.signing_key)
+    }
+}
+
+impl Watchable<()> for Wallet {
+    type WatchStream = impl Stream<Item = ()>;
+
+    /// Get a signal that notifies whenever the wallet changes
+    fn watch(&self) -> Self::WatchStream {
+        let Self {
+            env: _,
+            seed,
+            address_to_index,
+            index_to_address,
+            utxos,
+            stxos,
+        } = self;
+        let watchables = [
+            seed.watch(),
+            address_to_index.watch(),
+            index_to_address.watch(),
+            utxos.watch(),
+            stxos.watch(),
+        ];
+        let streams = StreamMap::from_iter(
+            watchables.into_iter().map(WatchStream::new).enumerate(),
+        );
+        let streams_len = streams.len();
+        streams.ready_chunks(streams_len).map(|signals| {
+            assert_ne!(signals.len(), 0);
+            #[allow(clippy::unused_unit)]
+            ()
+        })
     }
 }

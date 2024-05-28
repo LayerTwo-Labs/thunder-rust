@@ -17,7 +17,7 @@ ed25519-dalek = { version = "2.1.1", features = ["batch", "serde"] }
 ed25519-dalek-bip32 = "0.3.0"
 fallible-iterator = "0.3.0"
 futures = "0.3.30"
-heed = "0.20.0"
+heed = "0.20.1"
 hex = { version = "0.4.3", features = ["serde"] }
 jsonrpsee = { version = "0.20.0" }
 parking_lot = "0.12.1"
@@ -28,11 +28,12 @@ rustls = { version = "0.21.5", features = ["dangerous_configuration"] }
 rustreexo = { workspace = true, features = ["with-serde"] }
 serde = { version = "1.0.179", features = ["derive"] }
 serde_json = "1.0.113"
+serde_with = { version = "3.4.0", default-features = false }
 sha256 = "1.2.2"
 thiserror = "1.0.44"
 tiny-bip39 = "1.0.0"
 tokio = { version = "1.29.1", features = ["sync"] }
-tokio-stream = "0.1.15"
+tokio-stream = { version = "0.1.15", features = ["sync"] }
 tokio-util = { version = "0.7.10", features = ["rt"] }
 tracing = "0.1.40"
 

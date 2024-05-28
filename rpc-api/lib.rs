@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 
 use bip300301::bitcoin;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
-use thunder::types::{Address, Txid};
+use thunder::types::{Address, PointedOutput, Txid};
 
 #[rpc(client, server)]
 pub trait Rpc {
@@ -31,9 +31,21 @@ pub trait Rpc {
     #[method(name = "get_new_address")]
     async fn get_new_address(&self) -> RpcResult<Address>;
 
+    /// Get wallet addresses, sorted by base58 encoding
+    #[method(name = "get_wallet_addresses")]
+    async fn get_wallet_addresses(&self) -> RpcResult<Vec<Address>>;
+
+    /// Get wallet UTXOs
+    #[method(name = "get_wallet_utxos")]
+    async fn get_wallet_utxos(&self) -> RpcResult<Vec<PointedOutput>>;
+
     /// Get the current block count
     #[method(name = "getblockcount")]
     async fn getblockcount(&self) -> RpcResult<u32>;
+
+    /// List all UTXOs
+    #[method(name = "list_utxos")]
+    async fn list_utxos(&self) -> RpcResult<Vec<PointedOutput>>;
 
     /// Attempt to mine a sidechain block
     #[method(name = "mine")]
