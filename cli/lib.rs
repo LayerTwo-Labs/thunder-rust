@@ -3,7 +3,10 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use bip300301::bitcoin;
 use clap::{Parser, Subcommand};
 use jsonrpsee::http_client::{HttpClient, HttpClientBuilder};
-use thunder::types::{Address, Txid};
+use thunder::{
+    node::THIS_SIDECHAIN,
+    types::{Address, Txid},
+};
 use thunder_app_rpc_api::RpcClient;
 
 #[derive(Clone, Debug, Subcommand)]
@@ -60,8 +63,10 @@ pub enum Command {
     },
 }
 
-const DEFAULT_RPC_ADDR: SocketAddr =
-    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 2020);
+const DEFAULT_RPC_ADDR: SocketAddr = SocketAddr::new(
+    IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+    6000 + THIS_SIDECHAIN as u16,
+);
 
 #[derive(Clone, Debug, Parser)]
 #[command(author, version, about, long_about = None)]

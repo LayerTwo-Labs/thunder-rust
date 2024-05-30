@@ -1,10 +1,12 @@
-use clap::{Arg, Parser};
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     ops::Deref,
     path::PathBuf,
     sync::LazyLock,
 };
+
+use clap::{Arg, Parser};
+use thunder::node::THIS_SIDECHAIN;
 
 const fn ipv4_socket_addr(ipv4_octets: [u8; 4], port: u16) -> SocketAddr {
     let [a, b, c, d] = ipv4_octets;
@@ -27,9 +29,11 @@ const DEFAULT_MAIN_USER: &str = "user";
 
 const DEFAULT_MAIN_PASS: &str = "password";
 
-const DEFAULT_NET_ADDR: SocketAddr = ipv4_socket_addr([0, 0, 0, 0], 4000);
+const DEFAULT_NET_ADDR: SocketAddr =
+    ipv4_socket_addr([0, 0, 0, 0], 4000 + THIS_SIDECHAIN as u16);
 
-const DEFAULT_RPC_ADDR: SocketAddr = ipv4_socket_addr([127, 0, 0, 1], 2020);
+const DEFAULT_RPC_ADDR: SocketAddr =
+    ipv4_socket_addr([127, 0, 0, 1], 6000 + THIS_SIDECHAIN as u16);
 
 /// Implement arg manually so that there is only a default if we can resolve
 /// the default data dir
