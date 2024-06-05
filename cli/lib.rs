@@ -35,6 +35,9 @@ pub enum Command {
         #[arg(long)]
         fee_sats: Option<u64>,
     },
+    /// Show OpenAPI schema
+    #[command(name = "openapi-schema")]
+    OpenApiSchema,
     /// Remove a tx from the mempool
     RemoveFromMempool { txid: Txid },
     /// Set the wallet seed from a mnemonic seed phrase
@@ -119,6 +122,11 @@ impl Cli {
             Command::Mine { fee_sats } => {
                 let () = rpc_client.mine(fee_sats).await?;
                 String::default()
+            }
+            Command::OpenApiSchema => {
+                let openapi =
+                    <thunder_app_rpc_api::RpcDoc as utoipa::OpenApi>::openapi();
+                openapi.to_pretty_json()?
             }
             Command::RemoveFromMempool { txid } => {
                 let () = rpc_client.remove_from_mempool(txid).await?;

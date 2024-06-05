@@ -122,6 +122,11 @@ impl RpcServer for RpcServerImpl {
         }).await.unwrap()
     }
 
+    async fn openapi_schema(&self) -> RpcResult<utoipa::openapi::OpenApi> {
+        let res = <thunder_app_rpc_api::RpcDoc as utoipa::OpenApi>::openapi();
+        Ok(res)
+    }
+
     async fn remove_from_mempool(&self, txid: Txid) -> RpcResult<()> {
         self.app
             .node

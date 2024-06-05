@@ -78,3 +78,21 @@ impl Serialize for Address {
         }
     }
 }
+
+impl utoipa::PartialSchema for Address {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        let obj = utoipa::openapi::Object::with_type(
+            utoipa::openapi::SchemaType::String,
+        );
+        utoipa::openapi::RefOr::T(utoipa::openapi::Schema::Object(obj))
+    }
+}
+
+impl utoipa::ToSchema<'static> for Address {
+    fn schema() -> (
+        &'static str,
+        utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
+    ) {
+        ("Address", <Address as utoipa::PartialSchema>::schema())
+    }
+}

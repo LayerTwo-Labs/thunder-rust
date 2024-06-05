@@ -6,6 +6,7 @@ use rustreexo::accumulator::{
     node_hash::NodeHash, pollard::Pollard, proof::Proof,
 };
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use super::{hash, Address, Hash, MerkleRoot, Txid};
 use crate::authorization::Authorization;
@@ -34,6 +35,7 @@ where
     PartialEq,
     PartialOrd,
     Serialize,
+    ToSchema,
 )]
 pub enum OutPoint {
     // Created by transactions.
@@ -98,8 +100,16 @@ where
 }
 
 #[derive(
-    BorshSerialize, Clone, Debug, Deserialize, Eq, PartialEq, Serialize,
+    BorshSerialize,
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    PartialEq,
+    Serialize,
+    ToSchema,
 )]
+#[schema(as = OutputContent)]
 pub enum Content {
     Value(u64),
     Withdrawal {
@@ -129,11 +139,23 @@ impl GetValue for Content {
     }
 }
 
+fn output_content_schema_ref() -> utoipa::openapi::Ref {
+    utoipa::openapi::Ref::new("OutputContent")
+}
+
 #[derive(
-    BorshSerialize, Clone, Debug, Deserialize, Eq, PartialEq, Serialize,
+    BorshSerialize,
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    PartialEq,
+    Serialize,
+    ToSchema,
 )]
 pub struct Output {
     pub address: Address,
+    #[schema(schema_with = output_content_schema_ref)]
     pub content: Content,
 }
 
@@ -145,7 +167,14 @@ impl GetValue for Output {
 }
 
 #[derive(
-    BorshSerialize, Clone, Debug, Deserialize, Eq, PartialEq, Serialize,
+    BorshSerialize,
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    PartialEq,
+    Serialize,
+    ToSchema,
 )]
 pub struct PointedOutput {
     pub outpoint: OutPoint,

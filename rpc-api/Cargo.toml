@@ -8,6 +8,12 @@ version.workspace = true
 bip300301.workspace = true
 jsonrpsee = { version = "0.20.0", features = ["macros"] }
 thunder = { path = "../lib" }
+serde_json = "1.0.113"
+utoipa = "4.2.3"
+
+[dependencies.l2l-openapi]
+git = "https://github.com/Ash-L2L/l2l-openapi"
+rev = "6e440bb2715ec0d495050e9dbbda3f1590a07385"
 
 [lib]
 name = "thunder_app_rpc_api"
