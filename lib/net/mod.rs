@@ -14,7 +14,10 @@ use parking_lot::RwLock;
 use quinn::{ClientConfig, Endpoint, ServerConfig};
 use tokio_stream::StreamNotifyClose;
 
-use crate::{archive::Archive, state::State, types::AuthorizedTransaction};
+use crate::{
+    archive::Archive, node::THIS_SIDECHAIN, state::State,
+    types::AuthorizedTransaction,
+};
 
 mod peer;
 
@@ -176,7 +179,7 @@ impl Net {
                         std::net::IpAddr::V4(std::net::Ipv4Addr::new(
                             172, 105, 148, 135,
                         )),
-                        3820,
+                        4000 + THIS_SIDECHAIN as u16,
                     );
                     known_peers.put(&mut rwtxn, &SEED_NODE_ADDR, &())?;
                     known_peers
