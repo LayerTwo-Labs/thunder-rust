@@ -41,11 +41,12 @@ impl Miner {
     }
 
     pub async fn generate(&self) -> Result<(), Error> {
-        self.drivechain
-            .client
-            .generate(1)
-            .await
-            .map_err(bip300301::Error::from)?;
+        self.drivechain.client.generate(1).await.map_err(|source| {
+            bip300301::Error::Jsonrpsee {
+                source,
+                main_addr: self.drivechain.main_addr,
+            }
+        })?;
         Ok(())
     }
 
@@ -72,7 +73,10 @@ impl Miner {
                 prev_bytes,
             )
             .await
-            .map_err(bip300301::Error::from)?;
+            .map_err(|source| bip300301::Error::Jsonrpsee {
+                source,
+                main_addr: self.drivechain.main_addr,
+            })?;
         let txid = value["txid"]["txid"]
             .as_str()
             .map(|s| s.to_owned())
@@ -93,9 +97,9 @@ impl Miner {
             let block_hash = header.hash().into();
             tracing::trace!(%block_hash, "verifying bmm...");
             self.drivechain
-                .verify_bmm(
-                    &header.prev_main_hash,
-                    &block_hash,
+                .verify_bmm_next_block(
+                    header.prev_main_hash,
+                    block_hash,
                     VERIFY_BMM_POLL_INTERVAL,
                 )
                 .await?;

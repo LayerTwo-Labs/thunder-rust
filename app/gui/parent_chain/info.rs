@@ -18,8 +18,11 @@ impl Info {
         let mainchain_tip = app.runtime.block_on(async {
             let mainchain_tip_blockhash = dc.get_mainchain_tip().await?;
             dc.client
-                .getblock(&mainchain_tip_blockhash, None)
-                .map_err(bip300301::Error::Jsonrpsee)
+                .getblock(mainchain_tip_blockhash, None)
+                .map_err(|source| bip300301::Error::Jsonrpsee {
+                    source,
+                    main_addr: dc.main_addr,
+                })
                 .await
         })?;
         let sidechain_wealth = app.node.get_sidechain_wealth()?;

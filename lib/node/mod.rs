@@ -217,12 +217,12 @@ impl Node {
         &self,
     ) -> Result<bitcoin::BlockHash, Error> {
         use bip300301::MainClient;
-        let res = self
-            .drivechain
-            .client
-            .getbestblockhash()
-            .await
-            .map_err(bip300301::Error::Jsonrpsee)?;
+        let res = self.drivechain.client.getbestblockhash().await.map_err(
+            |source| bip300301::Error::Jsonrpsee {
+                source,
+                main_addr: self.drivechain.main_addr,
+            },
+        )?;
         Ok(res)
     }
 

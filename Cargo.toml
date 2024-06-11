@@ -13,11 +13,11 @@ authors = [
     "Nikita Chashchinskii <nikita.chashchinskii@gmail.com>"
 ]
 edition = "2021"
-version = "0.8.13"
+version = "0.8.14"
 
 [workspace.dependencies.bip300301]
 git = "https://github.com/Ash-L2L/bip300301.git"
-rev = "64568dee7b89fe8c021226f10b17a18fe3386871"
+rev = "b74c5bbf6022701cbdfbd9a412327577e115ceda"
 
 [workspace.dependencies.rustreexo]
 git = "https://github.com/Ash-L2L/rustreexo.git"

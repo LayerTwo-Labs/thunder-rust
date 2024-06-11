@@ -111,30 +111,18 @@ impl MainchainTask {
         drivechain: &bip300301::Drivechain,
         block_hash: BlockHash,
     ) -> Result<bool, Error> {
-        use jsonrpsee::types::error::ErrorCode as JsonrpseeErrorCode;
         const VERIFY_BMM_POLL_INTERVAL: Duration = Duration::from_secs(15);
         let header = {
             let rotxn = env.read_txn()?;
             archive.get_header(&rotxn, block_hash)?
         };
-        let res = match drivechain
-            .verify_bmm(
-                &header.prev_main_hash,
-                &block_hash.into(),
+        let (res, _next_block_hash) = drivechain
+            .verify_bmm_next_block(
+                header.prev_main_hash,
+                block_hash.into(),
                 VERIFY_BMM_POLL_INTERVAL,
             )
-            .await
-        {
-            Ok(()) => true,
-            Err(bip300301::Error::Jsonrpsee(jsonrpsee::core::Error::Call(
-                err,
-            ))) if JsonrpseeErrorCode::from(err.code())
-                == JsonrpseeErrorCode::ServerError(-1) =>
-            {
-                false
-            }
-            Err(err) => return Err(Error::from(err)),
-        };
+            .await?;
         let mut rwtxn = env.write_txn()?;
         let () = archive.put_bmm_verification(&mut rwtxn, block_hash, res)?;
         rwtxn.commit()?;
