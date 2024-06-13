@@ -23,7 +23,7 @@ static DEFAULT_DATA_DIR: LazyLock<Option<PathBuf>> =
         Some(data_dir) => Some(data_dir.join("thunder")),
     });
 
-const DEFAULT_MAIN_ADDR: SocketAddr = ipv4_socket_addr([127, 0, 0, 1], 18443);
+const DEFAULT_MAIN_ADDR: SocketAddr = ipv4_socket_addr([127, 0, 0, 1], 8332);
 
 const DEFAULT_MAIN_USER: &str = "user";
 
