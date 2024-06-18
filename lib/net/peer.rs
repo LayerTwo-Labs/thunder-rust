@@ -233,7 +233,7 @@ where
 }
 
 /// Message received from the connection task / net task / node
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum InternalMessage {
     /// Indicates if a BMM verification request completed.
     /// Does not indicate that BMM was verified successfully.
@@ -241,10 +241,14 @@ pub enum InternalMessage {
         res: Result<(), bip300301::BlockNotFoundError>,
         peer_state_id: PeerStateId,
     },
+    /// Indicates an error attempting BMM verification
+    BmmVerificationError(anyhow::Error),
     /// Forward a request
     ForwardRequest(Request),
     /// Indicates that mainchain ancestors are now available
     MainchainAncestors(PeerStateId),
+    /// Indicates an error fetching mainchain ancestors
+    MainchainAncestorsError(anyhow::Error),
     /// Indicates that the requested headers are now available
     Headers(PeerStateId),
     /// Indicates that all requested missing block bodies are now available
@@ -1082,6 +1086,20 @@ impl ConnectionTask {
                         peer_state,
                     )
                     .await?;
+                }
+                MailboxItem::InternalMessage(
+                    InternalMessage::BmmVerificationError(err),
+                ) => {
+                    tracing::error!(
+                        "Error attempting BMM verification: {err:#}"
+                    );
+                }
+                MailboxItem::InternalMessage(
+                    InternalMessage::MainchainAncestorsError(err),
+                ) => {
+                    tracing::error!(
+                        "Error fetching mainchain ancestors: {err:#}"
+                    );
                 }
                 MailboxItem::InternalMessage(
                     InternalMessage::MainchainAncestors(peer_state_id)

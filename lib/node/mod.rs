@@ -44,6 +44,8 @@ pub enum Error {
     Heed(#[from] heed::Error),
     #[error("quinn error")]
     Io(#[from] std::io::Error),
+    #[error("error requesting mainchain ancestors")]
+    MainchainAncestors(anyhow::Error),
     #[error("mempool error")]
     MemPool(#[from] mempool::Error),
     #[error("net error")]
@@ -60,6 +62,8 @@ pub enum Error {
     State(#[from] state::Error),
     #[error("Utreexo error: {0}")]
     Utreexo(String),
+    #[error("Verify BMM error")]
+    VerifyBmm(anyhow::Error),
 }
 
 /// Request any missing two way peg data up to the specified block hash.
@@ -444,14 +448,18 @@ impl Node {
             return Ok(false);
         }
         // Request mainchain headers if they do not exist
-        let _: mainchain_task::Response = self
+        let mainchain_task::Response::AncestorHeaders(_, res): mainchain_task::Response = self
             .mainchain_task
             .request_oneshot(mainchain_task::Request::AncestorHeaders(
                 main_block_hash,
             ))
             .map_err(|_| Error::SendMainchainTaskRequest)?
             .await
-            .map_err(|_| Error::ReceiveMainchainTaskResponse)?;
+            .map_err(|_| Error::ReceiveMainchainTaskResponse)?
+        else {
+            panic!("should be impossible")
+        };
+        let () = res.map_err(|err| Error::MainchainAncestors(err.into()))?;
         // Verify BMM
         let mainchain_task::Response::VerifyBmm(_, res) = self
             .mainchain_task
@@ -464,7 +472,9 @@ impl Node {
         else {
             panic!("should be impossible")
         };
-        if let Err(bip300301::BlockNotFoundError(missing_block)) = res {
+        if let Err(bip300301::BlockNotFoundError(missing_block)) =
+            res.map_err(|err| Error::VerifyBmm(err.into()))?
+        {
             tracing::error!(%block_hash,
                 "Rejecting block {block_hash} due to missing mainchain block {missing_block}",
             );

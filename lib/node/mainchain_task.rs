@@ -36,24 +36,35 @@ pub(super) enum Request {
     VerifyBmm(bitcoin::BlockHash),
 }
 
+/// Error included in a response
+#[derive(Debug, Error)]
+pub(super) enum ResponseError {
+    #[error("Archive error")]
+    Archive(#[from] archive::Error),
+    #[error("Drivechain error")]
+    Drivechain(#[from] bip300301::Error),
+    #[error("Heed error")]
+    Heed(#[from] heed::Error),
+}
+
 /// Response indicating that a request has been fulfilled
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub(super) enum Response {
-    AncestorHeaders(bitcoin::BlockHash),
+    AncestorHeaders(bitcoin::BlockHash, Result<(), ResponseError>),
     VerifyBmm(
         bitcoin::BlockHash,
-        Result<(), bip300301::BlockNotFoundError>,
+        Result<Result<(), bip300301::BlockNotFoundError>, ResponseError>,
     ),
 }
 
-impl From<Response> for Request {
-    fn from(resp: Response) -> Self {
+impl From<&Response> for Request {
+    fn from(resp: &Response) -> Self {
         match resp {
-            Response::AncestorHeaders(block_hash) => {
-                Request::AncestorHeaders(block_hash)
+            Response::AncestorHeaders(block_hash, _) => {
+                Request::AncestorHeaders(*block_hash)
             }
             Response::VerifyBmm(block_hash, _) => {
-                Request::VerifyBmm(block_hash)
+                Request::VerifyBmm(*block_hash)
             }
         }
     }
@@ -61,12 +72,6 @@ impl From<Response> for Request {
 
 #[derive(Debug, Error)]
 enum Error {
-    #[error("Archive error")]
-    Archive(#[from] archive::Error),
-    #[error("Drivechain error")]
-    Drivechain(#[from] bip300301::Error),
-    #[error("Heed error")]
-    Heed(#[from] heed::Error),
     #[error("Send response error")]
     SendResponse(Response),
     #[error("Send response error (oneshot)")]
@@ -91,7 +96,7 @@ impl MainchainTask {
         archive: &Archive,
         drivechain: &bip300301::Drivechain,
         block_hash: bitcoin::BlockHash,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ResponseError> {
         if block_hash == bitcoin::BlockHash::all_zeros() {
             return Ok(());
         } else {
@@ -147,7 +152,7 @@ impl MainchainTask {
         archive: &Archive,
         drivechain: &bip300301::Drivechain,
         main_hash: bitcoin::BlockHash,
-    ) -> Result<Result<(), bip300301::BlockNotFoundError>, Error> {
+    ) -> Result<Result<(), bip300301::BlockNotFoundError>, ResponseError> {
         if main_hash == bitcoin::BlockHash::all_zeros() {
             return Ok(Ok(()));
         } else {
@@ -226,14 +231,15 @@ impl MainchainTask {
         while let Some((request, response_tx)) = self.request_rx.next().await {
             match request {
                 Request::AncestorHeaders(main_block_hash) => {
-                    let () = Self::request_ancestor_headers(
+                    let res = Self::request_ancestor_headers(
                         &self.env,
                         &self.archive,
                         &self.drivechain,
                         main_block_hash,
                     )
-                    .await?;
-                    let response = Response::AncestorHeaders(main_block_hash);
+                    .await;
+                    let response =
+                        Response::AncestorHeaders(main_block_hash, res);
                     if let Some(response_tx) = response_tx {
                         response_tx
                             .send(response)
@@ -253,7 +259,7 @@ impl MainchainTask {
                             &self.drivechain,
                             block_hash,
                         )
-                        .await?,
+                        .await,
                     );
                     if let Some(response_tx) = response_tx {
                         response_tx

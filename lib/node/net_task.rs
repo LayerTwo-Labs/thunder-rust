@@ -587,21 +587,27 @@ impl NetTask {
                         .map_err(|_| Error::SendMainchainTaskRequest)?;
                 }
                 MailboxItem::MainchainTaskResponse(response) => {
-                    let request = response.into();
+                    let request = (&response).into();
                     match response {
                         mainchain_task::Response::AncestorHeaders(
                             _block_hash,
+                            res,
                         ) => {
                             let Some(sources) =
                                 mainchain_task_request_sources.remove(&request)
                             else {
                                 continue;
                             };
+                            let res = res.map_err(Arc::new);
                             for (addr, peer_state_id) in sources {
-                                let message =
-                                    PeerConnectionMessage::MainchainAncestors(
+                                let message = match res {
+                                    Ok(()) => PeerConnectionMessage::MainchainAncestors(
                                         peer_state_id,
-                                    );
+                                    ),
+                                    Err(ref err) => PeerConnectionMessage::MainchainAncestorsError(
+                                        anyhow::Error::from(err.clone())
+                                    )
+                                };
                                 let () = self
                                     .ctxt
                                     .net
@@ -617,12 +623,15 @@ impl NetTask {
                             else {
                                 continue;
                             };
+                            let res = res.map_err(Arc::new);
                             for (addr, peer_state_id) in sources {
-                                let message =
-                                    PeerConnectionMessage::BmmVerification {
-                                        res,
+                                let message = match res {
+                                    Ok(bmm_verification_res) => PeerConnectionMessage::BmmVerification {
+                                        res: bmm_verification_res,
                                         peer_state_id,
-                                    };
+                                    },
+                                    Err(ref err) => PeerConnectionMessage::BmmVerificationError(anyhow::Error::from(err.clone()))
+                                };
                                 let () = self
                                     .ctxt
                                     .net
