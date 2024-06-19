@@ -196,11 +196,10 @@ impl MainchainTask {
                         } => Some(commitment.into()),
                         BlockCommitment::BmmHStar { .. }
                         | BlockCommitment::ScdbUpdateBytes { .. }
-                        | BlockCommitment::WitnessCommitment { .. }
+                        | BlockCommitment::SidechainActivationAck { .. }
                         | BlockCommitment::SidechainProposal
-                        | BlockCommitment::SidechainActivationAck { .. } => {
-                            None
-                        }
+                        | BlockCommitment::WithdrawalBundleHash { .. }
+                        | BlockCommitment::WitnessCommitment { .. } => None,
                     })
                     .collect(),
                 Err(block_not_found) => return Ok(Err(block_not_found)),
