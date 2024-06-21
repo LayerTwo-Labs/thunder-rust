@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
+use futures::{StreamExt, TryFutureExt};
 use parking_lot::RwLock;
 use rustreexo::accumulator::proof::Proof;
 use thunder::{
@@ -10,7 +11,7 @@ use thunder::{
     types::{self, OutPoint, Output, Transaction},
     wallet::{self, Wallet},
 };
-use tokio::sync::RwLock as TokioRwLock;
+use tokio::{spawn, sync::RwLock as TokioRwLock, task::JoinHandle};
 use tokio_util::task::LocalPoolHandle;
 
 use crate::cli::Config;
@@ -33,18 +34,67 @@ pub enum Error {
     Wallet(#[from] wallet::Error),
 }
 
+fn update_wallet(node: &Node, wallet: &Wallet) -> Result<(), Error> {
+    let addresses = wallet.get_addresses()?;
+    let utxos = node.get_utxos_by_addresses(&addresses)?;
+    let outpoints: Vec<_> = wallet.get_utxos()?.into_keys().collect();
+    let spent: Vec<_> = node
+        .get_spent_utxos(&outpoints)?
+        .into_iter()
+        .map(|(outpoint, spent_output)| (outpoint, spent_output.inpoint))
+        .collect();
+    wallet.put_utxos(&utxos)?;
+    wallet.spend_utxos(&spent)?;
+    Ok(())
+}
+
+/// Update utxos & wallet
+fn update(
+    node: &Node,
+    utxos: &mut HashMap<OutPoint, Output>,
+    wallet: &Wallet,
+) -> Result<(), Error> {
+    let () = update_wallet(node, wallet)?;
+    *utxos = wallet.get_utxos()?;
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct App {
     pub node: Arc<Node>,
     pub wallet: Wallet,
     pub miner: Arc<TokioRwLock<Miner>>,
     pub utxos: Arc<RwLock<HashMap<OutPoint, Output>>>,
+    task: Arc<JoinHandle<()>>,
     pub transaction: Arc<RwLock<Transaction>>,
     pub runtime: Arc<tokio::runtime::Runtime>,
     pub local_pool: LocalPoolHandle,
 }
 
 impl App {
+    async fn task(
+        node: Arc<Node>,
+        utxos: Arc<RwLock<HashMap<OutPoint, Output>>>,
+        wallet: Wallet,
+    ) -> Result<(), Error> {
+        let mut state_changes = node.watch_state();
+        while let Some(()) = state_changes.next().await {
+            let () = update(&node, &mut utxos.write(), &wallet)?;
+        }
+        Ok(())
+    }
+
+    fn spawn_task(
+        node: Arc<Node>,
+        utxos: Arc<RwLock<HashMap<OutPoint, Output>>>,
+        wallet: Wallet,
+    ) -> JoinHandle<()> {
+        spawn(Self::task(node, utxos, wallet).unwrap_or_else(|err| {
+            let err = anyhow::Error::from(err);
+            tracing::error!("{err:#}")
+        }))
+    }
+
     pub fn new(config: &Config) -> Result<Self, Error> {
         // Node launches some tokio tasks for p2p networking, that is why we need a tokio runtime
         // here.
@@ -72,7 +122,6 @@ impl App {
             &config.main_password,
             local_pool.clone(),
         )?;
-        drop(rt_guard);
         let utxos = {
             let mut utxos = wallet.get_utxos()?;
             let transactions = node.get_all_transactions()?;
@@ -81,13 +130,18 @@ impl App {
                     utxos.remove(outpoint);
                 }
             }
-            utxos
+            Arc::new(RwLock::new(utxos))
         };
+        let node = Arc::new(node);
+        let task =
+            Self::spawn_task(node.clone(), utxos.clone(), wallet.clone());
+        drop(rt_guard);
         Ok(Self {
-            node: Arc::new(node),
+            node,
             wallet,
             miner: Arc::new(TokioRwLock::new(miner)),
-            utxos: Arc::new(RwLock::new(utxos)),
+            utxos,
+            task: Arc::new(task),
             transaction: Arc::new(RwLock::new(Transaction {
                 inputs: vec![],
                 proof: Proof::default(),
@@ -98,10 +152,15 @@ impl App {
         })
     }
 
+    /// Update utxos & wallet
+    fn update(&self) -> Result<(), Error> {
+        update(self.node.as_ref(), &mut self.utxos.write(), &self.wallet)
+    }
+
     pub fn sign_and_send(&self, tx: Transaction) -> Result<(), Error> {
         let authorized_transaction = self.wallet.authorize(tx)?;
         self.node.submit_transaction(authorized_transaction)?;
-        self.update_utxos()?;
+        let () = self.update()?;
         Ok(())
     }
 
@@ -191,36 +250,8 @@ impl App {
             self.node.submit_block(main_hash, &header, &body).await?;
         }
         drop(miner_write);
-        self.update_wallet()?;
-        self.update_utxos()?;
+        let () = self.update()?;
         self.node.regenerate_proof(&mut self.transaction.write())?;
-        Ok(())
-    }
-
-    fn update_wallet(&self) -> Result<(), Error> {
-        let addresses = self.wallet.get_addresses()?;
-        let utxos = self.node.get_utxos_by_addresses(&addresses)?;
-        let outpoints: Vec<_> = self.wallet.get_utxos()?.into_keys().collect();
-        let spent: Vec<_> = self
-            .node
-            .get_spent_utxos(&outpoints)?
-            .into_iter()
-            .map(|(outpoint, spent_output)| (outpoint, spent_output.inpoint))
-            .collect();
-        self.wallet.put_utxos(&utxos)?;
-        self.wallet.spend_utxos(&spent)?;
-        Ok(())
-    }
-
-    fn update_utxos(&self) -> Result<(), Error> {
-        let mut utxos = self.wallet.get_utxos()?;
-        let transactions = self.node.get_all_transactions()?;
-        for transaction in &transactions {
-            for (outpoint, _) in &transaction.transaction.inputs {
-                utxos.remove(outpoint);
-            }
-        }
-        *self.utxos.write() = utxos;
         Ok(())
     }
 
@@ -247,5 +278,11 @@ impl App {
                 .await?;
             Ok(())
         })
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        self.task.abort()
     }
 }

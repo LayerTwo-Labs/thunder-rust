@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use futures::Stream;
 use heed::{types::SerdeBincode, Database, RoTxn, RwTxn};
 
 use bip300301::{
@@ -19,7 +20,7 @@ use crate::{
         PointedOutput, SpentOutput, Transaction, Txid, Verify,
         WithdrawalBundle,
     },
-    util::UnitKey,
+    util::{EnvExt, UnitKey, Watchable, WatchableDb},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -84,7 +85,7 @@ pub enum Error {
 #[derive(Clone)]
 pub struct State {
     /// Current tip
-    tip: Database<SerdeBincode<UnitKey>, SerdeBincode<BlockHash>>,
+    tip: WatchableDb<SerdeBincode<UnitKey>, SerdeBincode<BlockHash>>,
     /// Current height
     height: Database<SerdeBincode<UnitKey>, SerdeBincode<u32>>,
     pub utxos: Database<SerdeBincode<OutPoint>, SerdeBincode<Output>>,
@@ -110,7 +111,7 @@ impl State {
 
     pub fn new(env: &heed::Env) -> Result<Self, Error> {
         let mut rwtxn = env.write_txn()?;
-        let tip = env.create_database(&mut rwtxn, Some("tip"))?;
+        let tip = env.create_watchable_db(&mut rwtxn, "tip")?;
         let height = env.create_database(&mut rwtxn, Some("height"))?;
         let utxos = env.create_database(&mut rwtxn, Some("utxos"))?;
         let stxos = env.create_database(&mut rwtxn, Some("stxos"))?;
@@ -136,7 +137,7 @@ impl State {
     }
 
     pub fn get_tip(&self, rotxn: &RoTxn) -> Result<BlockHash, Error> {
-        let tip = self.tip.get(rotxn, &UnitKey)?.unwrap_or_default();
+        let tip = self.tip.try_get(rotxn, &UnitKey)?.unwrap_or_default();
         Ok(tip)
     }
 
@@ -936,7 +937,7 @@ impl State {
         header: &Header,
         body: &Body,
     ) -> Result<(), Error> {
-        let tip_hash = self.tip.get(rwtxn, &UnitKey)?.unwrap_or_default();
+        let tip_hash = self.tip.try_get(rwtxn, &UnitKey)?.unwrap_or_default();
         if tip_hash != header.hash() {
             let err = InvalidHeaderError::BlockHash {
                 expected: tip_hash,
@@ -1068,5 +1069,14 @@ impl State {
             - total_withdrawal_stxo_value;
         let total_wealth = BitcoinAmount::from_sat(total_wealth_sats);
         Ok(total_wealth)
+    }
+}
+
+impl Watchable<()> for State {
+    type WatchStream = impl Stream<Item = ()>;
+
+    /// Get a signal that notifies whenever the tip changes
+    fn watch(&self) -> Self::WatchStream {
+        tokio_stream::wrappers::WatchStream::new(self.tip.watch())
     }
 }

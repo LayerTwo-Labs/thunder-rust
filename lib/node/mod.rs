@@ -7,6 +7,7 @@ use std::{
 
 use bip300301::{bitcoin, DepositInfo};
 use fallible_iterator::FallibleIterator;
+use futures::Stream;
 use tokio_util::task::LocalPoolHandle;
 
 use crate::{
@@ -19,6 +20,7 @@ use crate::{
         Body, GetValue, Header, OutPoint, Output, SpentOutput, Tip,
         Transaction, Txid, WithdrawalBundle,
     },
+    util::Watchable,
 };
 
 mod mainchain_task;
@@ -547,5 +549,10 @@ impl Node {
                 .await?;
         }
         Ok(true)
+    }
+
+    /// Get a notification whenever the tip changes
+    pub fn watch_state(&self) -> impl Stream<Item = ()> {
+        self.state.watch()
     }
 }
