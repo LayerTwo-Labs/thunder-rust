@@ -1,6 +1,9 @@
 //! Task to communicate with mainchain node
 
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use bip300301::{
     bitcoin::{self, hashes::Hash as _},
@@ -109,8 +112,18 @@ impl MainchainTask {
         let mut current_height = None;
         let mut headers: Vec<BitcoinHeader> = Vec::new();
         tracing::debug!(%block_hash, "requesting ancestor headers");
+        const LOG_PROGRESS_INTERVAL: Duration = Duration::from_secs(5);
+        let mut progress_logged = Instant::now();
         loop {
             if let Some(current_height) = current_height {
+                let now = Instant::now();
+                if now.duration_since(progress_logged) >= LOG_PROGRESS_INTERVAL
+                {
+                    progress_logged = now;
+                    tracing::debug!(
+                        %block_hash,
+                        "requesting ancestor headers: {current_block_hash}({current_height} remaining)");
+                }
                 tracing::trace!(%block_hash, "requesting ancestor headers: {current_block_hash}({current_height})")
             }
             let header = drivechain.get_header(current_block_hash).await?;
