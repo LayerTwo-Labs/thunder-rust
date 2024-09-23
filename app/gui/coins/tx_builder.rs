@@ -2,10 +2,7 @@ use std::collections::HashSet;
 
 use eframe::egui;
 
-use thunder::{
-    bip300301::bitcoin,
-    types::{GetValue, Transaction},
-};
+use thunder::types::{GetValue, Transaction};
 
 use super::{
     tx_creator::TxCreator,

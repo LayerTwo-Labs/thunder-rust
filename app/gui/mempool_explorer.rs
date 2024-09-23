@@ -1,9 +1,6 @@
 use eframe::egui;
 use human_size::{Byte, Kibibyte, Mebibyte, SpecificSize};
-use thunder::{
-    bip300301::bitcoin,
-    types::{GetValue, OutPoint},
-};
+use thunder::types::{GetValue, OutPoint};
 
 use crate::app::App;
 

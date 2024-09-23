@@ -4,11 +4,12 @@ use futures::{StreamExt, TryFutureExt};
 use parking_lot::RwLock;
 use rustreexo::accumulator::proof::Proof;
 use thunder::{
-    bip300301::{bitcoin, MainClient},
     format_deposit_address,
     miner::{self, Miner},
-    node::{self, Node, THIS_SIDECHAIN},
-    types::{self, OutPoint, Output, Transaction},
+    node::{self, Node},
+    types::{
+        self, proto::mainchain, OutPoint, Output, Transaction, THIS_SIDECHAIN,
+    },
     wallet::{self, Wallet},
 };
 use tokio::{spawn, sync::RwLock as TokioRwLock, task::JoinHandle};
@@ -18,12 +19,10 @@ use crate::cli::Config;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("drivechain error")]
-    Drivechain(#[from] bip300301::Error),
+    #[error("CUSF mainchain error")]
+    CusfMainchain(#[from] mainchain::Error),
     #[error("io error")]
     Io(#[from] std::io::Error),
-    #[error("jsonrpsee error")]
-    Jsonrpsee(#[from] jsonrpsee::core::Error),
     #[error("miner error")]
     Miner(#[from] miner::Error),
     #[error("node error")]
@@ -106,20 +105,21 @@ impl App {
             let mnemonic = std::fs::read_to_string(seed_phrase_path)?;
             let () = wallet.set_seed_from_mnemonic(mnemonic.as_str())?;
         }
-        let miner = Miner::new(
-            THIS_SIDECHAIN,
-            config.main_addr,
-            &config.main_user,
-            &config.main_password,
-        )?;
+        let cusf_mainchain = {
+            let transport = tonic::transport::channel::Channel::from_shared(
+                format!("https://{}", config.main_addr),
+            )
+            .unwrap()
+            .connect_lazy();
+            mainchain::Client::new(transport)
+        };
+        let miner = Miner::new(cusf_mainchain.clone())?;
         let rt_guard = runtime.enter();
         let local_pool = LocalPoolHandle::new(1);
         let node = Node::new(
             &config.datadir,
             config.net_addr,
-            config.main_addr,
-            &config.main_user,
-            &config.main_password,
+            cusf_mainchain,
             local_pool.clone(),
         )?;
         let utxos = {
@@ -170,27 +170,27 @@ impl App {
         let address = self.runtime.block_on({
             let miner = self.miner.clone();
             async move {
-                let miner_read = miner.read().await;
-                let drivechain_client = &miner_read.drivechain.client;
-                let mainchain_info =
-                    drivechain_client.get_blockchain_info().await?;
-                let res = drivechain_client
-                    .getnewaddress("", "legacy")
+                let mut miner_write = miner.write().await;
+                let cusf_mainchain = &mut miner_write.cusf_mainchain;
+                let mainchain_info = cusf_mainchain.get_chain_info().await?;
+                let res = cusf_mainchain
+                    .create_new_address(None, mainchain::AddressType::Legacy)
                     .await?
-                    .require_network(mainchain_info.chain)
+                    .require_network(mainchain_info.network)
                     .unwrap();
+                drop(miner_write);
                 Result::<_, Error>::Ok(res)
             }
         })?;
         Ok(address)
     }
 
-    const EMPTY_BLOCK_BMM_BRIBE: bip300301::bitcoin::Amount =
-        bip300301::bitcoin::Amount::from_sat(1000);
+    const EMPTY_BLOCK_BMM_BRIBE: bitcoin::Amount =
+        bitcoin::Amount::from_sat(1000);
 
     pub async fn mine(
         &self,
-        fee: Option<bip300301::bitcoin::Amount>,
+        fee: Option<bitcoin::Amount>,
     ) -> Result<(), Error> {
         const NUM_TRANSACTIONS: usize = 1000;
         let (txs, tx_fees) = self.node.get_transactions(NUM_TRANSACTIONS)?;
@@ -203,13 +203,13 @@ impl App {
         };
         let body = types::Body::new(txs, coinbase);
         let prev_side_hash = self.node.get_best_hash()?;
-        let prev_main_hash = self
-            .miner
-            .read()
-            .await
-            .drivechain
-            .get_mainchain_tip()
-            .await?;
+        let prev_main_hash = {
+            let mut miner_write = self.miner.write().await;
+            let prev_main_hash =
+                miner_write.cusf_mainchain.get_chain_tip().await?.block_hash;
+            drop(miner_write);
+            prev_main_hash
+        };
         let roots = {
             let mut accumulator = self.node.get_tip_accumulator()?;
             body.modify_pollard(&mut accumulator.0)
@@ -229,7 +229,7 @@ impl App {
         };
         let bribe = fee.unwrap_or_else(|| {
             if tx_fees > 0 {
-                bip300301::bitcoin::Amount::from_sat(tx_fees)
+                bitcoin::Amount::from_sat(tx_fees)
             } else {
                 Self::EMPTY_BLOCK_BMM_BRIBE
             }
@@ -264,18 +264,12 @@ impl App {
             let address = self.wallet.get_new_address()?;
             let address =
                 format_deposit_address(THIS_SIDECHAIN, &format!("{address}"));
-            self.miner
-                .read()
-                .await
-                .drivechain
-                .client
-                .createsidechaindeposit(
-                    THIS_SIDECHAIN,
-                    &address,
-                    amount.into(),
-                    fee.into(),
-                )
+            let mut miner_write = self.miner.write().await;
+            let _txid = miner_write
+                .cusf_mainchain
+                .create_deposit_tx(address, amount.to_sat(), fee.to_sat())
                 .await?;
+            drop(miner_write);
             Ok(())
         })
     }

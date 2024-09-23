@@ -15,8 +15,9 @@ use quinn::{ClientConfig, Endpoint, ServerConfig};
 use tokio_stream::StreamNotifyClose;
 
 use crate::{
-    archive::Archive, node::THIS_SIDECHAIN, state::State,
-    types::AuthorizedTransaction,
+    archive::Archive,
+    state::State,
+    types::{AuthorizedTransaction, THIS_SIDECHAIN},
 };
 
 mod peer;

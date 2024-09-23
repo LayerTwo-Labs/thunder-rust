@@ -1,6 +1,5 @@
 use std::str::FromStr;
 
-use bip300301::bitcoin;
 use bitcoin::hashes::Hash as _;
 use borsh::BorshSerialize;
 use hex::FromHex;

@@ -17,6 +17,7 @@ use tempfile::tempdir;
 // Shadows #[test]
 use test_log::test;
 
+use thunder::types::THIS_SIDECHAIN;
 use thunder_app_rpc_api::RpcClient as ThunderClient;
 
 const RPC_PASS: &str = "integrationtest";
@@ -218,7 +219,7 @@ async fn regtest_test() -> anyhow::Result<()> {
         // Create sidechain proposal
         let sidechain_proposal = mainchaind_client
             .create_sidechain_proposal(
-                thunder::node::THIS_SIDECHAIN,
+                THIS_SIDECHAIN,
                 SIDECHAIN_NAME,
                 "Thunder integration test",
             )
@@ -317,7 +318,7 @@ async fn regtest_test() -> anyhow::Result<()> {
 
     let _sidechain_deposit = mainchaind_client
         .createsidechaindeposit(
-            thunder::node::THIS_SIDECHAIN,
+            THIS_SIDECHAIN,
             &thunder_deposit_addr,
             BitcoinAmount::from_int_btc(10).into(),
             DEFAULT_TX_FEE.into(),
@@ -326,7 +327,7 @@ async fn regtest_test() -> anyhow::Result<()> {
     // Check that there are no deposits in the db
     {
         let sidechain_deposits = mainchaind_client
-            .count_sidechain_deposits(thunder::node::THIS_SIDECHAIN)
+            .count_sidechain_deposits(THIS_SIDECHAIN)
             .await?;
         anyhow::ensure!(
             sidechain_deposits == 0,
@@ -339,7 +340,7 @@ async fn regtest_test() -> anyhow::Result<()> {
     // Verify that the deposit was added
     {
         let sidechain_deposits = mainchaind_client
-            .count_sidechain_deposits(thunder::node::THIS_SIDECHAIN)
+            .count_sidechain_deposits(THIS_SIDECHAIN)
             .await?;
         anyhow::ensure!(
             sidechain_deposits == 1,

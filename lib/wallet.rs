@@ -3,7 +3,6 @@ use std::{
     path::Path,
 };
 
-use bip300301::bitcoin;
 use byteorder::{BigEndian, ByteOrder};
 use ed25519_dalek_bip32::{ChildIndex, DerivationPath, ExtendedSigningKey};
 use futures::{Stream, StreamExt};

@@ -4,10 +4,14 @@ authors.workspace = true
 edition.workspace = true
 version.workspace = true
 
+[build-dependencies]
+prost-build = "0.13.3"
+tonic-build = "0.12.2"
+
 [dependencies]
 anyhow = { version = "1.0.72", features = ["backtrace"] }
 bincode = "1.3.3"
-bip300301 ={ workspace = true, features = ["tracing"] }
+bitcoin = { version = "0.32.2", features = ["serde"] }
 blake3 = "1.4.1"
 borsh = { version = "1.3.1", features = ["derive"] }
 bs58 = { version = "0.5.0", features = ["check"] }
@@ -17,10 +21,12 @@ ed25519-dalek = { version = "2.1.1", features = ["batch", "serde"] }
 ed25519-dalek-bip32 = "0.3.0"
 fallible-iterator = "0.3.0"
 futures = "0.3.30"
+hashlink = { version = "0.9.1", features = ["serde_impl"] }
 heed = "0.20.1"
 hex = { version = "0.4.3", features = ["serde"] }
-jsonrpsee = { version = "0.20.0" }
+jsonrpsee = { version = "0.23.2" }
 parking_lot = "0.12.1"
+prost = "0.13.2"
 quinn = "0.10.1"
 rayon = "1.7.0"
 rcgen = "0.11.1"
@@ -35,6 +41,7 @@ tiny-bip39 = "1.0.0"
 tokio = { version = "1.29.1", features = ["sync"] }
 tokio-stream = { version = "0.1.15", features = ["sync"] }
 tokio-util = { version = "0.7.10", features = ["rt"] }
+tonic = "0.12.2"
 tracing = "0.1.40"
 utoipa = "4.2.3"
 
