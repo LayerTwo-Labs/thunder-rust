@@ -1,4 +1,3 @@
-use bip300301::bitcoin;
 use eframe::egui;
 
 use crate::app::App;

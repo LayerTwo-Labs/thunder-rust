@@ -1,52 +1,42 @@
-use std::{net::SocketAddr, str::FromStr as _, time::Duration};
+use bitcoin::hashes::Hash as _;
+use futures::TryStreamExt;
 
-use bip300301::{
-    bitcoin::{self, hashes::Hash as _},
-    Drivechain,
+use crate::types::{
+    proto::{self, mainchain},
+    Body, Header,
 };
-
-use crate::types::{Body, Header};
-
-pub use bip300301::MainClient;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("drivechain error")]
-    Drivechain(#[from] bip300301::Error),
+    CusfMainchain(#[from] mainchain::Error),
     #[error("invalid json: {json}")]
     InvalidJson { json: serde_json::Value },
 }
 
 #[derive(Clone)]
-pub struct Miner {
-    pub drivechain: Drivechain,
+pub struct Miner<MainchainTransport = tonic::transport::Channel> {
+    pub cusf_mainchain: mainchain::Client<MainchainTransport>,
     block: Option<(Header, Body)>,
-    sidechain_number: u8,
 }
 
-impl Miner {
+impl<MainchainTransport> Miner<MainchainTransport> {
     pub fn new(
-        sidechain_number: u8,
-        main_addr: SocketAddr,
-        user: &str,
-        password: &str,
+        cusf_mainchain: mainchain::Client<MainchainTransport>,
     ) -> Result<Self, Error> {
-        let drivechain =
-            Drivechain::new(sidechain_number, main_addr, user, password)?;
         Ok(Self {
-            drivechain,
-            sidechain_number,
+            cusf_mainchain,
             block: None,
         })
     }
+}
 
-    pub async fn generate(&self) -> Result<(), Error> {
-        self.drivechain.client.generate(1).await.map_err(|source| {
-            bip300301::Error::Jsonrpsee {
-                source,
-                main_addr: self.drivechain.main_addr,
-            }
-        })?;
+impl<MainchainTransport> Miner<MainchainTransport>
+where
+    MainchainTransport: proto::Transport,
+{
+    pub async fn generate(&mut self) -> Result<(), Error> {
+        let () = self.cusf_mainchain.generate_blocks(1).await?;
         Ok(())
     }
 
@@ -57,32 +47,19 @@ impl Miner {
         header: Header,
         body: Body,
     ) -> Result<bitcoin::Txid, Error> {
-        let str_hash_prev = header.prev_main_hash.to_string();
         let critical_hash: [u8; 32] = header.hash().into();
         let critical_hash = bitcoin::BlockHash::from_byte_array(critical_hash);
-        let amount = bitcoin::Amount::from_sat(amount);
-        let prev_bytes = &str_hash_prev[str_hash_prev.len() - 8..];
-        let value = self
-            .drivechain
-            .client
-            .createbmmcriticaldatatx(
-                amount.into(),
+        let prev_main_hash: [u8; 32] = header.hash().into();
+        let prev_bytes: [u8; 4] = *prev_main_hash.last_chunk::<4>().unwrap();
+        let txid = self
+            .cusf_mainchain
+            .create_bmm_critical_data_tx(
+                amount,
                 height,
-                &critical_hash,
-                self.sidechain_number,
+                critical_hash,
                 prev_bytes,
             )
-            .await
-            .map_err(|source| bip300301::Error::Jsonrpsee {
-                source,
-                main_addr: self.drivechain.main_addr,
-            })?;
-        let txid = value["txid"]["txid"]
-            .as_str()
-            .map(|s| s.to_owned())
-            .ok_or(Error::InvalidJson { json: value })?;
-        let txid =
-            bitcoin::Txid::from_str(&txid).map_err(bip300301::Error::from)?;
+            .await?;
         tracing::info!("created BMM tx: {txid}");
         assert_eq!(header.merkle_root, body.compute_merkle_root());
         self.block = Some((header, body));
@@ -92,28 +69,35 @@ impl Miner {
     pub async fn confirm_bmm(
         &mut self,
     ) -> Result<Option<(bitcoin::BlockHash, Header, Body)>, Error> {
-        const VERIFY_BMM_POLL_INTERVAL: Duration = Duration::from_secs(15);
-        if let Some((header, body)) = self.block.clone() {
-            let block_hash = header.hash();
-            tracing::trace!(%block_hash, "verifying bmm...");
-            let (bmm_verified, main_hash) = self
-                .drivechain
-                .verify_bmm_next_block(
-                    header.prev_main_hash,
-                    block_hash.into(),
-                    VERIFY_BMM_POLL_INTERVAL,
-                )
-                .await?;
-            if bmm_verified {
-                tracing::trace!(%block_hash, "verified bmm");
-                self.block = None;
-                return Ok(Some((main_hash, header, body)));
-            } else {
-                tracing::trace!(%block_hash, "bmm verification failed");
-                self.block = None;
-                return Ok(None);
+        use mainchain::Event;
+
+        let Some((header, body)) = self.block.clone() else {
+            return Ok(None);
+        };
+        let block_hash = header.hash();
+        tracing::trace!(%block_hash, "verifying bmm...");
+        let mut events_stream = self.cusf_mainchain.subscribe_events().await?;
+        if let Some(event) = events_stream.try_next().await? {
+            match event {
+                Event::ConnectBlock {
+                    header_info,
+                    block_info,
+                } => {
+                    if block_info.bmm_commitment == Some(block_hash) {
+                        tracing::trace!(%block_hash, "verified bmm");
+                        self.block = None;
+                        return Ok(Some((
+                            header_info.block_hash,
+                            header,
+                            body,
+                        )));
+                    }
+                }
+                Event::DisconnectBlock { .. } => (),
             }
-        }
+        };
+        tracing::trace!(%block_hash, "bmm verification failed");
+        self.block = None;
         Ok(None)
     }
 }

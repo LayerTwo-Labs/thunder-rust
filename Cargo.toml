@@ -15,10 +15,6 @@ authors = [
 edition = "2021"
 version = "0.9.4"
 
-[workspace.dependencies.bip300301]
-git = "https://github.com/Ash-L2L/bip300301.git"
-rev = "61b83acf2782b03e405b3a0fe8a3dc31356e4750"
-
 [workspace.dependencies.rustreexo]
 git = "https://github.com/Ash-L2L/rustreexo.git"
 rev = "6e220fd89b33b60d9ab9099926683c3010a62ede"

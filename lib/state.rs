@@ -3,22 +3,20 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use futures::Stream;
 use heed::{types::SerdeBincode, Database, RoTxn, RwTxn};
 
-use bip300301::{
-    bitcoin::{
-        self, transaction::Version as BitcoinTxVersion, Amount as BitcoinAmount,
-    },
-    TwoWayPegData, WithdrawalBundleStatus,
+use bitcoin::{
+    transaction::Version as BitcoinTxVersion, Amount as BitcoinAmount,
 };
 use rustreexo::accumulator::{node_hash::NodeHash, proof::Proof};
 
 use crate::{
     authorization::Authorization,
     types::{
-        hash, Accumulator, Address, AggregatedWithdrawal,
-        AuthorizedTransaction, BlockHash, Body, FilledTransaction, GetAddress,
-        GetValue, Header, InPoint, MerkleRoot, OutPoint, Output, OutputContent,
-        PointedOutput, SpentOutput, Transaction, Txid, Verify,
-        WithdrawalBundle,
+        hash,
+        proto::mainchain::{TwoWayPegData, WithdrawalBundleStatus},
+        Accumulator, Address, AggregatedWithdrawal, AuthorizedTransaction,
+        BlockHash, Body, FilledTransaction, GetAddress, GetValue, Header,
+        InPoint, MerkleRoot, OutPoint, Output, OutputContent, PointedOutput,
+        SpentOutput, Transaction, Txid, Verify, WithdrawalBundle,
     },
     util::{EnvExt, UnitKey, Watchable, WatchableDb},
 };
@@ -309,7 +307,7 @@ impl State {
                 value: BitcoinAmount::from_sat(aggregated.value),
                 script_pubkey: aggregated
                     .main_address
-                    .payload()
+                    .assume_checked_ref()
                     .script_pubkey(),
             };
             spend_utxos.extend(aggregated.spend_utxos.clone());
@@ -627,7 +625,8 @@ impl State {
         // Accumulator leaves to delete
         let mut accumulator_del = HashSet::<NodeHash>::new();
         // Handle deposits.
-        if let Some(deposit_block_hash) = two_way_peg_data.deposit_block_hash {
+        if let Some(deposit_block_hash) = two_way_peg_data.deposit_block_hash()
+        {
             let deposit_block_seq_idx = self
                 .deposit_blocks
                 .last(rwtxn)?
@@ -638,17 +637,15 @@ impl State {
                 &(deposit_block_hash, block_height - 1),
             )?;
         }
-        for deposit in &two_way_peg_data.deposits {
-            if let Ok(address) = deposit.output.address.parse() {
-                let outpoint = OutPoint::Deposit(deposit.outpoint);
-                let output = Output {
-                    address,
-                    content: OutputContent::Value(deposit.output.value),
-                };
-                self.utxos.put(rwtxn, &outpoint, &output)?;
-                let utxo_hash = hash(&PointedOutput { outpoint, output });
-                accumulator_add.push(utxo_hash.into())
-            }
+        for deposit in two_way_peg_data
+            .deposits()
+            .flat_map(|(_, deposits)| deposits)
+        {
+            let outpoint = OutPoint::Deposit(deposit.outpoint);
+            let output = deposit.output.clone();
+            self.utxos.put(rwtxn, &outpoint, &output)?;
+            let utxo_hash = hash(&PointedOutput { outpoint, output });
+            accumulator_add.push(utxo_hash.into())
         }
 
         // Handle withdrawals.
@@ -673,7 +670,7 @@ impl State {
                     });
                     accumulator_del.insert(utxo_hash.into());
                     self.utxos.delete(rwtxn, outpoint)?;
-                    let txid = bundle.transaction.txid();
+                    let txid = bundle.transaction.compute_txid();
                     let spent_output = SpentOutput {
                         output: spend_output.clone(),
                         inpoint: InPoint::Withdrawal { txid },
@@ -687,18 +684,18 @@ impl State {
                 )?;
             }
         }
-        for (txid, status) in &two_way_peg_data.bundle_statuses {
+        for (_, txid, status) in two_way_peg_data.withdrawal_bundle_events() {
             if let Some((bundle, bundle_block_height)) =
                 self.pending_withdrawal_bundle.get(rwtxn, &UnitKey)?
             {
-                if bundle.transaction.txid() != *txid {
+                if bundle.transaction.compute_txid() != txid {
                     continue;
                 }
                 assert_eq!(bundle_block_height, block_height);
                 self.withdrawal_bundles.put(
                     rwtxn,
                     &block_height,
-                    &(bundle.clone(), *status),
+                    &(bundle.clone(), status),
                 )?;
                 self.pending_withdrawal_bundle.delete(rwtxn, &UnitKey)?;
                 if let WithdrawalBundleStatus::Failed = status {
@@ -740,16 +737,18 @@ impl State {
         let mut accumulator_del = HashSet::<NodeHash>::new();
 
         // Restore pending withdrawal bundle
-        for (txid, status) in two_way_peg_data.bundle_statuses.iter().rev() {
+        for (_, txid, status) in
+            two_way_peg_data.withdrawal_bundle_events().rev()
+        {
             if let Some((
                 latest_bundle_height,
                 (latest_bundle, latest_bundle_status),
             )) = self.withdrawal_bundles.last(rwtxn)?
             {
-                if latest_bundle.transaction.txid() != *txid {
+                if latest_bundle.transaction.compute_txid() != txid {
                     continue;
                 }
-                assert_eq!(*status, latest_bundle_status);
+                assert_eq!(status, latest_bundle_status);
                 assert_eq!(latest_bundle_height, block_height);
                 self.withdrawal_bundles
                     .delete(rwtxn, &latest_bundle_height)?;
@@ -758,13 +757,13 @@ impl State {
                     &UnitKey,
                     &(latest_bundle.clone(), latest_bundle_height),
                 )?;
-                if *status == WithdrawalBundleStatus::Failed {
+                if status == WithdrawalBundleStatus::Failed {
                     for (outpoint, output) in
                         latest_bundle.spend_utxos.into_iter().rev()
                     {
                         let spent_output = SpentOutput {
                             output: output.clone(),
-                            inpoint: InPoint::Withdrawal { txid: *txid },
+                            inpoint: InPoint::Withdrawal { txid },
                         };
                         self.stxos.put(rwtxn, &outpoint, &spent_output)?;
                         if self.utxos.delete(rwtxn, &outpoint)? {
@@ -802,7 +801,8 @@ impl State {
             }
         }
         // Handle deposits.
-        if let Some(deposit_block_hash) = two_way_peg_data.deposit_block_hash {
+        if let Some(deposit_block_hash) = two_way_peg_data.deposit_block_hash()
+        {
             let (
                 last_deposit_block_seq_idx,
                 (last_deposit_block_hash, last_deposit_block_height),
@@ -819,19 +819,18 @@ impl State {
                 return Err(Error::NoDepositBlock);
             };
         }
-        for deposit in two_way_peg_data.deposits.iter().rev() {
-            if let Ok(address) = deposit.output.address.parse() {
-                let outpoint = OutPoint::Deposit(deposit.outpoint);
-                let output = Output {
-                    address,
-                    content: OutputContent::Value(deposit.output.value),
-                };
-                if !self.utxos.delete(rwtxn, &outpoint)? {
-                    return Err(Error::NoUtxo { outpoint });
-                }
-                let utxo_hash = hash(&PointedOutput { outpoint, output });
-                accumulator_del.insert(utxo_hash.into());
+        for deposit in two_way_peg_data
+            .deposits()
+            .flat_map(|(_, deposits)| deposits)
+            .rev()
+        {
+            let outpoint = OutPoint::Deposit(deposit.outpoint);
+            let output = deposit.output.clone();
+            if !self.utxos.delete(rwtxn, &outpoint)? {
+                return Err(Error::NoUtxo { outpoint });
             }
+            let utxo_hash = hash(&PointedOutput { outpoint, output });
+            accumulator_del.insert(utxo_hash.into());
         }
         let accumulator_del: Vec<_> = accumulator_del.into_iter().collect();
         accumulator

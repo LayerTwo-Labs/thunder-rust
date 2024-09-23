@@ -1,12 +1,12 @@
-use bip300301::{bitcoin, MainClient};
 use eframe::egui;
-use futures::TryFutureExt;
+use futures::FutureExt;
+use thunder::types::proto::mainchain;
 
 use crate::{app::App, gui::util::UiExt};
 
 #[derive(Clone, Debug)]
 struct Inner {
-    mainchain_tip: bip300301::client::Block,
+    mainchain_tip_info: mainchain::BlockHeaderInfo,
     sidechain_wealth: bitcoin::Amount,
 }
 
@@ -14,20 +14,13 @@ pub(super) struct Info(anyhow::Result<Inner>);
 
 impl Info {
     fn get_parent_chain_info(app: &App) -> anyhow::Result<Inner> {
-        let dc = app.node.drivechain();
-        let mainchain_tip = app.runtime.block_on(async {
-            let mainchain_tip_blockhash = dc.get_mainchain_tip().await?;
-            dc.client
-                .getblock(mainchain_tip_blockhash, None)
-                .map_err(|source| bip300301::Error::Jsonrpsee {
-                    source,
-                    main_addr: dc.main_addr,
-                })
-                .await
-        })?;
+        let mainchain_tip_info =
+            app.runtime.block_on(app.node.with_cusf_mainchain(
+                |cusf_mainchain| cusf_mainchain.get_chain_tip().boxed(),
+            ))?;
         let sidechain_wealth = app.node.get_sidechain_wealth()?;
         Ok(Inner {
-            mainchain_tip,
+            mainchain_tip_info,
             sidechain_wealth,
         })
     }
@@ -58,14 +51,14 @@ impl Info {
             ui.monospace("Mainchain tip hash: ");
             ui.monospace_selectable_singleline(
                 true,
-                parent_chain_info.mainchain_tip.hash.to_string(),
+                parent_chain_info.mainchain_tip_info.block_hash.to_string(),
             )
         });
         ui.horizontal(|ui| {
             ui.monospace("Mainchain tip height: ");
             ui.monospace_selectable_singleline(
                 true,
-                parent_chain_info.mainchain_tip.height.to_string(),
+                parent_chain_info.mainchain_tip_info.height.to_string(),
             )
         });
         ui.horizontal(|ui| {

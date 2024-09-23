@@ -1,4 +1,4 @@
-use bip300301::bitcoin::{self, hashes::Hash as _};
+use bitcoin::{self, hashes::Hash as _};
 use borsh::BorshSerialize;
 use rustreexo::accumulator::{node_hash::NodeHash, pollard::Pollard};
 use serde::{Deserialize, Serialize};
@@ -9,6 +9,7 @@ use std::{
 
 mod address;
 pub mod hashes;
+pub mod proto;
 mod transaction;
 
 pub use address::Address;
@@ -18,6 +19,8 @@ pub use transaction::{
     GetAddress, GetValue, InPoint, OutPoint, Output, PointedOutput,
     SpentOutput, Transaction, Verify,
 };
+
+pub const THIS_SIDECHAIN: u8 = 9;
 
 /// (de)serialize as hex strings for human-readable forms like json,
 /// and default serialization for non human-readable formats like bincode

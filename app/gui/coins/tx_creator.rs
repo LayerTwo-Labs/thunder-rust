@@ -1,9 +1,6 @@
 use eframe::egui;
 
-use thunder::{
-    bip300301::bitcoin,
-    types::{Transaction, Txid},
-};
+use thunder::types::{Transaction, Txid};
 
 use crate::app::App;
 

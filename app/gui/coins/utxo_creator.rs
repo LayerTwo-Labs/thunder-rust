@@ -1,8 +1,5 @@
 use eframe::egui;
-use thunder::{
-    bip300301::bitcoin,
-    types::{self, Output, OutputContent, Transaction},
-};
+use thunder::types::{self, Output, OutputContent, Transaction};
 
 use crate::app::App;
 
