@@ -11,7 +11,6 @@ pkgs.mkShell {
     libtool
     openssl
     pkg-config
-    protobuf
   ];
   # Needed for X11
   shellHook =

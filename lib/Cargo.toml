@@ -5,7 +5,9 @@ edition.workspace = true
 version.workspace = true
 
 [build-dependencies]
+prost = "0.13.2"
 prost-build = "0.13.3"
+protox = "0.7.1"
 tonic-build = "0.12.2"
 
 [dependencies]
