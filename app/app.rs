@@ -105,6 +105,7 @@ impl App {
             let mnemonic = std::fs::read_to_string(seed_phrase_path)?;
             let () = wallet.set_seed_from_mnemonic(mnemonic.as_str())?;
         }
+        let rt_guard = runtime.enter();
         let cusf_mainchain = {
             let transport = tonic::transport::channel::Channel::from_shared(
                 format!("https://{}", config.main_addr),
@@ -114,7 +115,6 @@ impl App {
             mainchain::Client::new(transport)
         };
         let miner = Miner::new(cusf_mainchain.clone())?;
-        let rt_guard = runtime.enter();
         let local_pool = LocalPoolHandle::new(1);
         let node = Node::new(
             &config.datadir,
