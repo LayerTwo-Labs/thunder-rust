@@ -16,16 +16,19 @@ pub enum Error {
 
 #[derive(Clone)]
 pub struct Miner<MainchainTransport = tonic::transport::Channel> {
-    pub cusf_mainchain: mainchain::Client<MainchainTransport>,
+    pub cusf_mainchain: mainchain::ValidatorClient<MainchainTransport>,
+    pub cusf_mainchain_wallet: mainchain::WalletClient<MainchainTransport>,
     block: Option<(Header, Body)>,
 }
 
 impl<MainchainTransport> Miner<MainchainTransport> {
     pub fn new(
-        cusf_mainchain: mainchain::Client<MainchainTransport>,
+        cusf_mainchain: mainchain::ValidatorClient<MainchainTransport>,
+        cusf_mainchain_wallet: mainchain::WalletClient<MainchainTransport>,
     ) -> Result<Self, Error> {
         Ok(Self {
             cusf_mainchain,
+            cusf_mainchain_wallet,
             block: None,
         })
     }
@@ -36,7 +39,7 @@ where
     MainchainTransport: proto::Transport,
 {
     pub async fn generate(&mut self) -> Result<(), Error> {
-        let () = self.cusf_mainchain.generate_blocks(1).await?;
+        let () = self.cusf_mainchain_wallet.generate_blocks(1).await?;
         Ok(())
     }
 
@@ -52,7 +55,7 @@ where
         let prev_main_hash: [u8; 32] = header.hash().into();
         let prev_bytes: [u8; 4] = *prev_main_hash.last_chunk::<4>().unwrap();
         let txid = self
-            .cusf_mainchain
+            .cusf_mainchain_wallet
             .create_bmm_critical_data_tx(
                 amount,
                 height,
