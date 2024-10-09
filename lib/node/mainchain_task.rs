@@ -22,10 +22,7 @@ use tokio::{
 
 use crate::{
     archive::{self, Archive},
-    types::{
-        proto::{self, mainchain},
-        BlockHash,
-    },
+    types::proto::{self, mainchain},
 };
 
 /// Request data from the mainchain node
@@ -82,7 +79,7 @@ enum Error {
 struct MainchainTask<Transport = tonic::transport::Channel> {
     env: heed::Env,
     archive: Archive,
-    mainchain: proto::mainchain::Client<Transport>,
+    mainchain: proto::mainchain::ValidatorClient<Transport>,
     // receive a request, and optional oneshot sender to send the result to
     // instead of sending on `response_tx`
     request_rx: UnboundedReceiver<(Request, Option<oneshot::Sender<Response>>)>,
@@ -98,7 +95,7 @@ where
     async fn request_ancestor_headers(
         env: &heed::Env,
         archive: &Archive,
-        cusf_mainchain: &mut proto::mainchain::Client<Transport>,
+        cusf_mainchain: &mut proto::mainchain::ValidatorClient<Transport>,
         block_hash: bitcoin::BlockHash,
     ) -> Result<(), ResponseError> {
         if block_hash == bitcoin::BlockHash::all_zeros() {
@@ -169,7 +166,7 @@ where
     async fn request_bmm_commitments(
         env: &heed::Env,
         archive: &Archive,
-        mainchain: &mut mainchain::Client<Transport>,
+        mainchain: &mut mainchain::ValidatorClient<Transport>,
         main_hash: bitcoin::BlockHash,
     ) -> Result<Result<(), mainchain::BlockNotFoundError>, ResponseError> {
         if main_hash == bitcoin::BlockHash::all_zeros() {
@@ -201,16 +198,13 @@ where
             tracing::trace!(%main_hash,
                 "requesting ancestor bmm commitment: {missing_commitment}"
             );
-            let commitments: Vec<BlockHash> = match mainchain
+            let commitment = match mainchain
                 .get_bmm_hstar_commitments(missing_commitment)
                 .await?
             {
-                Ok(commitments) => commitments,
+                Ok(commitment) => commitment,
                 Err(block_not_found) => return Ok(Err(block_not_found)),
             };
-            // Should never be more than one commitment
-            assert!(commitments.len() <= 1);
-            let commitment = commitments.first().copied();
             tracing::trace!(%main_hash,
                 "storing ancestor bmm commitment: {missing_commitment}"
             );
@@ -295,7 +289,7 @@ impl MainchainTaskHandle {
     pub fn new<Transport>(
         env: heed::Env,
         archive: Archive,
-        mainchain: mainchain::Client<Transport>,
+        mainchain: mainchain::ValidatorClient<Transport>,
     ) -> (Self, mpsc::UnboundedReceiver<Response>)
     where
         Transport: proto::Transport + Send + 'static,

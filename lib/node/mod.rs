@@ -56,6 +56,8 @@ pub enum Error {
     Net(#[from] net::Error),
     #[error("net task error")]
     NetTask(#[from] net_task::Error),
+    #[error("No CUSF mainchain wallet client")]
+    NoCusfMainchainWalletClient,
     #[error("peer info stream closed")]
     PeerInfoRxClosed,
     #[error("Receive mainchain task response cancelled")]
@@ -77,7 +79,7 @@ pub enum Error {
 async fn request_two_way_peg_data<Transport>(
     env: &heed::Env,
     archive: &Archive,
-    mainchain: &mut mainchain::Client<Transport>,
+    mainchain: &mut mainchain::ValidatorClient<Transport>,
     block_hash: bitcoin::BlockHash,
 ) -> Result<(), Error>
 where
@@ -133,7 +135,9 @@ where
 #[derive(Clone)]
 pub struct Node<MainchainTransport = Channel> {
     archive: Archive,
-    cusf_mainchain: Arc<Mutex<mainchain::Client<MainchainTransport>>>,
+    cusf_mainchain: Arc<Mutex<mainchain::ValidatorClient<MainchainTransport>>>,
+    cusf_mainchain_wallet:
+        Option<Arc<Mutex<mainchain::WalletClient<MainchainTransport>>>>,
     env: heed::Env,
     _local_pool: LocalPoolHandle,
     mainchain_task: MainchainTaskHandle,
@@ -150,11 +154,14 @@ where
     pub fn new(
         datadir: &Path,
         bind_addr: SocketAddr,
-        cusf_mainchain: mainchain::Client<MainchainTransport>,
+        cusf_mainchain: mainchain::ValidatorClient<MainchainTransport>,
+        cusf_mainchain_wallet: Option<
+            mainchain::WalletClient<MainchainTransport>,
+        >,
         local_pool: LocalPoolHandle,
     ) -> Result<Self, Error>
     where
-        mainchain::Client<MainchainTransport>: Clone,
+        mainchain::ValidatorClient<MainchainTransport>: Clone,
         MainchainTransport: Send + 'static,
         <MainchainTransport as tonic::client::GrpcService<
             tonic::body::BoxBody,
@@ -198,9 +205,12 @@ where
             peer_info_rx,
             state.clone(),
         );
+        let cusf_mainchain_wallet =
+            cusf_mainchain_wallet.map(|wallet| Arc::new(Mutex::new(wallet)));
         Ok(Self {
             archive,
             cusf_mainchain: Arc::new(Mutex::new(cusf_mainchain)),
+            cusf_mainchain_wallet,
             env,
             _local_pool: local_pool,
             mainchain_task,
@@ -216,7 +226,7 @@ where
     pub async fn with_cusf_mainchain<F, Output>(&self, f: F) -> Output
     where
         F: for<'cusf_mainchain> FnOnce(
-            &'cusf_mainchain mut mainchain::Client<MainchainTransport>,
+            &'cusf_mainchain mut mainchain::ValidatorClient<MainchainTransport>,
         )
             -> BoxFuture<'cusf_mainchain, Output>,
     {
@@ -443,6 +453,10 @@ where
         header: &Header,
         body: &Body,
     ) -> Result<bool, Error> {
+        let Some(cusf_mainchain_wallet) = self.cusf_mainchain_wallet.as_ref()
+        else {
+            return Err(Error::NoCusfMainchainWalletClient);
+        };
         let block_hash = header.hash();
         // Store the header, if ancestors exist
         if header.prev_side_hash != BlockHash::default()
@@ -547,11 +561,12 @@ where
         let rotxn = self.env.read_txn()?;
         let bundle = self.state.get_pending_withdrawal_bundle(&rotxn)?;
         if let Some((bundle, _)) = bundle {
-            let mut cusf_mainchain_lock = self.cusf_mainchain.lock().await;
-            let () = cusf_mainchain_lock
+            let mut cusf_mainchain_wallet_lock =
+                cusf_mainchain_wallet.lock().await;
+            let () = cusf_mainchain_wallet_lock
                 .broadcast_withdrawal_bundle(&bundle.transaction)
                 .await?;
-            drop(cusf_mainchain_lock);
+            drop(cusf_mainchain_wallet_lock);
         }
         Ok(true)
     }

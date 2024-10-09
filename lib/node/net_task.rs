@@ -69,7 +69,7 @@ pub enum Error {
 async fn connect_tip_<Transport>(
     rwtxn: &mut RwTxn<'_>,
     archive: &Archive,
-    cusf_mainchain: &mut mainchain::Client<Transport>,
+    cusf_mainchain: &mut mainchain::ValidatorClient<Transport>,
     mempool: &MemPool,
     state: &State,
     header: &Header,
@@ -108,7 +108,7 @@ where
 async fn disconnect_tip_<Transport>(
     rwtxn: &mut RwTxn<'_>,
     archive: &Archive,
-    cusf_mainchain: &mut mainchain::Client<Transport>,
+    cusf_mainchain: &mut mainchain::ValidatorClient<Transport>,
     mempool: &MemPool,
     state: &State,
 ) -> Result<(), Error>
@@ -162,7 +162,7 @@ where
 async fn reorg_to_tip<Transport>(
     env: &heed::Env,
     archive: &Archive,
-    cusf_mainchain: &mut mainchain::Client<Transport>,
+    cusf_mainchain: &mut mainchain::ValidatorClient<Transport>,
     mempool: &MemPool,
     state: &State,
     new_tip: Tip,
@@ -235,7 +235,7 @@ where
 struct NetTaskContext<MainchainTransport> {
     env: heed::Env,
     archive: Archive,
-    cusf_mainchain: mainchain::Client<MainchainTransport>,
+    cusf_mainchain: mainchain::ValidatorClient<MainchainTransport>,
     mainchain_task: MainchainTaskHandle,
     mempool: MemPool,
     net: Net,
@@ -784,7 +784,7 @@ impl NetTaskHandle {
         local_pool: LocalPoolHandle,
         env: heed::Env,
         archive: Archive,
-        cusf_mainchain: mainchain::Client<MainchainTransport>,
+        cusf_mainchain: mainchain::ValidatorClient<MainchainTransport>,
         mainchain_task: MainchainTaskHandle,
         mainchain_task_response_rx: UnboundedReceiver<mainchain_task::Response>,
         mempool: MemPool,
