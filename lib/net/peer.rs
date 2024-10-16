@@ -5,7 +5,7 @@ use std::{
     net::SocketAddr,
 };
 
-use bip300301::bitcoin::{self, hashes::Hash as _, Work};
+use bitcoin::{self, hashes::Hash as _, Work};
 use borsh::BorshSerialize;
 use fallible_iterator::FallibleIterator;
 use futures::{channel::mpsc, stream, StreamExt, TryFutureExt, TryStreamExt};
@@ -23,8 +23,8 @@ use crate::{
     archive::{self, Archive},
     state::{self, State},
     types::{
-        hash, AuthorizedTransaction, BlockHash, BmmResult, Body, Hash, Header,
-        Tip, Txid,
+        hash, proto::mainchain, AuthorizedTransaction, BlockHash, BmmResult,
+        Body, Hash, Header, Tip, Txid,
     },
 };
 
@@ -238,7 +238,7 @@ pub enum InternalMessage {
     /// Indicates if a BMM verification request completed.
     /// Does not indicate that BMM was verified successfully.
     BmmVerification {
-        res: Result<(), bip300301::BlockNotFoundError>,
+        res: Result<(), mainchain::BlockNotFoundError>,
         peer_state_id: PeerStateId,
     },
     /// Indicates an error attempting BMM verification
@@ -437,10 +437,10 @@ impl ConnectionTask {
         // if necessary
         {
             let rotxn = ctxt.env.read_txn()?;
-            match ctxt
-                .archive
-                .try_get_main_header(&rotxn, peer_state.tip.main_block_hash)?
-            {
+            match ctxt.archive.try_get_main_header_info(
+                &rotxn,
+                peer_state.tip.main_block_hash,
+            )? {
                 None => {
                     let info = Info::NeedMainchainAncestors {
                         main_hash: peer_state.tip.main_block_hash,
@@ -449,7 +449,7 @@ impl ConnectionTask {
                     info_tx.unbounded_send(info)?;
                     return Ok(());
                 }
-                Some(_main_header) => {
+                Some(_main_header_info) => {
                     let computed_total_work = ctxt.archive.get_total_work(
                         &rotxn,
                         peer_state.tip.main_block_hash,

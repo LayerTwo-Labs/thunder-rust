@@ -110,7 +110,7 @@ impl std::io::Write for LineBufferWriter {
     }
 }
 
-impl<'a> MakeWriter<'a> for LineBufferWriter {
+impl MakeWriter<'_> for LineBufferWriter {
     type Writer = Self;
     fn make_writer(&self) -> Self::Writer {
         self.clone()

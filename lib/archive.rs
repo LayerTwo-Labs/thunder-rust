@@ -3,19 +3,17 @@ use std::{
     collections::{HashMap, HashSet},
 };
 
-use bip300301::{
-    bitcoin::{self, hashes::Hash},
-    DepositInfo, Header as BitcoinHeader,
-};
+use bitcoin::{self, hashes::Hash as _};
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use heed::{types::SerdeBincode, Database, RoTxn, RwTxn};
 
-use crate::types::{Accumulator, BlockHash, BmmResult, Body, Header, Tip};
+use crate::types::{
+    proto::mainchain::{self, Deposit},
+    Accumulator, BlockHash, BmmResult, Body, Header, Tip,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("invalid mainchain block hash for deposit")]
-    DepositInvalidMainBlockHash,
     #[error("heed error")]
     Heed(#[from] heed::Error),
     #[error("invalid merkle root")]
@@ -47,8 +45,8 @@ pub enum Error {
     NoMainBlockHash(bitcoin::BlockHash),
     #[error("no BMM commitments data for mainchain block {0}")]
     NoMainBmmCommitments(bitcoin::BlockHash),
-    #[error("no mainchain header with hash {0}")]
-    NoMainHeader(bitcoin::BlockHash),
+    #[error("no mainchain header info for block hash {0}")]
+    NoMainHeaderInfo(bitcoin::BlockHash),
     #[error("no height info for mainchain block hash {0}")]
     NoMainHeight(bitcoin::BlockHash),
 }
@@ -68,10 +66,8 @@ pub struct Archive {
     >,
     bodies: Database<SerdeBincode<BlockHash>, SerdeBincode<Body>>,
     /// Deposits by mainchain block, sorted first-to-last in each block
-    deposits: Database<
-        SerdeBincode<bitcoin::BlockHash>,
-        SerdeBincode<Vec<DepositInfo>>,
-    >,
+    deposits:
+        Database<SerdeBincode<bitcoin::BlockHash>, SerdeBincode<Vec<Deposit>>>,
     /// Ancestors, indexed exponentially such that the nth element in a vector
     /// corresponds to the ancestor 2^(i+1) blocks before.
     /// eg.
@@ -105,9 +101,12 @@ pub struct Archive {
         SerdeBincode<bitcoin::BlockHash>,
         SerdeBincode<Option<BlockHash>>,
     >,
-    /// Mainchain headers. All ancestors of any header should always be present
-    main_headers:
-        Database<SerdeBincode<bitcoin::BlockHash>, SerdeBincode<BitcoinHeader>>,
+    /// Mainchain header infos.
+    /// All ancestors of any header should always be present.
+    main_header_infos: Database<
+        SerdeBincode<bitcoin::BlockHash>,
+        SerdeBincode<mainchain::BlockHeaderInfo>,
+    >,
     /// Mainchain successor blocks. ALL known block hashes, INCLUDING the zero hash,
     /// MUST be present.
     main_successors: Database<
@@ -146,8 +145,8 @@ impl Archive {
             env.create_database(&mut rwtxn, Some("main_hash_to_height"))?;
         let main_bmm_commitments =
             env.create_database(&mut rwtxn, Some("main_bmm_commitments"))?;
-        let main_headers =
-            env.create_database(&mut rwtxn, Some("main_headers"))?;
+        let main_header_infos =
+            env.create_database(&mut rwtxn, Some("main_header_infos"))?;
         let main_successors =
             env.create_database(&mut rwtxn, Some("main_successors"))?;
         if main_successors
@@ -181,7 +180,7 @@ impl Archive {
             headers,
             main_bmm_commitments,
             main_block_hash_to_height,
-            main_headers,
+            main_header_infos,
             main_successors,
             successors,
             total_work,
@@ -288,7 +287,7 @@ impl Archive {
         &self,
         rotxn: &RoTxn,
         block_hash: bitcoin::BlockHash,
-    ) -> Result<Option<Vec<DepositInfo>>, Error> {
+    ) -> Result<Option<Vec<Deposit>>, Error> {
         let deposits = self.deposits.get(rotxn, &block_hash)?;
         Ok(deposits)
     }
@@ -297,7 +296,7 @@ impl Archive {
         &self,
         rotxn: &RoTxn,
         block_hash: bitcoin::BlockHash,
-    ) -> Result<Vec<DepositInfo>, Error> {
+    ) -> Result<Vec<Deposit>, Error> {
         self.try_get_deposits(rotxn, block_hash)?
             .ok_or(Error::NoDepositsInfo(block_hash))
     }
@@ -361,22 +360,22 @@ impl Archive {
             .ok_or(Error::NoMainHeight(block_hash))
     }
 
-    pub fn try_get_main_header(
+    pub fn try_get_main_header_info(
         &self,
         rotxn: &RoTxn,
         block_hash: bitcoin::BlockHash,
-    ) -> Result<Option<BitcoinHeader>, Error> {
-        let header = self.main_headers.get(rotxn, &block_hash)?;
-        Ok(header)
+    ) -> Result<Option<mainchain::BlockHeaderInfo>, Error> {
+        let header_info = self.main_header_infos.get(rotxn, &block_hash)?;
+        Ok(header_info)
     }
 
-    fn get_main_header(
+    fn get_main_header_info(
         &self,
         rotxn: &RoTxn,
         block_hash: bitcoin::BlockHash,
-    ) -> Result<BitcoinHeader, Error> {
-        self.try_get_main_header(rotxn, block_hash)?
-            .ok_or(Error::NoMainHeader(block_hash))
+    ) -> Result<mainchain::BlockHeaderInfo, Error> {
+        self.try_get_main_header_info(rotxn, block_hash)?
+            .ok_or(Error::NoMainHeaderInfo(block_hash))
     }
 
     pub fn try_get_main_successors(
@@ -430,7 +429,7 @@ impl Archive {
         block_hash: bitcoin::BlockHash,
     ) -> Result<bitcoin::Work, Error> {
         self.try_get_total_work(rotxn, block_hash)?
-            .ok_or(Error::NoMainHeader(block_hash))
+            .ok_or(Error::NoMainHeaderInfo(block_hash))
     }
 
     /// Try to get the best valid mainchain verification for the specified block.
@@ -511,8 +510,9 @@ impl Archive {
                 });
             }
             if n == 1 {
-                let parent =
-                    self.get_main_header(rotxn, block_hash)?.prev_blockhash;
+                let parent = self
+                    .get_main_header_info(rotxn, block_hash)?
+                    .prev_block_hash;
                 return Ok(parent);
             } else {
                 let exp_ancestor_index = u32::ilog2(n) - 1;
@@ -629,15 +629,9 @@ impl Archive {
         &self,
         rwtxn: &mut RwTxn,
         block_hash: bitcoin::BlockHash,
-        mut deposits: Vec<DepositInfo>,
+        mut deposits: Vec<Deposit>,
     ) -> Result<(), Error> {
         deposits.sort_by_key(|deposit| deposit.tx_index);
-        if !deposits
-            .iter()
-            .all(|deposit| deposit.block_hash == block_hash)
-        {
-            return Err(Error::DepositInvalidMainBlockHash);
-        };
         self.deposits.put(rwtxn, &block_hash, &deposits)?;
         Ok(())
     }
@@ -722,8 +716,9 @@ impl Archive {
                     bmm_results.insert(main_block, BmmResult::Failed);
                     continue;
                 }
-                let main_header = self.get_main_header(rwtxn, main_block)?;
-                if header.prev_main_hash != main_header.prev_blockhash {
+                let main_header_info =
+                    self.get_main_header_info(rwtxn, main_block)?;
+                if header.prev_main_hash != main_header_info.prev_block_hash {
                     tracing::trace!(%block_hash, "Failed BMM @ {main_block}: should be impossible?");
                     bmm_results.insert(main_block, BmmResult::Failed);
                     continue;
@@ -771,10 +766,12 @@ impl Archive {
         main_hash: bitcoin::BlockHash,
         commitment: Option<BlockHash>,
     ) -> Result<(), Error> {
-        let main_header = self.get_main_header(rwtxn, main_hash)?;
-        if main_header.prev_blockhash != bitcoin::BlockHash::all_zeros() {
-            let _ = self
-                .get_main_bmm_commitment(rwtxn, main_header.prev_blockhash)?;
+        let main_header_info = self.get_main_header_info(rwtxn, main_hash)?;
+        if main_header_info.prev_block_hash != bitcoin::BlockHash::all_zeros() {
+            let _ = self.get_main_bmm_commitment(
+                rwtxn,
+                main_header_info.prev_block_hash,
+            )?;
         }
         self.main_bmm_commitments
             .put(rwtxn, &main_hash, &commitment)?;
@@ -784,7 +781,8 @@ impl Archive {
         let Some(header) = self.try_get_header(rwtxn, commitment)? else {
             return Ok(());
         };
-        let bmm_result = if header.prev_main_hash != main_header.prev_blockhash
+        let bmm_result = if header.prev_main_hash
+            != main_header_info.prev_block_hash
         {
             BmmResult::Failed
         } else if header.prev_side_hash == BlockHash::default() {
@@ -818,41 +816,43 @@ impl Archive {
         Ok(())
     }
 
-    pub fn put_main_header(
+    pub fn put_main_header_info(
         &self,
         rwtxn: &mut RwTxn,
-        header: &BitcoinHeader,
+        header_info: &mainchain::BlockHeaderInfo,
     ) -> Result<(), Error> {
         if self
-            .try_get_main_header(rwtxn, header.prev_blockhash)?
+            .try_get_main_header_info(rwtxn, header_info.prev_block_hash)?
             .is_none()
-            && header.prev_blockhash != bitcoin::BlockHash::all_zeros()
+            && header_info.prev_block_hash != bitcoin::BlockHash::all_zeros()
         {
-            return Err(Error::NoMainHeader(header.prev_blockhash));
+            return Err(Error::NoMainHeaderInfo(header_info.prev_block_hash));
         }
-        let block_hash = header.hash;
-        let prev_height = self.get_main_height(rwtxn, header.prev_blockhash)?;
+        let block_hash = header_info.block_hash;
+        let prev_height =
+            self.get_main_height(rwtxn, header_info.prev_block_hash)?;
         let height = prev_height + 1;
         let total_work =
-            if header.prev_blockhash != bitcoin::BlockHash::all_zeros() {
+            if header_info.prev_block_hash != bitcoin::BlockHash::all_zeros() {
                 let prev_work =
-                    self.get_total_work(rwtxn, header.prev_blockhash)?;
-                prev_work + header.work()
+                    self.get_total_work(rwtxn, header_info.prev_block_hash)?;
+                prev_work + header_info.work
             } else {
-                header.work()
+                header_info.work
             };
         self.main_block_hash_to_height
             .put(rwtxn, &block_hash, &height)?;
-        self.main_headers.put(rwtxn, &block_hash, header)?;
+        self.main_header_infos
+            .put(rwtxn, &block_hash, header_info)?;
         self.total_work.put(rwtxn, &block_hash, &total_work)?;
         // Add to successors for predecessor
         {
             let mut pred_successors =
-                self.get_main_successors(rwtxn, header.prev_blockhash)?;
+                self.get_main_successors(rwtxn, header_info.prev_block_hash)?;
             pred_successors.insert(block_hash);
             self.main_successors.put(
                 rwtxn,
-                &header.prev_blockhash,
+                &header_info.prev_block_hash,
                 &pred_successors,
             )?;
         }
@@ -866,8 +866,11 @@ impl Archive {
         // populate exponential ancestors
         let mut exponential_ancestors = Vec::<bitcoin::BlockHash>::new();
         if height >= 2 {
-            let grandparent =
-                self.get_nth_main_ancestor(rwtxn, header.prev_blockhash, 1)?;
+            let grandparent = self.get_nth_main_ancestor(
+                rwtxn,
+                header_info.prev_block_hash,
+                1,
+            )?;
             exponential_ancestors.push(grandparent);
             let mut next_exponential_ancestor_depth = 4u64;
             while height as u64 >= next_exponential_ancestor_depth {
@@ -940,8 +943,9 @@ impl Archive {
                 Ok(None)
             } else {
                 let res = Some(block_hash);
-                let header = self.get_main_header(rotxn, block_hash)?;
-                block_hash = header.prev_blockhash;
+                let header_info =
+                    self.get_main_header_info(rotxn, block_hash)?;
+                block_hash = header_info.prev_block_hash;
                 Ok(res)
             }
         })
@@ -1333,7 +1337,7 @@ pub struct Ancestors<'a, 'rotxn> {
     block_hash: BlockHash,
 }
 
-impl<'a, 'rotxn> FallibleIterator for Ancestors<'a, 'rotxn> {
+impl FallibleIterator for Ancestors<'_, '_> {
     type Item = BlockHash;
     type Error = Error;
 

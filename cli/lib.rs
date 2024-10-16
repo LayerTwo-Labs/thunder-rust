@@ -1,12 +1,8 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-use bip300301::bitcoin;
 use clap::{Parser, Subcommand};
 use jsonrpsee::http_client::{HttpClient, HttpClientBuilder};
-use thunder::{
-    node::THIS_SIDECHAIN,
-    types::{Address, Txid},
-};
+use thunder::types::{Address, Txid, THIS_SIDECHAIN};
 use thunder_app_rpc_api::RpcClient;
 
 #[derive(Clone, Debug, Subcommand)]
