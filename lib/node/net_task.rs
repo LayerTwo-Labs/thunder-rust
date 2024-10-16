@@ -6,7 +6,6 @@ use std::{
     sync::Arc,
 };
 
-use bip300301::Drivechain;
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::{
     channel::{
@@ -30,7 +29,10 @@ use crate::{
         PeerRequest, PeerResponse, PeerStateId,
     },
     state::{self, State},
-    types::{BlockHash, BmmResult, Body, Header, Tip},
+    types::{
+        proto::{self, mainchain},
+        BlockHash, BmmResult, Body, Header, Tip,
+    },
     util::UnitKey,
 };
 
@@ -38,8 +40,8 @@ use crate::{
 pub enum Error {
     #[error("archive error")]
     Archive(#[from] archive::Error),
-    #[error("drivechain error")]
-    Drivechain(#[from] bip300301::Error),
+    #[error("CUSF mainchain proto error")]
+    CusfMainchain(#[from] proto::Error),
     #[error("Forward mainchain task request failed")]
     ForwardMainchainTaskRequest,
     #[error("heed error")]
@@ -64,18 +66,21 @@ pub enum Error {
     State(#[from] state::Error),
 }
 
-async fn connect_tip_(
+async fn connect_tip_<Transport>(
     rwtxn: &mut RwTxn<'_>,
     archive: &Archive,
-    drivechain: &bip300301::Drivechain,
+    cusf_mainchain: &mut mainchain::ValidatorClient<Transport>,
     mempool: &MemPool,
     state: &State,
     header: &Header,
     body: &Body,
-) -> Result<(), Error> {
+) -> Result<(), Error>
+where
+    Transport: proto::Transport,
+{
     let last_deposit_block_hash = state.get_last_deposit_block_hash(rwtxn)?;
-    let two_way_peg_data = drivechain
-        .get_two_way_peg_data(header.prev_main_hash, last_deposit_block_hash)
+    let two_way_peg_data = cusf_mainchain
+        .get_two_way_peg_data(last_deposit_block_hash, header.prev_main_hash)
         .await?;
     let block_hash = header.hash();
     let _fees: u64 = state.validate_block(rwtxn, header, body)?;
@@ -100,13 +105,16 @@ async fn connect_tip_(
     Ok(())
 }
 
-async fn disconnect_tip_(
+async fn disconnect_tip_<Transport>(
     rwtxn: &mut RwTxn<'_>,
     archive: &Archive,
-    drivechain: &bip300301::Drivechain,
+    cusf_mainchain: &mut mainchain::ValidatorClient<Transport>,
     mempool: &MemPool,
     state: &State,
-) -> Result<(), Error> {
+) -> Result<(), Error>
+where
+    Transport: proto::Transport,
+{
     let tip_block_hash = state.get_tip(rwtxn)?;
     let tip_header = archive.get_header(rwtxn, tip_block_hash)?;
     let tip_body = archive.get_body(rwtxn, tip_block_hash)?;
@@ -123,8 +131,8 @@ async fn disconnect_tip_(
                     Ok(None)
                 }
             })?;
-        drivechain
-            .get_two_way_peg_data(tip_header.prev_main_hash, start_block_hash)
+        cusf_mainchain
+            .get_two_way_peg_data(start_block_hash, tip_header.prev_main_hash)
             .await?
     };
     let () = state.disconnect_two_way_peg_data(rwtxn, &two_way_peg_data)?;
@@ -151,14 +159,17 @@ async fn disconnect_tip_(
 /// The new tip block and all ancestor blocks must exist in the node's archive.
 /// A result of `Ok(true)` indicates a successful re-org.
 /// A result of `Ok(false)` indicates that no re-org was attempted.
-async fn reorg_to_tip(
+async fn reorg_to_tip<Transport>(
     env: &heed::Env,
     archive: &Archive,
-    drivechain: &bip300301::Drivechain,
+    cusf_mainchain: &mut mainchain::ValidatorClient<Transport>,
     mempool: &MemPool,
     state: &State,
     new_tip: Tip,
-) -> Result<bool, Error> {
+) -> Result<bool, Error>
+where
+    Transport: proto::Transport,
+{
     let mut rwtxn = env.write_txn()?;
     let tip_hash = state.get_tip(&rwtxn)?;
     let tip_height = state.get_height(&rwtxn)?;
@@ -189,16 +200,27 @@ async fn reorg_to_tip(
     // Disconnect tip until common ancestor is reached
     let common_ancestor_height = archive.get_height(&rwtxn, common_ancestor)?;
     for _ in 0..tip_height - common_ancestor_height {
-        let () =
-            disconnect_tip_(&mut rwtxn, archive, drivechain, mempool, state)
-                .await?;
+        let () = disconnect_tip_(
+            &mut rwtxn,
+            archive,
+            cusf_mainchain,
+            mempool,
+            state,
+        )
+        .await?;
     }
     let tip = state.get_tip(&rwtxn)?;
     assert_eq!(tip, common_ancestor);
     // Apply blocks until new tip is reached
     for (header, body) in blocks_to_apply.into_iter().rev() {
         let () = connect_tip_(
-            &mut rwtxn, archive, drivechain, mempool, state, &header, &body,
+            &mut rwtxn,
+            archive,
+            cusf_mainchain,
+            mempool,
+            state,
+            &header,
+            &body,
         )
         .await?;
     }
@@ -210,10 +232,10 @@ async fn reorg_to_tip(
 }
 
 #[derive(Clone)]
-struct NetTaskContext {
+struct NetTaskContext<MainchainTransport> {
     env: heed::Env,
     archive: Archive,
-    drivechain: Drivechain,
+    cusf_mainchain: mainchain::ValidatorClient<MainchainTransport>,
     mainchain_task: MainchainTaskHandle,
     mempool: MemPool,
     net: Net,
@@ -229,8 +251,8 @@ struct NetTaskContext {
 type NewTipReadyMessage =
     (Tip, Option<SocketAddr>, Option<oneshot::Sender<bool>>);
 
-struct NetTask {
-    ctxt: NetTaskContext,
+struct NetTask<MainchainTransport> {
+    ctxt: NetTaskContext<MainchainTransport>,
     /// Receive a request to forward to the mainchain task, with the address of
     /// the peer connection that caused the request, and the peer state ID of
     /// the request
@@ -259,9 +281,12 @@ struct NetTask {
     peer_info_rx: PeerInfoRx,
 }
 
-impl NetTask {
+impl<MainchainTransport> NetTask<MainchainTransport>
+where
+    MainchainTransport: proto::Transport,
+{
     async fn handle_response(
-        ctxt: &NetTaskContext,
+        ctxt: &NetTaskContext<MainchainTransport>,
         // Attempt to switch to a descendant tip once a body has been
         // stored, if all other ancestor bodies are available.
         // Each descendant tip maps to the peers that sent that tip.
@@ -504,7 +529,7 @@ impl NetTask {
         }
     }
 
-    async fn run(self) -> Result<(), Error> {
+    async fn run(mut self) -> Result<(), Error> {
         enum MailboxItem {
             AcceptConnection(Result<(), Error>),
             // Forward a mainchain task request, along with the peer that
@@ -644,7 +669,7 @@ impl NetTask {
                     let reorg_applied = reorg_to_tip(
                         &self.ctxt.env,
                         &self.ctxt.archive,
-                        &self.ctxt.drivechain,
+                        &mut self.ctxt.cusf_mainchain,
                         &self.ctxt.mempool,
                         &self.ctxt.state,
                         new_tip,
@@ -755,22 +780,25 @@ pub(super) struct NetTaskHandle {
 
 impl NetTaskHandle {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub fn new<MainchainTransport>(
         local_pool: LocalPoolHandle,
         env: heed::Env,
         archive: Archive,
-        drivechain: Drivechain,
+        cusf_mainchain: mainchain::ValidatorClient<MainchainTransport>,
         mainchain_task: MainchainTaskHandle,
         mainchain_task_response_rx: UnboundedReceiver<mainchain_task::Response>,
         mempool: MemPool,
         net: Net,
         peer_info_rx: PeerInfoRx,
         state: State,
-    ) -> Self {
+    ) -> Self
+    where
+        MainchainTransport: proto::Transport + Send + 'static,
+    {
         let ctxt = NetTaskContext {
             env,
             archive,
-            drivechain,
+            cusf_mainchain,
             mainchain_task,
             mempool,
             net,

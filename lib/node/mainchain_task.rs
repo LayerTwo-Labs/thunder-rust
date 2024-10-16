@@ -5,11 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bip300301::{
-    bitcoin::{self, hashes::Hash as _},
-    client::{BlockCommitment, SidechainId},
-    Drivechain, Header as BitcoinHeader,
-};
+use bitcoin::{self, hashes::Hash as _};
 use fallible_iterator::FallibleIterator;
 use futures::{
     channel::{
@@ -26,8 +22,7 @@ use tokio::{
 
 use crate::{
     archive::{self, Archive},
-    node::THIS_SIDECHAIN,
-    types::BlockHash,
+    types::proto::{self, mainchain},
 };
 
 /// Request data from the mainchain node
@@ -44,8 +39,8 @@ pub(super) enum Request {
 pub(super) enum ResponseError {
     #[error("Archive error")]
     Archive(#[from] archive::Error),
-    #[error("Drivechain error")]
-    Drivechain(#[from] bip300301::Error),
+    #[error("CUSF Mainchain proto error")]
+    Mainchain(#[from] proto::Error),
     #[error("Heed error")]
     Heed(#[from] heed::Error),
 }
@@ -56,7 +51,7 @@ pub(super) enum Response {
     AncestorHeaders(bitcoin::BlockHash, Result<(), ResponseError>),
     VerifyBmm(
         bitcoin::BlockHash,
-        Result<Result<(), bip300301::BlockNotFoundError>, ResponseError>,
+        Result<Result<(), mainchain::BlockNotFoundError>, ResponseError>,
     ),
 }
 
@@ -81,36 +76,42 @@ enum Error {
     SendResponseOneshot(Response),
 }
 
-struct MainchainTask {
+struct MainchainTask<Transport = tonic::transport::Channel> {
     env: heed::Env,
     archive: Archive,
-    drivechain: Drivechain,
+    mainchain: proto::mainchain::ValidatorClient<Transport>,
     // receive a request, and optional oneshot sender to send the result to
     // instead of sending on `response_tx`
     request_rx: UnboundedReceiver<(Request, Option<oneshot::Sender<Response>>)>,
     response_tx: UnboundedSender<Response>,
 }
 
-impl MainchainTask {
+impl<Transport> MainchainTask<Transport>
+where
+    Transport: proto::Transport,
+{
     /// Request ancestor headers from the mainchain node,
     /// including the specified header
     async fn request_ancestor_headers(
         env: &heed::Env,
         archive: &Archive,
-        drivechain: &bip300301::Drivechain,
+        cusf_mainchain: &mut proto::mainchain::ValidatorClient<Transport>,
         block_hash: bitcoin::BlockHash,
     ) -> Result<(), ResponseError> {
         if block_hash == bitcoin::BlockHash::all_zeros() {
             return Ok(());
         } else {
             let rotxn = env.read_txn()?;
-            if archive.try_get_main_header(&rotxn, block_hash)?.is_some() {
+            if archive
+                .try_get_main_header_info(&rotxn, block_hash)?
+                .is_some()
+            {
                 return Ok(());
             }
         }
         let mut current_block_hash = block_hash;
         let mut current_height = None;
-        let mut headers: Vec<BitcoinHeader> = Vec::new();
+        let mut header_infos = Vec::<mainchain::BlockHeaderInfo>::new();
         tracing::debug!(%block_hash, "requesting ancestor headers");
         const LOG_PROGRESS_INTERVAL: Duration = Duration::from_secs(5);
         let mut progress_logged = Instant::now();
@@ -126,29 +127,31 @@ impl MainchainTask {
                 }
                 tracing::trace!(%block_hash, "requesting ancestor headers: {current_block_hash}({current_height})")
             }
-            let header = drivechain.get_header(current_block_hash).await?;
-            current_block_hash = header.prev_blockhash;
-            current_height = header.height.checked_sub(1);
-            headers.push(header);
+            let header_info = cusf_mainchain
+                .get_block_header_info(current_block_hash)
+                .await?;
+            current_block_hash = header_info.prev_block_hash;
+            current_height = header_info.height.checked_sub(1);
+            header_infos.push(header_info);
             if current_block_hash == bitcoin::BlockHash::all_zeros() {
                 break;
             } else {
                 let rotxn = env.read_txn()?;
                 if archive
-                    .try_get_main_header(&rotxn, current_block_hash)?
+                    .try_get_main_header_info(&rotxn, current_block_hash)?
                     .is_some()
                 {
                     break;
                 }
             }
         }
-        headers.reverse();
+        header_infos.reverse();
         // Writing all headers during IBD can starve archive readers.
         tracing::trace!(%block_hash, "storing ancestor headers");
         task::block_in_place(|| {
             let mut rwtxn = env.write_txn()?;
-            headers.into_iter().try_for_each(|header| {
-                archive.put_main_header(&mut rwtxn, &header)
+            header_infos.into_iter().try_for_each(|header| {
+                archive.put_main_header_info(&mut rwtxn, &header)
             })?;
             rwtxn.commit()?;
             tracing::trace!(%block_hash, "stored ancestor headers");
@@ -163,9 +166,9 @@ impl MainchainTask {
     async fn request_bmm_commitments(
         env: &heed::Env,
         archive: &Archive,
-        drivechain: &bip300301::Drivechain,
+        mainchain: &mut mainchain::ValidatorClient<Transport>,
         main_hash: bitcoin::BlockHash,
-    ) -> Result<Result<(), bip300301::BlockNotFoundError>, ResponseError> {
+    ) -> Result<Result<(), mainchain::BlockNotFoundError>, ResponseError> {
         if main_hash == bitcoin::BlockHash::all_zeros() {
             return Ok(Ok(()));
         } else {
@@ -195,31 +198,13 @@ impl MainchainTask {
             tracing::trace!(%main_hash,
                 "requesting ancestor bmm commitment: {missing_commitment}"
             );
-            let commitments: Vec<BlockHash> = match drivechain
-                .get_block_commitments(missing_commitment)
+            let commitment = match mainchain
+                .get_bmm_hstar_commitments(missing_commitment)
                 .await?
             {
-                Ok(commitments) => commitments
-                    .into_iter()
-                    .filter_map(|(_, commitment)| match commitment {
-                        BlockCommitment::BmmHStar {
-                            commitment,
-                            sidechain_id: SidechainId(THIS_SIDECHAIN),
-                            prev_bytes: _,
-                        } => Some(commitment.into()),
-                        BlockCommitment::BmmHStar { .. }
-                        | BlockCommitment::ScdbUpdateBytes { .. }
-                        | BlockCommitment::SidechainActivationAck { .. }
-                        | BlockCommitment::SidechainProposal
-                        | BlockCommitment::WithdrawalBundleHash { .. }
-                        | BlockCommitment::WitnessCommitment { .. } => None,
-                    })
-                    .collect(),
+                Ok(commitment) => commitment,
                 Err(block_not_found) => return Ok(Err(block_not_found)),
             };
-            // Should never be more than one commitment
-            assert!(commitments.len() <= 1);
-            let commitment = commitments.first().copied();
             tracing::trace!(%main_hash,
                 "storing ancestor bmm commitment: {missing_commitment}"
             );
@@ -246,7 +231,7 @@ impl MainchainTask {
                     let res = Self::request_ancestor_headers(
                         &self.env,
                         &self.archive,
-                        &self.drivechain,
+                        &mut self.mainchain,
                         main_block_hash,
                     )
                     .await;
@@ -268,7 +253,7 @@ impl MainchainTask {
                         Self::request_bmm_commitments(
                             &self.env,
                             &self.archive,
-                            &self.drivechain,
+                            &mut self.mainchain,
                             block_hash,
                         )
                         .await,
@@ -301,21 +286,26 @@ pub(super) struct MainchainTaskHandle {
 }
 
 impl MainchainTaskHandle {
-    pub fn new(
+    pub fn new<Transport>(
         env: heed::Env,
         archive: Archive,
-        drivechain: Drivechain,
-    ) -> (Self, mpsc::UnboundedReceiver<Response>) {
+        mainchain: mainchain::ValidatorClient<Transport>,
+    ) -> (Self, mpsc::UnboundedReceiver<Response>)
+    where
+        Transport: proto::Transport + Send + 'static,
+        <Transport as tonic::client::GrpcService<tonic::body::BoxBody>>::Future:
+            Send,
+    {
         let (request_tx, request_rx) = mpsc::unbounded();
         let (response_tx, response_rx) = mpsc::unbounded();
         let task = MainchainTask {
             env,
             archive,
-            drivechain,
+            mainchain,
             request_rx,
             response_tx,
         };
-        let task = spawn(async {
+        let task = spawn(async move {
             if let Err(err) = task.run().await {
                 let err = anyhow::Error::from(err);
                 tracing::error!("Mainchain task error: {err:#}");

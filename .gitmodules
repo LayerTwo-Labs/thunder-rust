@@ -1,3 +1,6 @@
 [submodule "mainchain"]
 	path = mainchain
 	url = https://github.com/LayerTwo-Labs/mainchain.git
+[submodule "proto"]
+	path = proto
+	url = https://github.com/LayerTwo-Labs/cusf_sidechain_proto.git

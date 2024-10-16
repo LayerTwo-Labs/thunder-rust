@@ -1,6 +1,5 @@
 use std::borrow::Borrow;
 
-use bip300301::bitcoin;
 use eframe::egui::{self, Color32, InnerResponse, Response, Ui};
 
 /// Bitcoin Orange Color

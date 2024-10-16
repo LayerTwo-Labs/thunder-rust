@@ -1,5 +1,6 @@
 #![feature(impl_trait_in_assoc_type)]
 #![feature(let_chains)]
+#![feature(trait_alias)]
 
 pub mod archive;
 pub mod authorization;
@@ -12,7 +13,6 @@ pub mod types;
 pub mod util;
 pub mod wallet;
 
-pub use bip300301;
 pub use heed;
 
 /// Format `str_dest` with the proper `s{sidechain_number}_` prefix and a

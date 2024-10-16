@@ -1,33 +1,47 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
-use futures::{StreamExt, TryFutureExt};
+use eframe::egui::ahash::HashSet;
+use futures::{StreamExt, TryFutureExt, TryStreamExt as _};
 use parking_lot::RwLock;
 use rustreexo::accumulator::proof::Proof;
 use thunder::{
-    bip300301::{bitcoin, MainClient},
     format_deposit_address,
     miner::{self, Miner},
-    node::{self, Node, THIS_SIDECHAIN},
-    types::{self, OutPoint, Output, Transaction},
+    node::{self, Node},
+    types::{
+        self,
+        proto::mainchain::{
+            self,
+            generated::{validator_service_server, wallet_service_server},
+        },
+        OutPoint, Output, Transaction, THIS_SIDECHAIN,
+    },
     wallet::{self, Wallet},
 };
 use tokio::{spawn, sync::RwLock as TokioRwLock, task::JoinHandle};
 use tokio_util::task::LocalPoolHandle;
+use tonic_reflection::pb::v1::{
+    self as server_reflection,
+    server_reflection_client::ServerReflectionClient,
+    server_reflection_request, server_reflection_response,
+};
 
 use crate::cli::Config;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("drivechain error")]
-    Drivechain(#[from] bip300301::Error),
+    #[error("CUSF mainchain proto error")]
+    CusfMainchain(#[from] thunder::types::proto::Error),
+    #[error("gRPC reflection client error")]
+    GrpcReflection(#[from] tonic::Status),
     #[error("io error")]
     Io(#[from] std::io::Error),
-    #[error("jsonrpsee error")]
-    Jsonrpsee(#[from] jsonrpsee::core::Error),
     #[error("miner error")]
     Miner(#[from] miner::Error),
     #[error("node error")]
     Node(#[from] node::Error),
+    #[error("No CUSF mainchain wallet client")]
+    NoCusfMainchainWalletClient,
     #[error("Utreexo error: {0}")]
     Utreexo(String),
     #[error("wallet error")]
@@ -63,7 +77,7 @@ fn update(
 pub struct App {
     pub node: Arc<Node>,
     pub wallet: Wallet,
-    pub miner: Arc<TokioRwLock<Miner>>,
+    pub miner: Option<Arc<TokioRwLock<Miner>>>,
     pub utxos: Arc<RwLock<HashMap<OutPoint, Output>>>,
     task: Arc<JoinHandle<()>>,
     pub transaction: Arc<RwLock<Transaction>>,
@@ -95,6 +109,69 @@ impl App {
         }))
     }
 
+    /// Returns `true` if validator service AND wallet service are available,
+    /// `false` if only validator service is available, and error if validator
+    /// service is unavailable.
+    async fn check_proto_support(
+        host: SocketAddr,
+        transport: tonic::transport::channel::Channel,
+    ) -> Result<bool, tonic::Status> {
+        let mut reflection_client = ServerReflectionClient::new(transport);
+        let request = server_reflection::ServerReflectionRequest {
+            host: host.to_string(),
+            message_request: Some(
+                server_reflection_request::MessageRequest::ListServices(
+                    String::new(),
+                ),
+            ),
+        };
+        let mut resp_stream = reflection_client
+            .server_reflection_info(futures::stream::once(
+                futures::future::ready(request),
+            ))
+            .await?
+            .into_inner();
+        let resp = resp_stream.try_next().await?.ok_or_else(|| {
+            tonic::Status::aborted(
+                "reflection server closed response stream unexpectedly",
+            )
+        })?;
+        let resp = resp.message_response.ok_or_else(|| {
+            tonic::Status::aborted("Missing message response")
+        })?;
+        match resp {
+            server_reflection_response::MessageResponse::ListServicesResponse(
+                server_reflection::ListServiceResponse {
+                    service
+                }
+            ) => {
+                let services: HashSet<String> =
+                    service.into_iter().map(|resp| resp.name).collect();
+                if !services.contains(validator_service_server::SERVICE_NAME) {
+                    let err_msg = format!(
+                        "{} is not supported",
+                        validator_service_server::SERVICE_NAME
+                    );
+                    Err(tonic::Status::aborted(err_msg))
+                } else {
+                    Ok(services.contains(wallet_service_server::SERVICE_NAME))
+                }
+            }
+            server_reflection_response::MessageResponse::ErrorResponse(
+                err_resp
+            ) => {
+                let err_msg = format!(
+                    "Received error from reflection server: `{}`",
+                    err_resp.error_message
+                );
+                Err(tonic::Status::aborted(err_msg))
+            }
+            _ => Err(tonic::Status::aborted(
+                    "unexpected response from reflection server"
+                ))
+        }
+    }
+
     pub fn new(config: &Config) -> Result<Self, Error> {
         // Node launches some tokio tasks for p2p networking, that is why we need a tokio runtime
         // here.
@@ -106,20 +183,32 @@ impl App {
             let mnemonic = std::fs::read_to_string(seed_phrase_path)?;
             let () = wallet.set_seed_from_mnemonic(mnemonic.as_str())?;
         }
-        let miner = Miner::new(
-            THIS_SIDECHAIN,
-            config.main_addr,
-            &config.main_user,
-            &config.main_password,
-        )?;
         let rt_guard = runtime.enter();
+        let transport = tonic::transport::channel::Channel::from_shared(
+            format!("https://{}", config.main_addr),
+        )
+        .unwrap()
+        .connect_lazy();
+        let (cusf_mainchain, cusf_mainchain_wallet) = if runtime.block_on(
+            Self::check_proto_support(config.main_addr, transport.clone()),
+        )? {
+            (
+                mainchain::ValidatorClient::new(transport.clone()),
+                Some(mainchain::WalletClient::new(transport)),
+            )
+        } else {
+            (mainchain::ValidatorClient::new(transport), None)
+        };
+        let miner = cusf_mainchain_wallet
+            .clone()
+            .map(|wallet| Miner::new(cusf_mainchain.clone(), wallet))
+            .transpose()?;
         let local_pool = LocalPoolHandle::new(1);
         let node = Node::new(
             &config.datadir,
             config.net_addr,
-            config.main_addr,
-            &config.main_user,
-            &config.main_password,
+            cusf_mainchain,
+            cusf_mainchain_wallet,
             local_pool.clone(),
         )?;
         let utxos = {
@@ -133,13 +222,14 @@ impl App {
             Arc::new(RwLock::new(utxos))
         };
         let node = Arc::new(node);
+        let miner = miner.map(|miner| Arc::new(TokioRwLock::new(miner)));
         let task =
             Self::spawn_task(node.clone(), utxos.clone(), wallet.clone());
         drop(rt_guard);
         Ok(Self {
             node,
             wallet,
-            miner: Arc::new(TokioRwLock::new(miner)),
+            miner,
             utxos,
             task: Arc::new(task),
             transaction: Arc::new(RwLock::new(Transaction {
@@ -167,31 +257,39 @@ impl App {
     pub fn get_new_main_address(
         &self,
     ) -> Result<bitcoin::Address<bitcoin::address::NetworkChecked>, Error> {
+        let Some(miner) = self.miner.as_ref() else {
+            return Err(Error::NoCusfMainchainWalletClient);
+        };
         let address = self.runtime.block_on({
-            let miner = self.miner.clone();
+            let miner = miner.clone();
             async move {
-                let miner_read = miner.read().await;
-                let drivechain_client = &miner_read.drivechain.client;
-                let mainchain_info =
-                    drivechain_client.get_blockchain_info().await?;
-                let res = drivechain_client
-                    .getnewaddress("", "legacy")
+                let mut miner_write = miner.write().await;
+                let cusf_mainchain = &mut miner_write.cusf_mainchain;
+                let mainchain_info = cusf_mainchain.get_chain_info().await?;
+                let cusf_mainchain_wallet =
+                    &mut miner_write.cusf_mainchain_wallet;
+                let res = cusf_mainchain_wallet
+                    .create_new_address()
                     .await?
-                    .require_network(mainchain_info.chain)
+                    .require_network(mainchain_info.network)
                     .unwrap();
+                drop(miner_write);
                 Result::<_, Error>::Ok(res)
             }
         })?;
         Ok(address)
     }
 
-    const EMPTY_BLOCK_BMM_BRIBE: bip300301::bitcoin::Amount =
-        bip300301::bitcoin::Amount::from_sat(1000);
+    const EMPTY_BLOCK_BMM_BRIBE: bitcoin::Amount =
+        bitcoin::Amount::from_sat(1000);
 
     pub async fn mine(
         &self,
-        fee: Option<bip300301::bitcoin::Amount>,
+        fee: Option<bitcoin::Amount>,
     ) -> Result<(), Error> {
+        let Some(miner) = self.miner.as_ref() else {
+            return Err(Error::NoCusfMainchainWalletClient);
+        };
         const NUM_TRANSACTIONS: usize = 1000;
         let (txs, tx_fees) = self.node.get_transactions(NUM_TRANSACTIONS)?;
         let coinbase = match tx_fees {
@@ -203,13 +301,13 @@ impl App {
         };
         let body = types::Body::new(txs, coinbase);
         let prev_side_hash = self.node.get_best_hash()?;
-        let prev_main_hash = self
-            .miner
-            .read()
-            .await
-            .drivechain
-            .get_mainchain_tip()
-            .await?;
+        let prev_main_hash = {
+            let mut miner_write = miner.write().await;
+            let prev_main_hash =
+                miner_write.cusf_mainchain.get_chain_tip().await?.block_hash;
+            drop(miner_write);
+            prev_main_hash
+        };
         let roots = {
             let mut accumulator = self.node.get_tip_accumulator()?;
             body.modify_pollard(&mut accumulator.0)
@@ -229,12 +327,12 @@ impl App {
         };
         let bribe = fee.unwrap_or_else(|| {
             if tx_fees > 0 {
-                bip300301::bitcoin::Amount::from_sat(tx_fees)
+                bitcoin::Amount::from_sat(tx_fees)
             } else {
                 Self::EMPTY_BLOCK_BMM_BRIBE
             }
         });
-        let mut miner_write = self.miner.write().await;
+        let mut miner_write = miner.write().await;
         miner_write
             .attempt_bmm(bribe.to_sat(), 0, header, body)
             .await?;
@@ -260,22 +358,19 @@ impl App {
         amount: bitcoin::Amount,
         fee: bitcoin::Amount,
     ) -> Result<(), Error> {
+        let Some(miner) = self.miner.as_ref() else {
+            return Err(Error::NoCusfMainchainWalletClient);
+        };
         self.runtime.block_on(async {
             let address = self.wallet.get_new_address()?;
             let address =
                 format_deposit_address(THIS_SIDECHAIN, &format!("{address}"));
-            self.miner
-                .read()
-                .await
-                .drivechain
-                .client
-                .createsidechaindeposit(
-                    THIS_SIDECHAIN,
-                    &address,
-                    amount.into(),
-                    fee.into(),
-                )
+            let mut miner_write = miner.write().await;
+            let _txid = miner_write
+                .cusf_mainchain_wallet
+                .create_deposit_tx(address, amount.to_sat(), fee.to_sat())
                 .await?;
+            drop(miner_write);
             Ok(())
         })
     }

@@ -6,7 +6,7 @@ use std::{
 };
 
 use clap::{Arg, Parser};
-use thunder::node::THIS_SIDECHAIN;
+use thunder::types::THIS_SIDECHAIN;
 
 const fn ipv4_socket_addr(ipv4_octets: [u8; 4], port: u16) -> SocketAddr {
     let [a, b, c, d] = ipv4_octets;
@@ -23,11 +23,7 @@ static DEFAULT_DATA_DIR: LazyLock<Option<PathBuf>> =
         Some(data_dir) => Some(data_dir.join("thunder")),
     });
 
-const DEFAULT_MAIN_ADDR: SocketAddr = ipv4_socket_addr([127, 0, 0, 1], 8332);
-
-const DEFAULT_MAIN_USER: &str = "user";
-
-const DEFAULT_MAIN_PASS: &str = "password";
+const DEFAULT_MAIN_ADDR: SocketAddr = ipv4_socket_addr([127, 0, 0, 1], 50051);
 
 const DEFAULT_NET_ADDR: SocketAddr =
     ipv4_socket_addr([0, 0, 0, 0], 4000 + THIS_SIDECHAIN as u16);
@@ -118,7 +114,7 @@ pub(super) struct Cli {
     /// Log level
     #[arg(default_value_t = tracing::Level::DEBUG, long)]
     log_level: tracing::Level,
-    /// Socket address to connect to mainchain node RPC server
+    /// Socket address to connect to mainchain node gRPC server
     #[arg(default_value_t = DEFAULT_MAIN_ADDR, long, short)]
     main_addr: SocketAddr,
     /// Path to a mnemonic seed phrase
@@ -130,12 +126,6 @@ pub(super) struct Cli {
     /// Socket address to host the RPC server
     #[arg(default_value_t = DEFAULT_RPC_ADDR, long, short)]
     rpc_addr: SocketAddr,
-    /// Mainchain node RPC user
-    #[arg(default_value_t = DEFAULT_MAIN_USER.to_owned(), long, short)]
-    user_main: String,
-    /// Mainchain node RPC password
-    #[arg(default_value_t = DEFAULT_MAIN_PASS.to_owned(), long, short)]
-    password_main: String,
 }
 
 #[derive(Clone, Debug)]
@@ -146,9 +136,7 @@ pub struct Config {
     pub log_dir: Option<PathBuf>,
     pub log_level: tracing::Level,
     pub main_addr: SocketAddr,
-    pub main_password: String,
     pub mnemonic_seed_phrase_path: Option<PathBuf>,
-    pub main_user: String,
     pub net_addr: SocketAddr,
     pub rpc_addr: SocketAddr,
 }
@@ -177,8 +165,6 @@ impl Cli {
             log_dir,
             log_level: self.log_level,
             main_addr: self.main_addr,
-            main_password: self.password_main,
-            main_user: self.user_main,
             mnemonic_seed_phrase_path: self.mnemonic_seed_phrase_path,
             net_addr: self.net_addr,
             rpc_addr: self.rpc_addr,

@@ -2,7 +2,6 @@
 
 use std::net::SocketAddr;
 
-use bip300301::bitcoin;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use l2l_openapi::open_api;
 use thunder::types::{

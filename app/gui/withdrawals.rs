@@ -1,5 +1,5 @@
 use eframe::egui;
-use thunder::{bip300301::bitcoin, types::GetValue};
+use thunder::types::GetValue;
 
 use crate::app::App;
 
