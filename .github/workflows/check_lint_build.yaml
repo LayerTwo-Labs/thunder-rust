@@ -15,7 +15,9 @@ jobs:
     # env:
     #  RUSTFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: Install latest nightly toolchain
         uses: dtolnay/rust-toolchain@master
         with:
@@ -82,7 +84,9 @@ jobs:
     # env:
     #  RUSTFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: Install latest nightly toolchain
         uses: dtolnay/rust-toolchain@master
         with:
@@ -138,7 +142,9 @@ jobs:
     # env:
     #  RUSTFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: Install latest nightly toolchain
         uses: dtolnay/rust-toolchain@master
         with:

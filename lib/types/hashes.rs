@@ -1,8 +1,7 @@
 use std::str::FromStr;
 
-use bip300301::bitcoin;
 use bitcoin::hashes::Hash as _;
-use borsh::BorshSerialize;
+use borsh::{BorshDeserialize, BorshSerialize};
 use hex::FromHex;
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +13,7 @@ pub type Hash = [u8; BLAKE3_LENGTH];
 
 #[derive(
     BorshSerialize,
+    BorshDeserialize,
     Clone,
     Copy,
     Default,

@@ -1,7 +1,6 @@
 use eframe::egui;
 use human_size::{Byte, Kibibyte, Mebibyte, SpecificSize};
 use thunder::{
-    bip300301::bitcoin,
     state::State,
     types::{Body, GetValue, Header},
 };

@@ -1,4 +1,4 @@
-use borsh::BorshSerialize;
+use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeAs, DisplayFromStr};
 
@@ -10,7 +10,9 @@ pub enum AddressParseError {
     WrongLength(usize),
 }
 
-#[derive(BorshSerialize, Clone, Copy, Eq, PartialEq, Hash)]
+#[derive(
+    BorshDeserialize, BorshSerialize, Clone, Copy, Eq, PartialEq, Hash,
+)]
 pub struct Address(pub [u8; 20]);
 
 impl Address {
@@ -61,7 +63,7 @@ impl<'de> Deserialize<'de> for Address {
         if deserializer.is_human_readable() {
             DisplayFromStr::deserialize_as(deserializer)
         } else {
-            <[u8; 20]>::deserialize(deserializer).map(Self)
+            <[u8; 20] as Deserialize>::deserialize(deserializer).map(Self)
         }
     }
 }

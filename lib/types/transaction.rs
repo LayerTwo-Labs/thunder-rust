@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use bip300301::bitcoin;
 use borsh::BorshSerialize;
 use rustreexo::accumulator::{
     node_hash::NodeHash, pollard::Pollard, proof::Proof,

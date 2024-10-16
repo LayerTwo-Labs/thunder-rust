@@ -1,6 +1,5 @@
 use std::net::SocketAddr;
 
-use bip300301::bitcoin;
 use jsonrpsee::{
     core::{async_trait, RpcResult},
     server::Server,
@@ -8,7 +7,7 @@ use jsonrpsee::{
 };
 use thunder::{
     node,
-    types::{Address, PointedOutput, Txid},
+    types::{Address, PointedOutput, Txid, THIS_SIDECHAIN},
     wallet,
 };
 use thunder_app_rpc_api::RpcServer;
@@ -60,7 +59,7 @@ impl RpcServer for RpcServerImpl {
         address: Address,
     ) -> RpcResult<String> {
         let deposit_address = thunder::format_deposit_address(
-            node::THIS_SIDECHAIN,
+            THIS_SIDECHAIN,
             &address.to_string(),
         );
         Ok(deposit_address)
@@ -115,7 +114,7 @@ impl RpcServer for RpcServerImpl {
     }
 
     async fn mine(&self, fee: Option<u64>) -> RpcResult<()> {
-        let fee = fee.map(bip300301::bitcoin::Amount::from_sat);
+        let fee = fee.map(bitcoin::Amount::from_sat);
         self.app.local_pool.spawn_pinned({
             let app = self.app.clone();
             move || async move { app.mine(fee).await.map_err(convert_app_err) }

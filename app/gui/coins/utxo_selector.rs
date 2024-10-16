@@ -1,9 +1,8 @@
 use std::collections::HashSet;
 
 use eframe::egui;
-use thunder::{
-    bip300301::bitcoin,
-    types::{hash, GetValue, OutPoint, Output, PointedOutput, Transaction},
+use thunder::types::{
+    hash, GetValue, OutPoint, Output, PointedOutput, Transaction,
 };
 
 use crate::app::App;
