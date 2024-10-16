@@ -1337,7 +1337,7 @@ pub struct Ancestors<'a, 'rotxn> {
     block_hash: BlockHash,
 }
 
-impl<'a, 'rotxn> FallibleIterator for Ancestors<'a, 'rotxn> {
+impl FallibleIterator for Ancestors<'_, '_> {
     type Item = BlockHash;
     type Error = Error;
 
