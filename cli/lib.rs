@@ -12,6 +12,14 @@ pub enum Command {
     Balance,
     /// Connect to a peer
     ConnectPeer { addr: SocketAddr },
+    /// Deposit to address
+    CreateDeposit {
+        address: Address,
+        #[arg(long)]
+        value_sats: u64,
+        #[arg(long)]
+        fee_sats: u64,
+    },
     /// Format a deposit address
     FormatDepositAddress { address: Address },
     /// Generate a mnemonic seed phrase
@@ -90,6 +98,16 @@ impl Cli {
             Command::ConnectPeer { addr } => {
                 let () = rpc_client.connect_peer(addr).await?;
                 String::default()
+            }
+            Command::CreateDeposit {
+                address,
+                value_sats,
+                fee_sats,
+            } => {
+                let txid = rpc_client
+                    .create_deposit(address, value_sats, fee_sats)
+                    .await?;
+                format!("{txid}")
             }
             Command::FormatDepositAddress { address } => {
                 rpc_client.format_deposit_address(address).await?

@@ -51,6 +51,21 @@ impl ToSchema<'static> for BitcoinOutPointSchema {
     }
 }
 
+struct BitcoinTxidSchema;
+
+impl PartialSchema for BitcoinTxidSchema {
+    fn schema() -> RefOr<Schema> {
+        let obj = utoipa::openapi::Object::with_type(SchemaType::String);
+        RefOr::T(Schema::Object(obj))
+    }
+}
+
+impl ToSchema<'static> for BitcoinTxidSchema {
+    fn schema() -> (&'static str, RefOr<Schema>) {
+        ("bitcoin.Txid", <Self as PartialSchema>::schema())
+    }
+}
+
 struct OpenApiSchema;
 
 impl PartialSchema for OpenApiSchema {
@@ -70,8 +85,8 @@ impl PartialSchema for SocketAddrSchema {
 }
 
 #[open_api(ref_schemas[
-    Address, BitcoinAddrSchema, BitcoinOutPointSchema, MerkleRoot, OutPoint, Output,
-    OutputContent, Txid
+    Address, BitcoinAddrSchema, BitcoinOutPointSchema, BitcoinTxidSchema,
+    MerkleRoot, OutPoint, Output, OutputContent, Txid
 ])]
 #[rpc(client, server)]
 pub trait Rpc {
@@ -87,6 +102,16 @@ pub trait Rpc {
         #[open_api_method_arg(schema(PartialSchema = "SocketAddrSchema"))]
         addr: SocketAddr,
     ) -> RpcResult<()>;
+
+    /// Deposit to address
+    #[open_api_method(output_schema(PartialSchema = "BitcoinTxidSchema"))]
+    #[method(name = "create_deposit")]
+    async fn create_deposit(
+        &self,
+        address: Address,
+        value_sats: u64,
+        fee_sats: u64,
+    ) -> RpcResult<bitcoin::Txid>;
 
     /// Format a deposit address
     #[method(name = "format_deposit_address")]

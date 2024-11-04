@@ -921,15 +921,17 @@ pub mod mainchain {
 
         pub async fn create_deposit_tx(
             &mut self,
-            address: String,
+            address: crate::types::Address,
             value_sats: u64,
             fee_sats: u64,
         ) -> Result<Txid, super::Error> {
             let request = generated::CreateDepositTransactionRequest {
-                sidechain_id: THIS_SIDECHAIN as u32,
-                address,
-                value_sats,
-                fee_sats,
+                sidechain_id: Some(THIS_SIDECHAIN as u32),
+                address: Some(ConsensusHex::consensus_encode(
+                    &address.0.to_vec(),
+                )),
+                value_sats: Some(value_sats),
+                fee_sats: Some(fee_sats),
             };
             let generated::CreateDepositTransactionResponse { txid } = self
                 .0
@@ -971,6 +973,7 @@ pub mod mainchain {
         ) -> Result<(), super::Error> {
             let request = generated::GenerateBlocksRequest {
                 blocks: Some(blocks),
+                ack_all_proposals: true,
             };
             let generated::GenerateBlocksResponse {} =
                 self.0.generate_blocks(request).await?.into_inner();

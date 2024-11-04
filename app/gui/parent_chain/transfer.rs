@@ -47,6 +47,7 @@ impl Deposit {
             .clicked()
         {
             if let Err(err) = app.deposit(
+                app.wallet.get_new_address().expect("should not happen"),
                 amount.expect("should not happen"),
                 fee.expect("should not happen"),
             ) {

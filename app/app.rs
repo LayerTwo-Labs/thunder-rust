@@ -5,7 +5,6 @@ use futures::{StreamExt, TryFutureExt, TryStreamExt as _};
 use parking_lot::RwLock;
 use rustreexo::accumulator::proof::Proof;
 use thunder::{
-    format_deposit_address,
     miner::{self, Miner},
     node::{self, Node},
     types::{
@@ -14,7 +13,7 @@ use thunder::{
             self,
             generated::{validator_service_server, wallet_service_server},
         },
-        OutPoint, Output, Transaction, THIS_SIDECHAIN,
+        Address, OutPoint, Output, Transaction,
     },
     wallet::{self, Wallet},
 };
@@ -354,24 +353,22 @@ impl App {
     }
 
     pub fn deposit(
-        &mut self,
+        &self,
+        address: Address,
         amount: bitcoin::Amount,
         fee: bitcoin::Amount,
-    ) -> Result<(), Error> {
+    ) -> Result<bitcoin::Txid, Error> {
         let Some(miner) = self.miner.as_ref() else {
             return Err(Error::NoCusfMainchainWalletClient);
         };
         self.runtime.block_on(async {
-            let address = self.wallet.get_new_address()?;
-            let address =
-                format_deposit_address(THIS_SIDECHAIN, &format!("{address}"));
             let mut miner_write = miner.write().await;
-            let _txid = miner_write
+            let txid = miner_write
                 .cusf_mainchain_wallet
                 .create_deposit_tx(address, amount.to_sat(), fee.to_sat())
                 .await?;
             drop(miner_write);
-            Ok(())
+            Ok(txid)
         })
     }
 }

@@ -7,7 +7,7 @@ use jsonrpsee::{
 };
 use thunder::{
     node,
-    types::{Address, PointedOutput, Txid, THIS_SIDECHAIN},
+    types::{Address, PointedOutput, Txid},
     wallet,
 };
 use thunder_app_rpc_api::RpcServer;
@@ -50,6 +50,25 @@ impl RpcServer for RpcServerImpl {
         self.app.wallet.get_balance().map_err(convert_wallet_err)
     }
 
+    async fn create_deposit(
+        &self,
+        address: Address,
+        value_sats: u64,
+        fee_sats: u64,
+    ) -> RpcResult<bitcoin::Txid> {
+        let app = self.app.clone();
+        tokio::task::spawn_blocking(move || {
+            app.deposit(
+                address,
+                bitcoin::Amount::from_sat(value_sats),
+                bitcoin::Amount::from_sat(fee_sats),
+            )
+            .map_err(convert_app_err)
+        })
+        .await
+        .unwrap()
+    }
+
     async fn connect_peer(&self, addr: SocketAddr) -> RpcResult<()> {
         self.app.node.connect_peer(addr).map_err(convert_node_err)
     }
@@ -58,10 +77,7 @@ impl RpcServer for RpcServerImpl {
         &self,
         address: Address,
     ) -> RpcResult<String> {
-        let deposit_address = thunder::format_deposit_address(
-            THIS_SIDECHAIN,
-            &address.to_string(),
-        );
+        let deposit_address = thunder::format_deposit_address(address);
         Ok(deposit_address)
     }
 
