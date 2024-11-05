@@ -5012,7 +5012,7 @@ dependencies = [
 
 [[package]]
 name = "thunder"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "bincode",
@@ -5055,7 +5055,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_app"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -5095,7 +5095,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_app_cli"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "anyhow",
  "bitcoin",
@@ -5110,7 +5110,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_app_rpc_api"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "bitcoin",
  "jsonrpsee",
