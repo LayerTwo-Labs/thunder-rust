@@ -104,10 +104,10 @@ pub mod common {
         tonic::include_proto!("cusf.common.v1");
     }
 
-    pub use generated::{ConsensusHex, ReverseHex};
+    pub use generated::{ConsensusHex, Hex, ReverseHex};
 
     impl ConsensusHex {
-        pub fn consensus_decode<Message, T>(
+        pub fn decode<Message, T>(
             self,
             field_name: &str,
         ) -> Result<T, super::Error>
@@ -124,7 +124,7 @@ pub mod common {
         }
 
         /// Variant of [`Self::decode`] that returns a `tonic::Status` error
-        pub fn consensus_decode_tonic<Message, T>(
+        pub fn decode_tonic<Message, T>(
             self,
             field_name: &str,
         ) -> Result<T, tonic::Status>
@@ -132,18 +132,20 @@ pub mod common {
             Message: prost::Name,
             T: bitcoin::consensus::Decodable,
         {
-            self.consensus_decode::<Message, _>(field_name)
+            self.decode::<Message, _>(field_name)
                 .map_err(|err| tonic::Status::from_error(Box::new(err)))
         }
 
-        pub fn consensus_encode<T>(value: &T) -> Self
+        pub fn encode<T>(value: &T) -> Self
         where
             T: bitcoin::consensus::Encodable,
         {
             let hex = bitcoin::consensus::encode::serialize_hex(value);
             Self { hex: Some(hex) }
         }
+    }
 
+    impl Hex {
         pub fn decode<Message, T>(
             self,
             field_name: &str,
@@ -161,6 +163,14 @@ pub mod common {
             T::try_from_slice(&bytes).map_err(|_err| {
                 super::Error::invalid_field_value::<Message>(field_name, &hex)
             })
+        }
+
+        pub fn encode<T>(value: &T) -> Self
+        where
+            T: hex::ToHex,
+        {
+            let hex = value.encode_hex();
+            Self { hex: Some(hex) }
         }
     }
 
@@ -221,7 +231,7 @@ pub mod mainchain {
     use serde::{Deserialize, Serialize};
     use thiserror::Error;
 
-    use super::common::{ConsensusHex, ReverseHex};
+    use super::common::{ConsensusHex, Hex, ReverseHex};
     use crate::types::{Output, OutputContent, THIS_SIDECHAIN};
 
     pub mod generated {
@@ -297,7 +307,7 @@ pub mod mainchain {
                 return Ok(None);
             };
             commitment.decode::<generated::get_bmm_h_star_commitment_response::Commitment, _>("commitment")
-                .map(Some)
+                .map(|block_hash| Some(crate::types::BlockHash(block_hash)))
         }
     }
 
@@ -338,19 +348,28 @@ pub mod mainchain {
         }
     }
 
-    impl TryFrom<generated::Output> for Output {
+    impl TryFrom<generated::deposit::Output> for Output {
         type Error = super::Error;
 
-        fn try_from(output: generated::Output) -> Result<Self, Self::Error> {
-            let generated::Output {
+        fn try_from(
+            output: generated::deposit::Output,
+        ) -> Result<Self, Self::Error> {
+            let generated::deposit::Output {
                 address,
                 value_sats,
             } = output;
             let address = address
                 .ok_or_else(|| {
-                    super::Error::missing_field::<generated::Output>("address")
+                    super::Error::missing_field::<generated::deposit::Output>(
+                        "address",
+                    )
                 })?
-                .decode::<generated::Output, _>("address")?;
+                .decode::<generated::deposit::Output, _>("address")?;
+            let value_sats = value_sats.ok_or_else(|| {
+                super::Error::missing_field::<generated::deposit::Output>(
+                    "value_sats",
+                )
+            })?;
             Ok(Self {
                 address,
                 content: OutputContent::Value(value_sats),
@@ -384,10 +403,15 @@ pub mod mainchain {
 
         fn try_from(deposit: generated::Deposit) -> Result<Self, Self::Error> {
             let generated::Deposit {
-                sequence_number: tx_index,
+                sequence_number,
                 outpoint,
                 output,
             } = deposit;
+            let sequence_number = sequence_number.ok_or_else(|| {
+                super::Error::missing_field::<generated::Deposit>(
+                    "sequence_number",
+                )
+            })?;
             let Some(outpoint) = outpoint else {
                 return Err(super::Error::missing_field::<generated::Deposit>(
                     "outpoint",
@@ -399,7 +423,7 @@ pub mod mainchain {
                 ));
             };
             Ok(Self {
-                tx_index,
+                tx_index: sequence_number,
                 outpoint: outpoint.try_into()?,
                 output: output.try_into()?,
             })
@@ -459,9 +483,7 @@ pub mod mainchain {
                         generated::WithdrawalBundleEvent,
                     >("m6id")
                 })?
-                .consensus_decode::<generated::WithdrawalBundleEvent, _>(
-                    "m6id",
-                )?;
+                .decode::<generated::WithdrawalBundleEvent, _>("m6id")?;
             let status = generated::WithdrawalBundleEventType::try_from(
                 withdrawal_bundle_event_type,
             )
@@ -511,6 +533,7 @@ pub mod mainchain {
                 .map(|bmm_commitment| {
                     bmm_commitment
                         .decode::<generated::BlockInfo, _>("bmm_commitment")
+                        .map(crate::types::BlockHash)
                 })
                 .transpose()?;
             Ok(Self {
@@ -625,7 +648,7 @@ pub mod mainchain {
                         "work",
                     )
                 })?
-                .consensus_decode::<generated::BlockHeaderInfo, _>("work")
+                .decode::<generated::BlockHeaderInfo, _>("work")
                 .map(bitcoin::Work::from_le_bytes)?;
             Ok(BlockHeaderInfo {
                 block_hash,
@@ -903,9 +926,7 @@ pub mod mainchain {
                 sidechain_id: Some(THIS_SIDECHAIN as u32),
                 value_sats: Some(value_sats),
                 height: Some(height),
-                critical_hash: Some(ConsensusHex::consensus_encode(
-                    &critical_hash,
-                )),
+                critical_hash: Some(ConsensusHex::encode(&critical_hash)),
                 prev_bytes: Some(ReverseHex::encode(&prev_bytes)),
             };
             let generated::CreateBmmCriticalDataTransactionResponse { txid } =
@@ -927,9 +948,7 @@ pub mod mainchain {
         ) -> Result<Txid, super::Error> {
             let request = generated::CreateDepositTransactionRequest {
                 sidechain_id: Some(THIS_SIDECHAIN as u32),
-                address: Some(ConsensusHex::consensus_encode(
-                    &address.0.to_vec(),
-                )),
+                address: Some(Hex::encode(&address.0)),
                 value_sats: Some(value_sats),
                 fee_sats: Some(fee_sats),
             };

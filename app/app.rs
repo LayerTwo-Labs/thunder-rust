@@ -187,6 +187,7 @@ impl App {
             format!("https://{}", config.main_addr),
         )
         .unwrap()
+        .concurrency_limit(256)
         .connect_lazy();
         let (cusf_mainchain, cusf_mainchain_wallet) = if runtime.block_on(
             Self::check_proto_support(config.main_addr, transport.clone()),
