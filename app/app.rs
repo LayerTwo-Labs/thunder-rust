@@ -293,7 +293,7 @@ impl App {
         const NUM_TRANSACTIONS: usize = 1000;
         let (txs, tx_fees) = self.node.get_transactions(NUM_TRANSACTIONS)?;
         let coinbase = match tx_fees {
-            0 => vec![],
+            bitcoin::Amount::ZERO => vec![],
             _ => vec![types::Output {
                 address: self.wallet.get_new_address()?,
                 content: types::OutputContent::Value(tx_fees),
@@ -326,8 +326,8 @@ impl App {
             prev_main_hash,
         };
         let bribe = fee.unwrap_or_else(|| {
-            if tx_fees > 0 {
-                bitcoin::Amount::from_sat(tx_fees)
+            if tx_fees > bitcoin::Amount::ZERO {
+                tx_fees
             } else {
                 Self::EMPTY_BLOCK_BMM_BRIBE
             }

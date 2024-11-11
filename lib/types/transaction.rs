@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use bitcoin::amount::CheckedSum;
 use borsh::BorshSerialize;
 use rustreexo::accumulator::{
     node_hash::NodeHash, pollard::Pollard, proof::Proof,
@@ -7,7 +8,7 @@ use rustreexo::accumulator::{
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use super::{hash, Address, Hash, MerkleRoot, Txid};
+use super::{hash, Address, AmountOverflowError, Hash, M6id, MerkleRoot, Txid};
 use crate::authorization::Authorization;
 
 fn borsh_serialize_bitcoin_outpoint<W>(
@@ -79,8 +80,18 @@ pub enum InPoint {
     },
     // Created by mainchain withdrawals
     Withdrawal {
-        txid: bitcoin::Txid,
+        m6id: M6id,
     },
+}
+
+fn borsh_serialize_bitcoin_amount<W>(
+    bitcoin_amount: &bitcoin::Amount,
+    writer: &mut W,
+) -> borsh::io::Result<()>
+where
+    W: borsh::io::Write,
+{
+    borsh::BorshSerialize::serialize(&bitcoin_amount.to_sat(), writer)
 }
 
 fn borsh_serialize_bitcoin_address<V, W>(
@@ -110,10 +121,15 @@ where
 )]
 #[schema(as = OutputContent)]
 pub enum Content {
-    Value(u64),
+    Value(
+        #[borsh(serialize_with = "borsh_serialize_bitcoin_amount")]
+        bitcoin::Amount,
+    ),
     Withdrawal {
-        value: u64,
-        main_fee: u64,
+        #[borsh(serialize_with = "borsh_serialize_bitcoin_amount")]
+        value: bitcoin::Amount,
+        #[borsh(serialize_with = "borsh_serialize_bitcoin_amount")]
+        main_fee: bitcoin::Amount,
         #[borsh(serialize_with = "borsh_serialize_bitcoin_address")]
         main_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
     },
@@ -130,7 +146,7 @@ impl Content {
 
 impl GetValue for Content {
     #[inline(always)]
-    fn get_value(&self) -> u64 {
+    fn get_value(&self) -> bitcoin::Amount {
         match self {
             Self::Value(value) => *value,
             Self::Withdrawal { value, .. } => *value,
@@ -160,7 +176,7 @@ pub struct Output {
 
 impl GetValue for Output {
     #[inline(always)]
-    fn get_value(&self) -> u64 {
+    fn get_value(&self) -> bitcoin::Amount {
         self.content.get_value()
     }
 }
@@ -215,25 +231,34 @@ pub struct FilledTransaction {
 }
 
 impl FilledTransaction {
-    pub fn get_value_in(&self) -> u64 {
-        self.spent_utxos.iter().map(GetValue::get_value).sum()
+    pub fn get_value_in(&self) -> Result<bitcoin::Amount, AmountOverflowError> {
+        self.spent_utxos
+            .iter()
+            .map(GetValue::get_value)
+            .checked_sum()
+            .ok_or(AmountOverflowError)
     }
 
-    pub fn get_value_out(&self) -> u64 {
+    pub fn get_value_out(
+        &self,
+    ) -> Result<bitcoin::Amount, AmountOverflowError> {
         self.transaction
             .outputs
             .iter()
             .map(GetValue::get_value)
-            .sum()
+            .checked_sum()
+            .ok_or(AmountOverflowError)
     }
 
-    pub fn get_fee(&self) -> Option<u64> {
-        let value_in = self.get_value_in();
-        let value_out = self.get_value_out();
+    pub fn get_fee(
+        &self,
+    ) -> Result<Option<bitcoin::Amount>, AmountOverflowError> {
+        let value_in = self.get_value_in()?;
+        let value_out = self.get_value_out()?;
         if value_in < value_out {
-            None
+            Ok(None)
         } else {
-            Some(value_in - value_out)
+            Ok(Some(value_in - value_out))
         }
     }
 }
@@ -364,8 +389,14 @@ impl Body {
         outputs
     }
 
-    pub fn get_coinbase_value(&self) -> u64 {
-        self.coinbase.iter().map(|output| output.get_value()).sum()
+    pub fn get_coinbase_value(
+        &self,
+    ) -> Result<bitcoin::Amount, AmountOverflowError> {
+        self.coinbase
+            .iter()
+            .map(|output| output.get_value())
+            .checked_sum()
+            .ok_or(AmountOverflowError)
     }
 }
 
@@ -374,12 +405,12 @@ pub trait GetAddress {
 }
 
 pub trait GetValue {
-    fn get_value(&self) -> u64;
+    fn get_value(&self) -> bitcoin::Amount;
 }
 
 impl GetValue for () {
-    fn get_value(&self) -> u64 {
-        0
+    fn get_value(&self) -> bitcoin::Amount {
+        bitcoin::Amount::ZERO
     }
 }
 

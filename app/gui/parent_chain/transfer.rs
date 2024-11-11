@@ -78,9 +78,9 @@ fn create_withdrawal(
     let tx = app.wallet.create_withdrawal(
         &accumulator,
         mainchain_address,
-        amount.to_sat(),
-        mainchain_fee.to_sat(),
-        fee.to_sat(),
+        amount,
+        mainchain_fee,
+        fee,
     )?;
     app.sign_and_send(tx)?;
     Ok(())

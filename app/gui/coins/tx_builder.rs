@@ -34,14 +34,14 @@ impl TxBuilder {
             .iter()
             .filter(|(outpoint, _)| selected.contains(outpoint))
             .collect();
-        let value_in: u64 = spent_utxos
+        let value_in: bitcoin::Amount = spent_utxos
             .iter()
             .map(|(_, output)| output.get_value())
             .sum();
         self.tx_creator.value_in = value_in;
         spent_utxos.sort_by_key(|(outpoint, _)| format!("{outpoint}"));
         ui.separator();
-        ui.monospace(format!("Total: {}", bitcoin::Amount::from_sat(value_in)));
+        ui.monospace(format!("Total: {}", value_in));
         ui.separator();
         egui::Grid::new("utxos").striped(true).show(ui, |ui| {
             ui.monospace("kind");
@@ -67,13 +67,10 @@ impl TxBuilder {
     pub fn show_value_out(&mut self, ui: &mut egui::Ui) {
         ui.heading("Value Out");
         ui.separator();
-        let value_out: u64 =
+        let value_out: bitcoin::Amount =
             self.base_tx.outputs.iter().map(GetValue::get_value).sum();
         self.tx_creator.value_out = value_out;
-        ui.monospace(format!(
-            "Total: {}",
-            bitcoin::Amount::from_sat(value_out)
-        ));
+        ui.monospace(format!("Total: {}", value_out));
         ui.separator();
         egui::Grid::new("outputs").striped(true).show(ui, |ui| {
             let mut remove = None;
@@ -83,7 +80,7 @@ impl TxBuilder {
             ui.end_row();
             for (vout, output) in self.base_tx.outputs.iter().enumerate() {
                 let address = &format!("{}", output.address)[0..8];
-                let value = bitcoin::Amount::from_sat(output.get_value());
+                let value = output.get_value();
                 ui.monospace(format!("{vout}"));
                 ui.monospace(address.to_string());
                 ui.with_layout(

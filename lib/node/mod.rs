@@ -6,6 +6,7 @@ use std::{
     sync::Arc,
 };
 
+use bitcoin::amount::CheckedSum;
 use fallible_iterator::FallibleIterator;
 use futures::{future::BoxFuture, Stream};
 use hashlink::{linked_hash_map, LinkedHashMap};
@@ -20,9 +21,10 @@ use crate::{
     state::{self, State},
     types::{
         proto::{self, mainchain},
-        Accumulator, Address, AuthorizedTransaction, BlockHash, BmmResult,
-        Body, GetValue, Header, OutPoint, Output, SpentOutput, Tip,
-        Transaction, Txid, WithdrawalBundle,
+        Accumulator, Address, AmountOverflowError, AmountUnderflowError,
+        AuthorizedTransaction, BlockHash, BmmResult, Body, GetValue, Header,
+        OutPoint, Output, SpentOutput, Tip, Transaction, Txid,
+        WithdrawalBundle,
     },
     util::Watchable,
 };
@@ -38,6 +40,10 @@ use self::net_task::NetTaskHandle;
 pub enum Error {
     #[error("address parse error")]
     AddrParse(#[from] std::net::AddrParseError),
+    #[error(transparent)]
+    AmountOverflow(#[from] AmountOverflowError),
+    #[error(transparent)]
+    AmountUnderflow(#[from] AmountUnderflowError),
     #[error("archive error")]
     Archive(#[from] archive::Error),
     #[error("bincode error")]
@@ -377,10 +383,10 @@ where
     pub fn get_transactions(
         &self,
         number: usize,
-    ) -> Result<(Vec<AuthorizedTransaction>, u64), Error> {
+    ) -> Result<(Vec<AuthorizedTransaction>, bitcoin::Amount), Error> {
         let mut txn = self.env.write_txn()?;
         let transactions = self.mempool.take(&txn, number)?;
-        let mut fee: u64 = 0;
+        let mut fee = bitcoin::Amount::ZERO;
         let mut returned_transactions = vec![];
         let mut spent_utxos = HashSet::new();
         for transaction in &transactions {
@@ -400,18 +406,26 @@ where
             let filled_transaction = self
                 .state
                 .fill_transaction(&txn, &transaction.transaction)?;
-            let value_in: u64 = filled_transaction
+            let value_in: bitcoin::Amount = filled_transaction
                 .spent_utxos
                 .iter()
                 .map(GetValue::get_value)
-                .sum();
-            let value_out: u64 = filled_transaction
+                .checked_sum()
+                .ok_or(AmountOverflowError)?;
+            let value_out: bitcoin::Amount = filled_transaction
                 .transaction
                 .outputs
                 .iter()
                 .map(GetValue::get_value)
-                .sum();
-            fee += value_in - value_out;
+                .checked_sum()
+                .ok_or(AmountOverflowError)?;
+            fee = fee
+                .checked_add(
+                    value_in
+                        .checked_sub(value_out)
+                        .ok_or(AmountOverflowError)?,
+                )
+                .ok_or(AmountUnderflowError)?;
             returned_transactions.push(transaction.clone());
             spent_utxos.extend(transaction.transaction.inputs.clone());
         }
@@ -561,12 +575,14 @@ where
         let rotxn = self.env.read_txn()?;
         let bundle = self.state.get_pending_withdrawal_bundle(&rotxn)?;
         if let Some((bundle, _)) = bundle {
+            let m6id = bundle.compute_m6id();
             let mut cusf_mainchain_wallet_lock =
                 cusf_mainchain_wallet.lock().await;
             let () = cusf_mainchain_wallet_lock
-                .broadcast_withdrawal_bundle(&bundle.transaction)
+                .broadcast_withdrawal_bundle(bundle.tx())
                 .await?;
             drop(cusf_mainchain_wallet_lock);
+            tracing::trace!(%m6id, "Broadcast withdrawal bundle");
         }
         Ok(true)
     }

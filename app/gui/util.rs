@@ -21,11 +21,6 @@ pub fn show_btc_amount(amount: bitcoin::Amount) -> String {
     )
 }
 
-/// Show a Bitcoin amount from sats
-pub fn show_btc_amount_from_sats(sats: u64) -> String {
-    show_btc_amount(bitcoin::Amount::from_sat(sats))
-}
-
 // extension for InnerResponse<Response> and InnerResponse<Option<Response>>
 pub trait InnerResponseExt {
     #[allow(dead_code)]

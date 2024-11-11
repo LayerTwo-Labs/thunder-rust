@@ -232,7 +232,7 @@ pub mod mainchain {
     use thiserror::Error;
 
     use super::common::{ConsensusHex, Hex, ReverseHex};
-    use crate::types::{Output, OutputContent, THIS_SIDECHAIN};
+    use crate::types::{M6id, Output, OutputContent, THIS_SIDECHAIN};
 
     pub mod generated {
         tonic::include_proto!("cusf.mainchain.v1");
@@ -365,14 +365,16 @@ pub mod mainchain {
                     )
                 })?
                 .decode::<generated::deposit::Output, _>("address")?;
-            let value_sats = value_sats.ok_or_else(|| {
-                super::Error::missing_field::<generated::deposit::Output>(
-                    "value_sats",
-                )
-            })?;
+            let value = value_sats
+                .ok_or_else(|| {
+                    super::Error::missing_field::<generated::deposit::Output>(
+                        "value_sats",
+                    )
+                })
+                .map(bitcoin::Amount::from_sat)?;
             Ok(Self {
                 address,
-                content: OutputContent::Value(value_sats),
+                content: OutputContent::Value(value),
             })
         }
     }
@@ -430,81 +432,71 @@ pub mod mainchain {
         }
     }
 
-    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-    pub enum WithdrawalBundleStatus {
-        Confirmed,
-        Failed,
-        Submitted,
-    }
-
-    impl generated::WithdrawalBundleEventType {
-        fn decode<Message>(
-            self,
-            field_name: &str,
-        ) -> Result<WithdrawalBundleStatus, super::Error>
-        where
-            Message: prost::Name,
-        {
-            match self {
-                unspecified @ Self::Unspecified => {
-                    Err(super::Error::invalid_enum_variant::<Message>(
-                        field_name,
-                        unspecified.as_str_name(),
-                    ))
-                }
-                generated::WithdrawalBundleEventType::Failed => {
-                    Ok(WithdrawalBundleStatus::Failed)
-                }
-                generated::WithdrawalBundleEventType::Submitted => {
-                    Ok(WithdrawalBundleStatus::Submitted)
-                }
-                generated::WithdrawalBundleEventType::Succeded => {
-                    Ok(WithdrawalBundleStatus::Confirmed)
+    impl From<generated::withdrawal_bundle_event::event::Event>
+        for crate::types::WithdrawalBundleStatus
+    {
+        fn from(
+            event: generated::withdrawal_bundle_event::event::Event,
+        ) -> Self {
+            use generated::withdrawal_bundle_event::event::{
+                Event, Failed, Submitted, Succeeded,
+            };
+            match event {
+                Event::Failed(Failed {}) => Self::Failed,
+                Event::Submitted(Submitted {}) => Self::Submitted,
+                Event::Succeeded(Succeeded { transaction: _ }) => {
+                    Self::Confirmed
                 }
             }
         }
     }
 
-    impl TryFrom<generated::WithdrawalBundleEvent>
-        for (Txid, WithdrawalBundleStatus)
+    impl TryFrom<generated::withdrawal_bundle_event::Event>
+        for crate::types::WithdrawalBundleStatus
     {
         type Error = super::Error;
 
         fn try_from(
-            withdrawal_bundle_event: generated::WithdrawalBundleEvent,
+            event: generated::withdrawal_bundle_event::Event,
         ) -> Result<Self, Self::Error> {
-            let generated::WithdrawalBundleEvent {
-                m6id,
-                withdrawal_bundle_event_type,
-            } = withdrawal_bundle_event;
-            let txid = m6id
+            use generated::withdrawal_bundle_event::Event;
+            let Event { event } = event;
+            event
+                .ok_or_else(|| Self::Error::missing_field::<Event>("event"))
+                .map(|event| event.into())
+        }
+    }
+
+    impl TryFrom<generated::WithdrawalBundleEvent>
+        for crate::types::WithdrawalBundleEvent
+    {
+        type Error = super::Error;
+
+        fn try_from(
+            event: generated::WithdrawalBundleEvent,
+        ) -> Result<Self, Self::Error> {
+            use generated::WithdrawalBundleEvent;
+            let WithdrawalBundleEvent { m6id, event } = event;
+            let m6id = m6id
                 .ok_or_else(|| {
-                    super::Error::missing_field::<
-                        generated::WithdrawalBundleEvent,
-                    >("m6id")
+                    Self::Error::missing_field::<WithdrawalBundleEvent>("m6id")
                 })?
-                .decode::<generated::WithdrawalBundleEvent, _>("m6id")?;
-            let status = generated::WithdrawalBundleEventType::try_from(
-                withdrawal_bundle_event_type,
-            )
-            .map_err(|_| super::Error::UnknownEnumTag {
-                field_name: "withdrawal_bundle_event_type".to_owned(),
-                message_name:
-                    <generated::WithdrawalBundleEvent as prost::Name>::NAME
-                        .to_owned(),
-                tag: withdrawal_bundle_event_type,
-            })?
-            .decode::<generated::WithdrawalBundleEvent>(
-                "withdrawal_bundle_event_type",
-            )?;
-            Ok((txid, status))
+                .decode::<WithdrawalBundleEvent, _>("m6id")
+                .map(M6id)?;
+            let status = event
+                .ok_or_else(|| {
+                    Self::Error::missing_field::<WithdrawalBundleEvent>("event")
+                })?
+                .try_into()?;
+            Ok(Self { m6id, status })
         }
     }
 
     #[derive(Clone, Debug, Default, Deserialize, Serialize)]
     pub struct BlockInfo {
         pub deposits: Vec<Deposit>,
-        pub withdrawal_bundle_events: Vec<(Txid, WithdrawalBundleStatus)>,
+        pub withdrawal_bundle_events:
+            Vec<(M6id, crate::types::WithdrawalBundleEvent)>,
         pub bmm_commitment: Option<crate::types::BlockHash>,
     }
 
@@ -526,9 +518,13 @@ pub mod mainchain {
             let withdrawal_bundle_events = withdrawal_bundle_events
                 .into_iter()
                 .map(|withdrawal_bundle_event| {
-                    <(_, _)>::try_from(withdrawal_bundle_event)
+                    let withdrawal_bundle_event =
+                        crate::types::WithdrawalBundleEvent::try_from(
+                            withdrawal_bundle_event,
+                        )?;
+                    Ok((withdrawal_bundle_event.m6id, withdrawal_bundle_event))
                 })
-                .collect::<Result<_, _>>()?;
+                .collect::<Result<_, Self::Error>>()?;
             let bmm_commitment = bmm_commitment
                 .map(|bmm_commitment| {
                     bmm_commitment
@@ -568,21 +564,34 @@ pub mod mainchain {
         pub fn withdrawal_bundle_events(
             &self,
         ) -> impl DoubleEndedIterator<
-            Item = (BlockHash, Txid, WithdrawalBundleStatus),
+            Item = (
+                &'_ BlockHash,
+                &'_ M6id,
+                &'_ crate::types::WithdrawalBundleEvent,
+            ),
         > + '_ {
             self.block_info.iter().flat_map(|(block_hash, block_info)| {
                 block_info
                     .withdrawal_bundle_events
                     .iter()
-                    .map(|(txid, status)| (*block_hash, *txid, *status))
+                    .map(move |(m6id, event)| (block_hash, m6id, event))
             })
         }
 
-        /// Last deposit block hash
-        pub fn deposit_block_hash(&self) -> Option<BlockHash> {
+        /// Latest deposit block hash
+        pub fn latest_deposit_block_hash(&self) -> Option<BlockHash> {
             self.deposits()
                 .next_back()
                 .map(|(block_hash, _)| block_hash)
+        }
+
+        /// Latest withdrawal bundle event block hash
+        pub fn latest_withdrawal_bundle_event_block_hash(
+            &self,
+        ) -> Option<&BlockHash> {
+            self.withdrawal_bundle_events()
+                .next_back()
+                .map(|(block_hash, _, _)| block_hash)
         }
     }
 

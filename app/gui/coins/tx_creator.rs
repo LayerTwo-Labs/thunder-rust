@@ -6,8 +6,8 @@ use crate::app::App;
 
 #[derive(Debug, Default)]
 pub struct TxCreator {
-    pub value_in: u64,
-    pub value_out: u64,
+    pub value_in: bitcoin::Amount,
+    pub value_out: bitcoin::Amount,
     // if the base tx has changed, need to recompute final tx
     base_txid: Txid,
     final_tx: Option<Transaction>,
@@ -47,7 +47,6 @@ impl TxCreator {
         ui.monospace(format!("txid: {txid}"));
         if self.value_in >= self.value_out {
             let fee = self.value_in - self.value_out;
-            let fee = bitcoin::Amount::from_sat(fee);
             ui.monospace(format!("fee:  {fee}"));
             if ui.button("sign and send").clicked() {
                 if let Err(err) = send_tx(app, final_tx) {

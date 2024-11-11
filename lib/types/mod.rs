@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, HashMap},
+    sync::LazyLock,
 };
+use thiserror::Error;
 
 mod address;
 pub mod hashes;
@@ -13,7 +15,7 @@ pub mod proto;
 mod transaction;
 
 pub use address::Address;
-pub use hashes::{hash, BlockHash, Hash, MerkleRoot, Txid};
+pub use hashes::{hash, BlockHash, Hash, M6id, MerkleRoot, Txid};
 pub use transaction::{
     AuthorizedTransaction, Body, Content as OutputContent, FilledTransaction,
     GetAddress, GetValue, InPoint, OutPoint, Output, PointedOutput,
@@ -21,6 +23,14 @@ pub use transaction::{
 };
 
 pub const THIS_SIDECHAIN: u8 = 9;
+
+#[derive(Debug, Error)]
+#[error("Bitcoin amount overflow")]
+pub struct AmountOverflowError;
+
+#[derive(Debug, Error)]
+#[error("Bitcoin amount underflow")]
+pub struct AmountUnderflowError;
 
 /// (de)serialize as hex strings for human-readable forms like json,
 /// and default serialization for non human-readable formats like bincode
@@ -113,23 +123,126 @@ impl Header {
     }
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum WithdrawalBundleStatus {
-    Failed,
     Confirmed,
+    Failed,
+    Submitted,
 }
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct WithdrawalBundleEvent {
+    pub m6id: M6id,
+    pub status: WithdrawalBundleStatus,
+}
+
+pub static OP_DRIVECHAIN_SCRIPT: LazyLock<bitcoin::ScriptBuf> =
+    LazyLock::new(|| {
+        let mut script = bitcoin::ScriptBuf::new();
+        script.push_opcode(bitcoin::opcodes::all::OP_RETURN);
+        script.push_instruction(bitcoin::script::Instruction::PushBytes(
+            &bitcoin::script::PushBytesBuf::from([THIS_SIDECHAIN]),
+        ));
+        script.push_opcode(bitcoin::opcodes::OP_TRUE);
+        script
+    });
+
+#[derive(Debug, Error)]
+enum WithdrawalBundleErrorInner {
+    #[error("bundle too heavy: weight `{weight}` > max weight `{max_weight}`")]
+    BundleTooHeavy { weight: u64, max_weight: u64 },
+}
+
+#[derive(Debug, Error)]
+#[error("Withdrawal bundle error")]
+pub struct WithdrawalBundleError(#[from] WithdrawalBundleErrorInner);
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WithdrawalBundle {
-    pub spend_utxos: BTreeMap<transaction::OutPoint, transaction::Output>,
-    pub transaction: bitcoin::Transaction,
+    spend_utxos: BTreeMap<transaction::OutPoint, transaction::Output>,
+    tx: bitcoin::Transaction,
 }
 
-#[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize)]
+impl WithdrawalBundle {
+    pub fn new(
+        block_height: u32,
+        fee: bitcoin::Amount,
+        spend_utxos: BTreeMap<transaction::OutPoint, transaction::Output>,
+        bundle_outputs: Vec<bitcoin::TxOut>,
+    ) -> Result<Self, WithdrawalBundleError> {
+        let inputs_commitment_txout = {
+            // Create inputs commitment.
+            let inputs: Vec<OutPoint> = [
+                // Commit to inputs.
+                spend_utxos.keys().copied().collect(),
+                // Commit to block height.
+                vec![OutPoint::Regular {
+                    txid: [0; 32].into(),
+                    vout: block_height,
+                }],
+            ]
+            .concat();
+            let commitment = hash(&inputs);
+            let script_pubkey = bitcoin::script::Builder::new()
+                .push_opcode(bitcoin::opcodes::all::OP_RETURN)
+                .push_slice(commitment)
+                .into_script();
+            bitcoin::TxOut {
+                value: bitcoin::Amount::ZERO,
+                script_pubkey,
+            }
+        };
+        let mainchain_fee_txout = {
+            let script_pubkey = bitcoin::script::Builder::new()
+                .push_opcode(bitcoin::opcodes::all::OP_RETURN)
+                .push_slice(fee.to_sat().to_be_bytes())
+                .into_script();
+            bitcoin::TxOut {
+                value: bitcoin::Amount::ZERO,
+                script_pubkey,
+            }
+        };
+        let outputs = Vec::from_iter(
+            [mainchain_fee_txout, inputs_commitment_txout]
+                .into_iter()
+                .chain(bundle_outputs),
+        );
+        let tx = bitcoin::Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::blockdata::locktime::absolute::LockTime::ZERO,
+            input: Vec::new(),
+            output: outputs,
+        };
+        if tx.weight().to_wu() > bitcoin::policy::MAX_STANDARD_TX_WEIGHT as u64
+        {
+            Err(WithdrawalBundleErrorInner::BundleTooHeavy {
+                weight: tx.weight().to_wu(),
+                max_weight: bitcoin::policy::MAX_STANDARD_TX_WEIGHT as u64,
+            })?;
+        }
+        Ok(Self { spend_utxos, tx })
+    }
+
+    pub fn compute_m6id(&self) -> M6id {
+        M6id(self.tx.compute_txid())
+    }
+
+    pub fn spend_utxos(
+        &self,
+    ) -> &BTreeMap<transaction::OutPoint, transaction::Output> {
+        &self.spend_utxos
+    }
+
+    pub fn tx(&self) -> &bitcoin::Transaction {
+        &self.tx
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct TwoWayPegData {
     pub deposits: HashMap<transaction::OutPoint, transaction::Output>,
     pub deposit_block_hash: Option<bitcoin::BlockHash>,
-    pub bundle_statuses: HashMap<bitcoin::Txid, WithdrawalBundleStatus>,
+    pub bundle_statuses: HashMap<M6id, WithdrawalBundleEvent>,
 }
 
 /*
@@ -148,8 +261,8 @@ pub struct DisconnectData {
 pub struct AggregatedWithdrawal {
     pub spend_utxos: HashMap<OutPoint, transaction::Output>,
     pub main_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
-    pub value: u64,
-    pub main_fee: u64,
+    pub value: bitcoin::Amount,
+    pub main_fee: bitcoin::Amount,
 }
 
 impl Ord for AggregatedWithdrawal {

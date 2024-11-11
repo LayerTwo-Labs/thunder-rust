@@ -11,17 +11,14 @@ impl Withdrawals {
         ui.heading("Pending withdrawals");
         let bundle = app.node.get_pending_withdrawal_bundle().ok().flatten();
         if let Some(bundle) = bundle {
-            let mut spent_utxos: Vec<_> = bundle.spend_utxos.iter().collect();
+            let mut spent_utxos: Vec<_> = bundle.spend_utxos().iter().collect();
             spent_utxos.sort_by_key(|(outpoint, _)| format!("{outpoint}"));
             egui::Grid::new("bundle_utxos")
                 .striped(true)
                 .show(ui, |ui| {
                     for (outpoint, output) in &spent_utxos {
                         ui.monospace(format!("{outpoint}"));
-                        ui.monospace(format!(
-                            "{}",
-                            bitcoin::Amount::from_sat(output.get_value())
-                        ));
+                        ui.monospace(format!("{}", output.get_value()));
                         ui.end_row();
                     }
                 });

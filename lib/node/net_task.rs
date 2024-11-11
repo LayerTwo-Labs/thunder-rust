@@ -1,6 +1,7 @@
 //! Task to manage peers and their responses
 
 use std::{
+    cmp::Ordering,
     collections::{HashMap, HashSet},
     net::SocketAddr,
     sync::Arc,
@@ -79,11 +80,42 @@ where
     Transport: proto::Transport,
 {
     let last_deposit_block_hash = state.get_last_deposit_block_hash(rwtxn)?;
+    let last_withdrawal_bundle_event_block_hash =
+        state.get_last_withdrawal_bundle_event_block_hash(rwtxn)?;
+    let last_2wpd_block = match (
+        last_deposit_block_hash,
+        last_withdrawal_bundle_event_block_hash,
+    ) {
+        (None, None) => None,
+        (Some(last_deposit_block_hash), None) => Some(last_deposit_block_hash),
+        (None, Some(last_withdrawal_bundle_event_block_hash)) => {
+            Some(last_withdrawal_bundle_event_block_hash)
+        }
+        (
+            Some(last_deposit_block_hash),
+            Some(last_withdrawal_bundle_event_block_hash),
+        ) => {
+            if archive.is_main_descendant(
+                rwtxn,
+                last_deposit_block_hash,
+                last_withdrawal_bundle_event_block_hash,
+            )? {
+                Some(last_withdrawal_bundle_event_block_hash)
+            } else {
+                assert!(archive.is_main_descendant(
+                    rwtxn,
+                    last_withdrawal_bundle_event_block_hash,
+                    last_deposit_block_hash
+                )?);
+                Some(last_deposit_block_hash)
+            }
+        }
+    };
     let two_way_peg_data = cusf_mainchain
-        .get_two_way_peg_data(last_deposit_block_hash, header.prev_main_hash)
+        .get_two_way_peg_data(last_2wpd_block, header.prev_main_hash)
         .await?;
     let block_hash = header.hash();
-    let _fees: u64 = state.validate_block(rwtxn, header, body)?;
+    let _fees: bitcoin::Amount = state.validate_block(rwtxn, header, body)?;
     if tracing::enabled!(tracing::Level::DEBUG) {
         let merkle_root = body.compute_merkle_root();
         let height = state.get_height(rwtxn)?;
@@ -120,17 +152,67 @@ where
     let tip_body = archive.get_body(rwtxn, tip_block_hash)?;
     let height = state.get_height(rwtxn)?;
     let two_way_peg_data = {
-        let start_block_hash = state
+        let last_applied_deposit_block = state
             .deposit_blocks
             .rev_iter(rwtxn)?
             .transpose_into_fallible()
             .find_map(|(_, (block_hash, applied_height))| {
                 if applied_height < height - 1 {
-                    Ok(Some(block_hash))
+                    Ok(Some((block_hash, applied_height)))
                 } else {
                     Ok(None)
                 }
             })?;
+        let last_applied_withdrawal_bundle_event_block = state
+            .withdrawal_bundle_event_blocks
+            .rev_iter(rwtxn)?
+            .transpose_into_fallible()
+            .find_map(|(_, (block_hash, applied_height))| {
+                if applied_height < height - 1 {
+                    Ok(Some((block_hash, applied_height)))
+                } else {
+                    Ok(None)
+                }
+            })?;
+        let start_block_hash = match (
+            last_applied_deposit_block,
+            last_applied_withdrawal_bundle_event_block,
+        ) {
+            (None, None) => None,
+            (Some((block_hash, _)), None) | (None, Some((block_hash, _))) => {
+                Some(block_hash)
+            }
+            (
+                Some((deposit_block, deposit_block_applied_height)),
+                Some((
+                    withdrawal_event_block,
+                    withdrawal_event_block_applied_height,
+                )),
+            ) => {
+                match deposit_block_applied_height
+                    .cmp(&withdrawal_event_block_applied_height)
+                {
+                    Ordering::Less => Some(withdrawal_event_block),
+                    Ordering::Greater => Some(deposit_block),
+                    Ordering::Equal => {
+                        if archive.is_main_descendant(
+                            rwtxn,
+                            withdrawal_event_block,
+                            deposit_block,
+                        )? {
+                            Some(withdrawal_event_block)
+                        } else {
+                            assert!(archive.is_main_descendant(
+                                rwtxn,
+                                deposit_block,
+                                withdrawal_event_block
+                            )?);
+                            Some(deposit_block)
+                        }
+                    }
+                }
+            }
+        };
         cusf_mainchain
             .get_two_way_peg_data(start_block_hash, tip_header.prev_main_hash)
             .await?

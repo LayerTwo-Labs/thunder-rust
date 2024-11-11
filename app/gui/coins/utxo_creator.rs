@@ -124,7 +124,7 @@ impl UtxoCreator {
                         let utxo = Output {
                             address: address.expect("should not happen"),
                             content: OutputContent::Value(
-                                value.expect("should not happen").to_sat(),
+                                value.expect("should not happen"),
                             ),
                         };
                         tx.outputs.push(utxo);
@@ -161,12 +161,10 @@ impl UtxoCreator {
                         let utxo = Output {
                             address: address.expect("invalid address"),
                             content: OutputContent::Withdrawal {
-                                value: value.expect("invalid value").to_sat(),
+                                value: value.expect("invalid value"),
                                 main_address: main_address
                                     .expect("invalid main_address"),
-                                main_fee: main_fee
-                                    .expect("invalid main_fee")
-                                    .to_sat(),
+                                main_fee: main_fee.expect("invalid main_fee"),
                             },
                         };
                         tx.outputs.push(utxo);

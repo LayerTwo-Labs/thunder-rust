@@ -202,6 +202,18 @@ impl utoipa::ToSchema<'static> for Txid {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[repr(transparent)]
+#[serde(transparent)]
+pub struct M6id(pub bitcoin::Txid);
+
+impl std::fmt::Display for M6id {
+    #[inline(always)]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 pub fn hash<T>(data: &T) -> Hash
 where
     T: BorshSerialize,

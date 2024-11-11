@@ -28,21 +28,21 @@ impl MemPoolExplorer {
                         for (index, transaction) in
                             transactions.iter().enumerate()
                         {
-                            let value_out: u64 = transaction
+                            let value_out: bitcoin::Amount = transaction
                                 .transaction
                                 .outputs
                                 .iter()
                                 .map(GetValue::get_value)
                                 .sum();
-                            let value_in: u64 = transaction
+                            let value_in: bitcoin::Amount = transaction
                                 .transaction
                                 .inputs
                                 .iter()
                                 .map(|(outpoint, _)| {
                                     utxos.get(outpoint).map(GetValue::get_value)
                                 })
-                                .sum::<Option<u64>>()
-                                .unwrap_or(0);
+                                .sum::<Option<bitcoin::Amount>>()
+                                .unwrap_or(bitcoin::Amount::ZERO);
                             let txid =
                                 &format!("{}", transaction.transaction.txid())
                                     [0..8];
@@ -58,10 +58,6 @@ impl MemPoolExplorer {
                                         egui::Align::Max,
                                     ),
                                     |ui| {
-                                        let value_out =
-                                            bitcoin::Amount::from_sat(
-                                                value_out,
-                                            );
                                         ui.monospace(format!("{value_out}"));
                                     },
                                 );
@@ -70,8 +66,6 @@ impl MemPoolExplorer {
                                         egui::Align::Max,
                                     ),
                                     |ui| {
-                                        let fee =
-                                            bitcoin::Amount::from_sat(fee);
                                         ui.monospace(format!("{fee}"));
                                     },
                                 );
@@ -117,8 +111,7 @@ impl MemPoolExplorer {
                             };
                             let output = &utxos[outpoint];
                             let hash = &hash[0..8];
-                            let value =
-                                bitcoin::Amount::from_sat(output.get_value());
+                            let value = output.get_value();
                             ui.monospace(kind.to_string());
                             ui.monospace(format!("{hash}:{vout}",));
                             ui.monospace(format!("{value}",));
@@ -140,8 +133,7 @@ impl MemPoolExplorer {
                             transaction.transaction.outputs.iter().enumerate()
                         {
                             let address = &format!("{}", output.address)[0..8];
-                            let value =
-                                bitcoin::Amount::from_sat(output.get_value());
+                            let value = output.get_value();
                             ui.monospace(format!("{vout}"));
                             ui.monospace(address.to_string());
                             ui.monospace(format!("{value}"));

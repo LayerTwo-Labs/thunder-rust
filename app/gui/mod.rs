@@ -3,7 +3,7 @@ use std::{net::SocketAddr, task::Poll};
 use eframe::egui::{self, RichText};
 use strum::{EnumIter, IntoEnumIterator};
 use thunder::{util::Watchable, wallet::Wallet};
-use util::{show_btc_amount_from_sats, BITCOIN_LOGO_FA, BITCOIN_ORANGE};
+use util::{show_btc_amount, BITCOIN_LOGO_FA, BITCOIN_ORANGE};
 
 use crate::{app::App, line_buffer::LineBuffer, util::PromiseStream};
 
@@ -65,7 +65,7 @@ struct BottomPanel {
     wallet_updated: PromiseStream<<Wallet as Watchable<()>>::WatchStream>,
     /// None if uninitialized
     /// Some(None) if failed to initialize
-    balance_sats: Option<Option<u64>>,
+    balance: Option<Option<bitcoin::Amount>>,
 }
 
 impl BottomPanel {
@@ -74,13 +74,13 @@ impl BottomPanel {
         let wallet_updated = PromiseStream::from(wallet.watch());
         Self {
             wallet_updated,
-            balance_sats: None,
+            balance: None,
         }
     }
 
     /// Updates values
     fn update(&mut self, app: &App) {
-        self.balance_sats = match app.wallet.get_balance() {
+        self.balance = match app.wallet.get_balance() {
             Ok(balance) => Some(Some(balance)),
             Err(err) => {
                 let err = anyhow::Error::from(err);
@@ -91,18 +91,15 @@ impl BottomPanel {
     }
 
     fn show_balance(&self, ui: &mut egui::Ui) {
-        match self.balance_sats {
-            Some(Some(balance_sats)) => {
+        match self.balance {
+            Some(Some(balance)) => {
                 ui.monospace(
                     RichText::new(BITCOIN_LOGO_FA.to_string())
                         .color(BITCOIN_ORANGE),
                 );
                 ui.monospace_selectable_singleline(
                     false,
-                    format!(
-                        "Balance: {}",
-                        show_btc_amount_from_sats(balance_sats)
-                    ),
+                    format!("Balance: {}", show_btc_amount(balance)),
                 );
             }
             Some(None) => {

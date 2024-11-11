@@ -21,7 +21,10 @@ pub use crate::{
     },
 };
 use crate::{
-    types::{hash, Accumulator, PointedOutput},
+    types::{
+        hash, Accumulator, AmountOverflowError, AmountUnderflowError,
+        PointedOutput,
+    },
     util::{EnvExt, Watchable, WatchableDb},
 };
 
@@ -29,6 +32,10 @@ use crate::{
 pub enum Error {
     #[error("address {address} does not exist")]
     AddressDoesNotExist { address: crate::types::Address },
+    #[error(transparent)]
+    AmountOverflow(#[from] AmountOverflowError),
+    #[error(transparent)]
+    AmountUnderflow(#[from] AmountUnderflowError),
     #[error("authorization error")]
     Authorization(#[from] crate::authorization::Error),
     #[error("bip32 error")]
@@ -139,11 +146,17 @@ impl Wallet {
         &self,
         accumulator: &Accumulator,
         main_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
-        value: u64,
-        main_fee: u64,
-        fee: u64,
+        value: bitcoin::Amount,
+        main_fee: bitcoin::Amount,
+        fee: bitcoin::Amount,
     ) -> Result<Transaction, Error> {
-        let (total, coins) = self.select_coins(value + fee + main_fee)?;
+        let (total, coins) = self.select_coins(
+            value
+                .checked_add(fee)
+                .ok_or(AmountOverflowError)?
+                .checked_add(main_fee)
+                .ok_or(AmountOverflowError)?,
+        )?;
         let change = total - value - fee;
 
         let inputs: Vec<_> = coins
@@ -184,10 +197,11 @@ impl Wallet {
         &self,
         accumulator: &Accumulator,
         address: Address,
-        value: u64,
-        fee: u64,
+        value: bitcoin::Amount,
+        fee: bitcoin::Amount,
     ) -> Result<Transaction, Error> {
-        let (total, coins) = self.select_coins(value + fee)?;
+        let (total, coins) = self
+            .select_coins(value.checked_add(fee).ok_or(AmountOverflowError)?)?;
         let change = total - value - fee;
         let inputs: Vec<_> = coins
             .into_iter()
@@ -221,8 +235,8 @@ impl Wallet {
 
     pub fn select_coins(
         &self,
-        value: u64,
-    ) -> Result<(u64, HashMap<OutPoint, Output>), Error> {
+        value: bitcoin::Amount,
+    ) -> Result<(bitcoin::Amount, HashMap<OutPoint, Output>), Error> {
         let txn = self.env.read_txn()?;
         let mut utxos = vec![];
         for item in self.utxos.iter(&txn)? {
@@ -231,7 +245,7 @@ impl Wallet {
         utxos.sort_unstable_by_key(|(_, output)| output.get_value());
 
         let mut selected = HashMap::new();
-        let mut total: u64 = 0;
+        let mut total = bitcoin::Amount::ZERO;
         for (outpoint, output) in &utxos {
             if output.content.is_withdrawal() {
                 continue;
@@ -239,7 +253,9 @@ impl Wallet {
             if total > value {
                 break;
             }
-            total += output.get_value();
+            total = total
+                .checked_add(output.get_value())
+                .ok_or(AmountOverflowError)?;
             selected.insert(*outpoint, output.clone());
         }
         if total < value {
@@ -289,12 +305,14 @@ impl Wallet {
         Ok(())
     }
 
-    pub fn get_balance(&self) -> Result<u64, Error> {
-        let mut balance: u64 = 0;
+    pub fn get_balance(&self) -> Result<bitcoin::Amount, Error> {
+        let mut balance = bitcoin::Amount::ZERO;
         let txn = self.env.read_txn()?;
         for item in self.utxos.iter(&txn)? {
             let (_, utxo) = item?;
-            balance += utxo.get_value();
+            balance = balance
+                .checked_add(utxo.get_value())
+                .ok_or(AmountOverflowError)?;
         }
         Ok(balance)
     }

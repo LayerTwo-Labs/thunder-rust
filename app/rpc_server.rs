@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 
+use bitcoin::Amount;
 use jsonrpsee::{
     core::{async_trait, RpcResult},
     server::Server,
@@ -47,7 +48,10 @@ fn convert_wallet_err(err: wallet::Error) -> ErrorObject<'static> {
 #[async_trait]
 impl RpcServer for RpcServerImpl {
     async fn balance(&self) -> RpcResult<u64> {
-        self.app.wallet.get_balance().map_err(convert_wallet_err)
+        match self.app.wallet.get_balance() {
+            Ok(balance) => Ok(balance.to_sat()),
+            Err(err) => Err(convert_wallet_err(err)),
+        }
     }
 
     async fn create_deposit(
@@ -188,7 +192,12 @@ impl RpcServer for RpcServerImpl {
         let tx = self
             .app
             .wallet
-            .create_transaction(&accumulator, dest, value_sats, fee_sats)
+            .create_transaction(
+                &accumulator,
+                dest,
+                Amount::from_sat(value_sats),
+                Amount::from_sat(fee_sats),
+            )
             .map_err(convert_wallet_err)?;
         let txid = tx.txid();
         self.app.sign_and_send(tx).map_err(convert_app_err)?;
@@ -213,9 +222,9 @@ impl RpcServer for RpcServerImpl {
             .create_withdrawal(
                 &accumulator,
                 mainchain_address,
-                amount_sats,
-                mainchain_fee_sats,
-                fee_sats,
+                Amount::from_sat(amount_sats),
+                Amount::from_sat(mainchain_fee_sats),
+                Amount::from_sat(fee_sats),
             )
             .map_err(convert_wallet_err)?;
         let txid = tx.txid();
