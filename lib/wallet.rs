@@ -3,14 +3,17 @@ use std::{
     path::Path,
 };
 
+use bitcoin::Amount;
 use byteorder::{BigEndian, ByteOrder};
 use ed25519_dalek_bip32::{ChildIndex, DerivationPath, ExtendedSigningKey};
+use fallible_iterator::{FallibleIterator as _, IteratorExt as _};
 use futures::{Stream, StreamExt};
 use heed::{
     types::{Bytes, SerdeBincode, U8},
     RoTxn,
 };
 use rustreexo::accumulator::node_hash::NodeHash;
+use serde::{Deserialize, Serialize};
 use tokio_stream::{wrappers::WatchStream, StreamMap};
 
 pub use crate::{
@@ -27,6 +30,19 @@ use crate::{
     },
     util::{EnvExt, Watchable, WatchableDb},
 };
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, utoipa::ToSchema)]
+pub struct Balance {
+    #[serde(rename = "total_sats", with = "bitcoin::amount::serde::as_sat")]
+    #[schema(value_type = u64)]
+    pub total: Amount,
+    #[serde(
+        rename = "available_sats",
+        with = "bitcoin::amount::serde::as_sat"
+    )]
+    #[schema(value_type = u64)]
+    pub available: Amount,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -305,15 +321,28 @@ impl Wallet {
         Ok(())
     }
 
-    pub fn get_balance(&self) -> Result<bitcoin::Amount, Error> {
-        let mut balance = bitcoin::Amount::ZERO;
+    pub fn get_balance(&self) -> Result<Balance, Error> {
+        let mut balance = Balance::default();
         let txn = self.env.read_txn()?;
-        for item in self.utxos.iter(&txn)? {
-            let (_, utxo) = item?;
-            balance = balance
-                .checked_add(utxo.get_value())
-                .ok_or(AmountOverflowError)?;
-        }
+        let () = self
+            .utxos
+            .iter(&txn)?
+            .transpose_into_fallible()
+            .map_err(Error::from)
+            .for_each(|(_, utxo)| {
+                let value = utxo.get_value();
+                balance.total = balance
+                    .total
+                    .checked_add(value)
+                    .ok_or(AmountOverflowError)?;
+                if !utxo.content.is_withdrawal() {
+                    balance.available = balance
+                        .available
+                        .checked_add(value)
+                        .ok_or(AmountOverflowError)?;
+                }
+                Ok(())
+            })?;
         Ok(balance)
     }
 

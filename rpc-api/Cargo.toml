@@ -9,11 +9,11 @@ bitcoin = { version = "0.32.2", features = ["serde"] }
 jsonrpsee = { version = "0.23.2", features = ["macros"] }
 thunder = { path = "../lib" }
 serde_json = "1.0.113"
-utoipa = "4.2.3"
+utoipa = "5.2.0"
 
 [dependencies.l2l-openapi]
 git = "https://github.com/Ash-L2L/l2l-openapi"
-rev = "c1fe05fd3cc80220b5db3413adb5ffb85f2f302e"
+rev = "a3e84daa19fd7c1121346984c3ef85304a144792"
 
 [lib]
 name = "thunder_app_rpc_api"

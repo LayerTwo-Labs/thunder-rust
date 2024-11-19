@@ -4,107 +4,39 @@ use std::net::SocketAddr;
 
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use l2l_openapi::open_api;
-use thunder::types::{
-    Address, MerkleRoot, OutPoint, Output, OutputContent, PointedOutput, Txid,
+use thunder::{
+    types::{
+        schema as thunder_schema, Address, MerkleRoot, OutPoint, Output,
+        OutputContent, PointedOutput, Txid,
+    },
+    wallet::Balance,
 };
-use utoipa::{
-    openapi::{RefOr, Schema, SchemaType},
-    PartialSchema, ToSchema,
-};
 
-struct BitcoinAddrSchema;
-
-impl PartialSchema for BitcoinAddrSchema {
-    fn schema() -> RefOr<Schema> {
-        let obj = utoipa::openapi::Object::with_type(SchemaType::String);
-        RefOr::T(Schema::Object(obj))
-    }
-}
-
-impl ToSchema<'static> for BitcoinAddrSchema {
-    fn schema() -> (&'static str, RefOr<Schema>) {
-        ("bitcoin.Address", <Self as PartialSchema>::schema())
-    }
-}
-
-struct BitcoinAmountSchema;
-
-impl PartialSchema for BitcoinAmountSchema {
-    fn schema() -> RefOr<Schema> {
-        let obj = utoipa::openapi::Object::with_type(SchemaType::String);
-        RefOr::T(Schema::Object(obj))
-    }
-}
-
-struct BitcoinOutPointSchema;
-
-impl PartialSchema for BitcoinOutPointSchema {
-    fn schema() -> RefOr<Schema> {
-        let obj = utoipa::openapi::Object::new();
-        RefOr::T(Schema::Object(obj))
-    }
-}
-
-impl ToSchema<'static> for BitcoinOutPointSchema {
-    fn schema() -> (&'static str, RefOr<Schema>) {
-        ("bitcoin.OutPoint", <Self as PartialSchema>::schema())
-    }
-}
-
-struct BitcoinTxidSchema;
-
-impl PartialSchema for BitcoinTxidSchema {
-    fn schema() -> RefOr<Schema> {
-        let obj = utoipa::openapi::Object::with_type(SchemaType::String);
-        RefOr::T(Schema::Object(obj))
-    }
-}
-
-impl ToSchema<'static> for BitcoinTxidSchema {
-    fn schema() -> (&'static str, RefOr<Schema>) {
-        ("bitcoin.Txid", <Self as PartialSchema>::schema())
-    }
-}
-
-struct OpenApiSchema;
-
-impl PartialSchema for OpenApiSchema {
-    fn schema() -> RefOr<Schema> {
-        let obj = utoipa::openapi::Object::new();
-        RefOr::T(Schema::Object(obj))
-    }
-}
-
-struct SocketAddrSchema;
-
-impl PartialSchema for SocketAddrSchema {
-    fn schema() -> RefOr<Schema> {
-        let obj = utoipa::openapi::Object::with_type(SchemaType::String);
-        RefOr::T(Schema::Object(obj))
-    }
-}
+mod schema;
 
 #[open_api(ref_schemas[
-    Address, BitcoinAddrSchema, BitcoinOutPointSchema, BitcoinTxidSchema,
-    MerkleRoot, OutPoint, Output, OutputContent, Txid
+    Address, MerkleRoot, OutPoint, Output, OutputContent, Txid,
+    schema::BitcoinTxid, thunder_schema::BitcoinAddr,
+    thunder_schema::BitcoinOutPoint,
 ])]
 #[rpc(client, server)]
 pub trait Rpc {
     /// Get balance in sats
+    #[open_api_method(output_schema(ToSchema))]
     #[method(name = "balance")]
-    async fn balance(&self) -> RpcResult<u64>;
+    async fn balance(&self) -> RpcResult<Balance>;
 
     /// Connect to a peer
     #[open_api_method(output_schema(ToSchema))]
     #[method(name = "connect_peer")]
     async fn connect_peer(
         &self,
-        #[open_api_method_arg(schema(PartialSchema = "SocketAddrSchema"))]
+        #[open_api_method_arg(schema(PartialSchema = "schema::SocketAddr"))]
         addr: SocketAddr,
     ) -> RpcResult<()>;
 
     /// Deposit to address
-    #[open_api_method(output_schema(PartialSchema = "BitcoinTxidSchema"))]
+    #[open_api_method(output_schema(PartialSchema = "schema::BitcoinTxid"))]
     #[method(name = "create_deposit")]
     async fn create_deposit(
         &self,
@@ -150,7 +82,7 @@ pub trait Rpc {
     async fn mine(&self, fee: Option<u64>) -> RpcResult<()>;
 
     /// Get OpenAPI schema
-    #[open_api_method(output_schema(PartialSchema = "OpenApiSchema"))]
+    #[open_api_method(output_schema(PartialSchema = "schema::OpenApi"))]
     #[method(name = "openapi_schema")]
     async fn openapi_schema(&self) -> RpcResult<utoipa::openapi::OpenApi>;
 
@@ -165,9 +97,8 @@ pub trait Rpc {
     async fn set_seed_from_mnemonic(&self, mnemonic: String) -> RpcResult<()>;
 
     /// Get total sidechain wealth
-    #[open_api_method(output_schema(PartialSchema = "BitcoinAmountSchema"))]
     #[method(name = "sidechain_wealth")]
-    async fn sidechain_wealth(&self) -> RpcResult<bitcoin::Amount>;
+    async fn sidechain_wealth_sats(&self) -> RpcResult<u64>;
 
     /// Stop the node
     #[method(name = "stop")]
@@ -186,7 +117,9 @@ pub trait Rpc {
     #[method(name = "withdraw")]
     async fn withdraw(
         &self,
-        #[open_api_method_arg(schema(PartialSchema = "BitcoinAddrSchema"))]
+        #[open_api_method_arg(schema(
+            PartialSchema = "thunder::types::schema::BitcoinAddr"
+        ))]
         mainchain_address: bitcoin::Address<
             bitcoin::address::NetworkUnchecked,
         >,

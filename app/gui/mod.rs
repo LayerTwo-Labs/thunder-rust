@@ -81,7 +81,7 @@ impl BottomPanel {
     /// Updates values
     fn update(&mut self, app: &App) {
         self.balance = match app.wallet.get_balance() {
-            Ok(balance) => Some(Some(balance)),
+            Ok(balance) => Some(Some(balance.total)),
             Err(err) => {
                 let err = anyhow::Error::from(err);
                 tracing::error!("Failed to update balance: {err:#}");

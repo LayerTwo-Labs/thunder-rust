@@ -93,7 +93,7 @@ impl Cli {
         let res = match self.command {
             Command::Balance => {
                 let balance = rpc_client.balance().await?;
-                format!("{balance}")
+                serde_json::to_string_pretty(&balance)?
             }
             Command::ConnectPeer { addr } => {
                 let () = rpc_client.connect_peer(addr).await?;
@@ -151,7 +151,8 @@ impl Cli {
                 String::default()
             }
             Command::SidechainWealth => {
-                let sidechain_wealth = rpc_client.sidechain_wealth().await?;
+                let sidechain_wealth =
+                    rpc_client.sidechain_wealth_sats().await?;
                 format!("{sidechain_wealth}")
             }
             Command::Stop => {

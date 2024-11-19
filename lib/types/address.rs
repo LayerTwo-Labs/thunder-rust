@@ -1,6 +1,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeAs, DisplayFromStr};
+use utoipa::ToSchema;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AddressParseError {
@@ -11,8 +12,9 @@ pub enum AddressParseError {
 }
 
 #[derive(
-    BorshDeserialize, BorshSerialize, Clone, Copy, Eq, PartialEq, Hash,
+    BorshDeserialize, BorshSerialize, Clone, Copy, Eq, Hash, PartialEq, ToSchema,
 )]
+#[schema(value_type = String)]
 pub struct Address(pub [u8; 20]);
 
 impl Address {
@@ -76,23 +78,5 @@ impl Serialize for Address {
         } else {
             Serialize::serialize(&self.0, serializer)
         }
-    }
-}
-
-impl utoipa::PartialSchema for Address {
-    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-        let obj = utoipa::openapi::Object::with_type(
-            utoipa::openapi::SchemaType::String,
-        );
-        utoipa::openapi::RefOr::T(utoipa::openapi::Schema::Object(obj))
-    }
-}
-
-impl utoipa::ToSchema<'static> for Address {
-    fn schema() -> (
-        &'static str,
-        utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
-    ) {
-        ("Address", <Address as utoipa::PartialSchema>::schema())
     }
 }

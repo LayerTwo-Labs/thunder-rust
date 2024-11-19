@@ -46,7 +46,7 @@ tokio-stream = { version = "0.1.15", features = ["sync"] }
 tokio-util = { version = "0.7.10", features = ["rt"] }
 tonic = "0.12.3"
 tracing = "0.1.40"
-utoipa = "4.2.3"
+utoipa = { version = "5.2.0", features = ["non_strict_integers"] }
 
 [lib]
 name = "thunder"

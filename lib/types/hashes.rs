@@ -77,7 +77,7 @@ impl std::fmt::Debug for BlockHash {
     PartialOrd,
     Serialize,
 )]
-pub struct MerkleRoot(Hash);
+pub struct MerkleRoot(#[serde(with = "serde_hexstr_human_readable")] Hash);
 
 impl From<Hash> for MerkleRoot {
     fn from(other: Hash) -> Self {
@@ -105,22 +105,15 @@ impl std::fmt::Debug for MerkleRoot {
 
 impl utoipa::PartialSchema for MerkleRoot {
     fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-        let obj = utoipa::openapi::Object::with_type(
-            utoipa::openapi::SchemaType::String,
-        );
+        let obj =
+            utoipa::openapi::Object::with_type(utoipa::openapi::Type::String);
         utoipa::openapi::RefOr::T(utoipa::openapi::Schema::Object(obj))
     }
 }
 
-impl utoipa::ToSchema<'static> for MerkleRoot {
-    fn schema() -> (
-        &'static str,
-        utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
-    ) {
-        (
-            "MerkleRoot",
-            <MerkleRoot as utoipa::PartialSchema>::schema(),
-        )
+impl utoipa::ToSchema for MerkleRoot {
+    fn name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("MerkleRoot")
     }
 }
 
@@ -186,19 +179,15 @@ impl FromStr for Txid {
 
 impl utoipa::PartialSchema for Txid {
     fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-        let obj = utoipa::openapi::Object::with_type(
-            utoipa::openapi::SchemaType::String,
-        );
+        let obj =
+            utoipa::openapi::Object::with_type(utoipa::openapi::Type::String);
         utoipa::openapi::RefOr::T(utoipa::openapi::Schema::Object(obj))
     }
 }
 
-impl utoipa::ToSchema<'static> for Txid {
-    fn schema() -> (
-        &'static str,
-        utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
-    ) {
-        ("Txid", <Txid as utoipa::PartialSchema>::schema())
+impl utoipa::ToSchema for Txid {
+    fn name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("Txid")
     }
 }
 

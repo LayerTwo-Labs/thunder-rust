@@ -350,7 +350,11 @@ async fn regtest_test() -> anyhow::Result<()> {
     // Verify that there are no deposits on Thunder
     {
         let balance = thunderd_client.balance().await?;
-        anyhow::ensure!(balance == 0, "Expected 0 balance, but got {balance}");
+        anyhow::ensure!(
+            balance.total == bitcoin::Amount::ZERO,
+            "Expected 0 balance, but got {}",
+            balance.total
+        );
     }
     // Mine a BMM block to process the deposit
     let () = mine_thunder_block(
@@ -363,7 +367,10 @@ async fn regtest_test() -> anyhow::Result<()> {
     // Verify that the deposit was successful
     {
         let balance = thunderd_client.balance().await?;
-        anyhow::ensure!(balance > 0, "Expected positive balance");
+        anyhow::ensure!(
+            balance.total > bitcoin::Amount::ZERO,
+            "Expected positive balance"
+        );
     }
 
     /* Clean up */

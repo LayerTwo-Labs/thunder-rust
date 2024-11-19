@@ -12,6 +12,7 @@ use thiserror::Error;
 mod address;
 pub mod hashes;
 pub mod proto;
+pub mod schema;
 mod transaction;
 
 pub use address::Address;

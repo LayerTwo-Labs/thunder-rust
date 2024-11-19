@@ -9,7 +9,7 @@ use jsonrpsee::{
 use thunder::{
     node,
     types::{Address, PointedOutput, Txid},
-    wallet,
+    wallet::{self, Balance},
 };
 use thunder_app_rpc_api::RpcServer;
 
@@ -47,11 +47,8 @@ fn convert_wallet_err(err: wallet::Error) -> ErrorObject<'static> {
 
 #[async_trait]
 impl RpcServer for RpcServerImpl {
-    async fn balance(&self) -> RpcResult<u64> {
-        match self.app.wallet.get_balance() {
-            Ok(balance) => Ok(balance.to_sat()),
-            Err(err) => Err(convert_wallet_err(err)),
-        }
+    async fn balance(&self) -> RpcResult<Balance> {
+        self.app.wallet.get_balance().map_err(convert_wallet_err)
     }
 
     async fn create_deposit(
@@ -167,11 +164,13 @@ impl RpcServer for RpcServerImpl {
             .map_err(convert_wallet_err)
     }
 
-    async fn sidechain_wealth(&self) -> RpcResult<bitcoin::Amount> {
-        self.app
+    async fn sidechain_wealth_sats(&self) -> RpcResult<u64> {
+        let sidechain_wealth = self
+            .app
             .node
             .get_sidechain_wealth()
-            .map_err(convert_node_err)
+            .map_err(convert_node_err)?;
+        Ok(sidechain_wealth.to_sat())
     }
 
     async fn stop(&self) {
