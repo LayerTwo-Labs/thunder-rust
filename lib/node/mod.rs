@@ -109,11 +109,8 @@ where
     let two_way_peg_data = mainchain
         .get_two_way_peg_data(last_known_deposit_info, block_hash)
         .await?;
-    let mut block_deposits = LinkedHashMap::<_, _>::from_iter(
-        two_way_peg_data
-            .deposits()
-            .map(|(block_hash, deposits)| (block_hash, deposits.clone())),
-    );
+    let mut block_deposits =
+        LinkedHashMap::<_, _>::from_iter(two_way_peg_data.into_deposits());
     let mut rwtxn = env.write_txn()?;
     let () = archive
         .main_ancestors(&rwtxn, block_hash)

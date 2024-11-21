@@ -226,7 +226,7 @@ pub mod mainchain {
         self, hashes::Hash as _, BlockHash, Network, OutPoint, Transaction,
         Txid, Work,
     };
-    use futures::{stream::BoxStream, StreamExt as _};
+    use futures::{stream::BoxStream, StreamExt as _, TryStreamExt as _};
     use hashlink::LinkedHashMap;
     use serde::{Deserialize, Serialize};
     use thiserror::Error;
@@ -444,9 +444,10 @@ pub mod mainchain {
             match event {
                 Event::Failed(Failed {}) => Self::Failed,
                 Event::Submitted(Submitted {}) => Self::Submitted,
-                Event::Succeeded(Succeeded { transaction: _ }) => {
-                    Self::Confirmed
-                }
+                Event::Succeeded(Succeeded {
+                    sequence_number: _,
+                    transaction: _,
+                }) => Self::Confirmed,
             }
         }
     }
@@ -492,12 +493,88 @@ pub mod mainchain {
         }
     }
 
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    pub enum BlockEvent {
+        Deposit(Deposit),
+        WithdrawalBundle(crate::types::WithdrawalBundleEvent),
+    }
+
+    impl From<Deposit> for BlockEvent {
+        fn from(deposit: Deposit) -> Self {
+            Self::Deposit(deposit)
+        }
+    }
+
+    impl From<crate::types::WithdrawalBundleEvent> for BlockEvent {
+        fn from(bundle_event: crate::types::WithdrawalBundleEvent) -> Self {
+            Self::WithdrawalBundle(bundle_event)
+        }
+    }
+
+    impl TryFrom<generated::block_info::event::Event> for BlockEvent {
+        type Error = super::Error;
+
+        fn try_from(
+            event: generated::block_info::event::Event,
+        ) -> Result<Self, Self::Error> {
+            use generated::block_info::event::Event;
+            match event {
+                Event::Deposit(deposit) => {
+                    Ok(BlockEvent::Deposit(deposit.try_into()?))
+                }
+                Event::WithdrawalBundle(bundle_event) => {
+                    Ok(BlockEvent::WithdrawalBundle(bundle_event.try_into()?))
+                }
+            }
+        }
+    }
+
+    impl TryFrom<generated::block_info::Event> for BlockEvent {
+        type Error = super::Error;
+
+        fn try_from(
+            event: generated::block_info::Event,
+        ) -> Result<Self, Self::Error> {
+            use generated::block_info::Event;
+            let Event { event } = event;
+            event
+                .ok_or_else(|| Self::Error::missing_field::<Event>("event"))?
+                .try_into()
+        }
+    }
+
     #[derive(Clone, Debug, Default, Deserialize, Serialize)]
     pub struct BlockInfo {
-        pub deposits: Vec<Deposit>,
-        pub withdrawal_bundle_events:
-            Vec<(M6id, crate::types::WithdrawalBundleEvent)>,
         pub bmm_commitment: Option<crate::types::BlockHash>,
+        pub events: Vec<BlockEvent>,
+    }
+
+    impl BlockInfo {
+        pub fn deposits(&self) -> impl DoubleEndedIterator<Item = &Deposit> {
+            self.events.iter().filter_map(|event| match event {
+                BlockEvent::Deposit(deposit) => Some(deposit),
+                BlockEvent::WithdrawalBundle(_) => None,
+            })
+        }
+
+        pub fn into_deposits(self) -> impl DoubleEndedIterator<Item = Deposit> {
+            self.events.into_iter().filter_map(|event| match event {
+                BlockEvent::Deposit(deposit) => Some(deposit),
+                BlockEvent::WithdrawalBundle(_) => None,
+            })
+        }
+
+        pub fn withdrawal_bundle_events(
+            &self,
+        ) -> impl DoubleEndedIterator<Item = &crate::types::WithdrawalBundleEvent>
+        {
+            self.events.iter().filter_map(|event| match event {
+                BlockEvent::WithdrawalBundle(bundle_event) => {
+                    Some(bundle_event)
+                }
+                BlockEvent::Deposit(_) => None,
+            })
+        }
     }
 
     impl TryFrom<generated::BlockInfo> for BlockInfo {
@@ -507,24 +584,9 @@ pub mod mainchain {
             block_info: generated::BlockInfo,
         ) -> Result<Self, Self::Error> {
             let generated::BlockInfo {
-                deposits,
-                withdrawal_bundle_events,
                 bmm_commitment,
+                events,
             } = block_info;
-            let deposits = deposits
-                .into_iter()
-                .map(|deposit| deposit.try_into())
-                .collect::<Result<Vec<Deposit>, _>>()?;
-            let withdrawal_bundle_events = withdrawal_bundle_events
-                .into_iter()
-                .map(|withdrawal_bundle_event| {
-                    let withdrawal_bundle_event =
-                        crate::types::WithdrawalBundleEvent::try_from(
-                            withdrawal_bundle_event,
-                        )?;
-                    Ok((withdrawal_bundle_event.m6id, withdrawal_bundle_event))
-                })
-                .collect::<Result<_, Self::Error>>()?;
             let bmm_commitment = bmm_commitment
                 .map(|bmm_commitment| {
                     bmm_commitment
@@ -532,10 +594,13 @@ pub mod mainchain {
                         .map(crate::types::BlockHash)
                 })
                 .transpose()?;
+            let events = events
+                .into_iter()
+                .map(BlockEvent::try_from)
+                .collect::<Result<_, Self::Error>>()?;
             Ok(Self {
-                deposits,
-                withdrawal_bundle_events,
                 bmm_commitment,
+                events,
             })
         }
     }
@@ -548,15 +613,30 @@ pub mod mainchain {
     impl TwoWayPegData {
         pub fn deposits(
             &self,
-        ) -> impl DoubleEndedIterator<Item = (BlockHash, &Vec<Deposit>)>
+        ) -> impl DoubleEndedIterator<Item = (BlockHash, Vec<&Deposit>)>
+        {
+            self.block_info.iter().flat_map(|(block_hash, block_info)| {
+                let deposits: Vec<_> = block_info.deposits().collect();
+                if deposits.is_empty() {
+                    None
+                } else {
+                    Some((*block_hash, deposits))
+                }
+            })
+        }
+
+        pub fn into_deposits(
+            self,
+        ) -> impl DoubleEndedIterator<Item = (BlockHash, Vec<Deposit>)>
         {
             self.block_info
-                .iter()
-                .filter_map(|(block_hash, block_info)| {
-                    if block_info.deposits.is_empty() {
+                .into_iter()
+                .flat_map(|(block_hash, block_info)| {
+                    let deposits: Vec<_> = block_info.into_deposits().collect();
+                    if deposits.is_empty() {
                         None
                     } else {
-                        Some((*block_hash, &block_info.deposits))
+                        Some((block_hash, deposits))
                     }
                 })
         }
@@ -564,17 +644,12 @@ pub mod mainchain {
         pub fn withdrawal_bundle_events(
             &self,
         ) -> impl DoubleEndedIterator<
-            Item = (
-                &'_ BlockHash,
-                &'_ M6id,
-                &'_ crate::types::WithdrawalBundleEvent,
-            ),
+            Item = (&'_ BlockHash, &'_ crate::types::WithdrawalBundleEvent),
         > + '_ {
             self.block_info.iter().flat_map(|(block_hash, block_info)| {
                 block_info
-                    .withdrawal_bundle_events
-                    .iter()
-                    .map(move |(m6id, event)| (block_hash, m6id, event))
+                    .withdrawal_bundle_events()
+                    .map(move |event| (block_hash, event))
             })
         }
 
@@ -591,7 +666,7 @@ pub mod mainchain {
         ) -> Option<&BlockHash> {
             self.withdrawal_bundle_events()
                 .next_back()
-                .map(|(block_hash, _, _)| block_hash)
+                .map(|(block_hash, _)| block_hash)
         }
     }
 
@@ -1003,8 +1078,13 @@ pub mod mainchain {
                 blocks: Some(blocks),
                 ack_all_proposals: true,
             };
-            let generated::GenerateBlocksResponse {} =
-                self.0.generate_blocks(request).await?.into_inner();
+            let _resp: Vec<generated::GenerateBlocksResponse> = self
+                .0
+                .generate_blocks(request)
+                .await?
+                .into_inner()
+                .try_collect()
+                .await?;
             Ok(())
         }
     }

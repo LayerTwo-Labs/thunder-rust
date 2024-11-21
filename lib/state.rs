@@ -738,14 +738,14 @@ impl State {
                 );
             }
         }
-        for (_, m6id, event) in two_way_peg_data.withdrawal_bundle_events() {
+        for (_, event) in two_way_peg_data.withdrawal_bundle_events() {
             match event.status {
                 WithdrawalBundleStatus::Submitted => {
                     let Some((bundle, bundle_block_height)) =
                         self.pending_withdrawal_bundle.get(rwtxn, &UnitKey)?
                     else {
                         if let Some((_bundle, bundle_status)) =
-                            self.withdrawal_bundles.get(rwtxn, m6id)?
+                            self.withdrawal_bundles.get(rwtxn, &event.m6id)?
                         {
                             // Already applied
                             assert_eq!(
@@ -755,22 +755,22 @@ impl State {
                             continue;
                         }
                         return Err(Error::UnknownWithdrawalBundle {
-                            m6id: *m6id,
+                            m6id: event.m6id,
                         });
                     };
                     assert_eq!(bundle_block_height, block_height - 2);
-                    if bundle.compute_m6id() != *m6id {
+                    if bundle.compute_m6id() != event.m6id {
                         return Err(Error::UnknownWithdrawalBundle {
-                            m6id: *m6id,
+                            m6id: event.m6id,
                         });
                     }
                     tracing::debug!(
-                        %m6id,
+                        m6id = %event.m6id,
                         "Withdrawal bundle successfully submitted"
                     );
                     self.withdrawal_bundles.put(
                         rwtxn,
-                        m6id,
+                        &event.m6id,
                         &(
                             bundle,
                             RollBack::new(
@@ -783,10 +783,10 @@ impl State {
                 }
                 WithdrawalBundleStatus::Confirmed => {
                     let Some((bundle, mut bundle_status)) =
-                        self.withdrawal_bundles.get(rwtxn, m6id)?
+                        self.withdrawal_bundles.get(rwtxn, &event.m6id)?
                     else {
                         return Err(Error::UnknownWithdrawalBundle {
-                            m6id: *m6id,
+                            m6id: event.m6id,
                         });
                     };
                     if bundle_status.latest().value
@@ -805,16 +805,16 @@ impl State {
                         .expect("Push confirmed status should be valid");
                     self.withdrawal_bundles.put(
                         rwtxn,
-                        m6id,
+                        &event.m6id,
                         &(bundle, bundle_status),
                     )?;
                 }
                 WithdrawalBundleStatus::Failed => {
                     let Some((bundle, mut bundle_status)) =
-                        self.withdrawal_bundles.get(rwtxn, m6id)?
+                        self.withdrawal_bundles.get(rwtxn, &event.m6id)?
                     else {
                         return Err(Error::UnknownWithdrawalBundle {
-                            m6id: *m6id,
+                            m6id: event.m6id,
                         });
                     };
                     if bundle_status.latest().value
@@ -846,13 +846,13 @@ impl State {
                             .get(rwtxn, &UnitKey)?
                         {
                             latest_failed_m6id
-                                .push(*m6id, block_height)
+                                .push(event.m6id, block_height)
                                 .expect(
                                     "Push latest failed m6id should be valid",
                                 );
                             latest_failed_m6id
                         } else {
-                            RollBack::new(*m6id, block_height)
+                            RollBack::new(event.m6id, block_height)
                         };
                     self.latest_failed_withdrawal_bundle.put(
                         rwtxn,
@@ -861,7 +861,7 @@ impl State {
                     )?;
                     self.withdrawal_bundles.put(
                         rwtxn,
-                        m6id,
+                        &event.m6id,
                         &(bundle, bundle_status),
                     )?;
                 }
@@ -893,24 +893,22 @@ impl State {
         let mut accumulator_del = HashSet::<NodeHash>::new();
 
         // Restore pending withdrawal bundle
-        for (_, m6id, event) in
-            two_way_peg_data.withdrawal_bundle_events().rev()
-        {
+        for (_, event) in two_way_peg_data.withdrawal_bundle_events().rev() {
             match event.status {
                 WithdrawalBundleStatus::Submitted => {
                     let Some((bundle, bundle_status)) =
-                        self.withdrawal_bundles.get(rwtxn, m6id)?
+                        self.withdrawal_bundles.get(rwtxn, &event.m6id)?
                     else {
                         if let Some((bundle, _)) = self
                             .pending_withdrawal_bundle
                             .get(rwtxn, &UnitKey)?
-                            && bundle.compute_m6id() == *m6id
+                            && bundle.compute_m6id() == event.m6id
                         {
                             // Already applied
                             continue;
                         }
                         return Err(Error::UnknownWithdrawalBundle {
-                            m6id: *m6id,
+                            m6id: event.m6id,
                         });
                     };
                     let bundle_status = bundle_status.latest();
@@ -924,14 +922,14 @@ impl State {
                         &UnitKey,
                         &(bundle, bundle_status.height - 2),
                     )?;
-                    self.withdrawal_bundles.delete(rwtxn, m6id)?;
+                    self.withdrawal_bundles.delete(rwtxn, &event.m6id)?;
                 }
                 WithdrawalBundleStatus::Confirmed => {
                     let Some((bundle, bundle_status)) =
-                        self.withdrawal_bundles.get(rwtxn, m6id)?
+                        self.withdrawal_bundles.get(rwtxn, &event.m6id)?
                     else {
                         return Err(Error::UnknownWithdrawalBundle {
-                            m6id: *m6id,
+                            m6id: event.m6id,
                         });
                     };
                     let (prev_bundle_status, latest_bundle_status) =
@@ -956,16 +954,16 @@ impl State {
                     );
                     self.withdrawal_bundles.put(
                         rwtxn,
-                        m6id,
+                        &event.m6id,
                         &(bundle, prev_bundle_status),
                     )?;
                 }
                 WithdrawalBundleStatus::Failed => {
                     let Some((bundle, bundle_status)) =
-                        self.withdrawal_bundles.get(rwtxn, m6id)?
+                        self.withdrawal_bundles.get(rwtxn, &event.m6id)?
                     else {
                         return Err(Error::UnknownWithdrawalBundle {
-                            m6id: *m6id,
+                            m6id: event.m6id,
                         });
                     };
                     let (prev_bundle_status, latest_bundle_status) =
@@ -992,7 +990,7 @@ impl State {
                     {
                         let spent_output = SpentOutput {
                             output: output.clone(),
-                            inpoint: InPoint::Withdrawal { m6id: *m6id },
+                            inpoint: InPoint::Withdrawal { m6id: event.m6id },
                         };
                         self.stxos.put(rwtxn, outpoint, &spent_output)?;
                         if self.utxos.delete(rwtxn, outpoint)? {
@@ -1008,7 +1006,7 @@ impl State {
                     }
                     self.withdrawal_bundles.put(
                         rwtxn,
-                        m6id,
+                        &event.m6id,
                         &(bundle, prev_bundle_status),
                     )?;
                     let (prev_latest_failed_m6id, latest_failed_m6id) = self
@@ -1016,7 +1014,7 @@ impl State {
                         .get(rwtxn, &UnitKey)?
                         .expect("latest failed withdrawal bundle should exist")
                         .pop();
-                    assert_eq!(latest_failed_m6id.value, *m6id);
+                    assert_eq!(latest_failed_m6id.value, event.m6id);
                     assert_eq!(latest_failed_m6id.height, block_height);
                     if let Some(prev_latest_failed_m6id) =
                         prev_latest_failed_m6id
