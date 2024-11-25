@@ -46,8 +46,6 @@ pub enum Error {
     AmountUnderflow(#[from] AmountUnderflowError),
     #[error("archive error")]
     Archive(#[from] archive::Error),
-    #[error("bincode error")]
-    Bincode(#[from] bincode::Error),
     #[error("CUSF mainchain proto error")]
     CusfMainchain(#[from] proto::Error),
     #[error("heed error")]

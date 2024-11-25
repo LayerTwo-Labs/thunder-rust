@@ -91,10 +91,10 @@ pub enum Error {
     AmountOverflow(#[from] AmountOverflowError),
     #[error(transparent)]
     AmountUnderflow(#[from] AmountUnderflowError),
-    #[error("binvode error")]
-    Bincode(#[from] bincode::Error),
     #[error("body too large")]
     BodyTooLarge,
+    #[error(transparent)]
+    BorshSerialize(borsh::io::Error),
     #[error("invalid body: expected merkle root {expected}, but computed {computed}")]
     InvalidBody {
         expected: MerkleRoot,
@@ -505,7 +505,9 @@ impl State {
         if body.authorizations.len() > Self::body_sigops_limit(height) {
             return Err(Error::TooManySigops);
         }
-        if bincode::serialize(&body)?.len() > Self::body_size_limit(height) {
+        let body_size =
+            borsh::object_length(&body).map_err(Error::BorshSerialize)?;
+        if body_size > Self::body_size_limit(height) {
             return Err(Error::BodyTooLarge);
         }
         let mut accumulator = self

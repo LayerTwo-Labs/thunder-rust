@@ -421,7 +421,7 @@ pub struct AuthorizedTransaction {
     pub authorizations: Vec<Authorization>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize)]
 pub struct Body {
     pub coinbase: Vec<Output>,
     pub transactions: Vec<Transaction>,
