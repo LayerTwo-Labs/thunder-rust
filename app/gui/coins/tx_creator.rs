@@ -1,4 +1,4 @@
-use eframe::egui;
+use eframe::egui::{self, Button};
 
 use thunder::types::{Transaction, Txid};
 
@@ -22,7 +22,7 @@ fn send_tx(app: &App, tx: &mut Transaction) -> anyhow::Result<()> {
 impl TxCreator {
     pub fn show(
         &mut self,
-        app: &mut App,
+        app: Option<&App>,
         ui: &mut egui::Ui,
         base_tx: &mut Transaction,
     ) -> anyhow::Result<()> {
@@ -48,8 +48,11 @@ impl TxCreator {
         if self.value_in >= self.value_out {
             let fee = self.value_in - self.value_out;
             ui.monospace(format!("fee:  {fee}"));
-            if ui.button("sign and send").clicked() {
-                if let Err(err) = send_tx(app, final_tx) {
+            if ui
+                .add_enabled(app.is_some(), Button::new("sign and send"))
+                .clicked()
+            {
+                if let Err(err) = send_tx(app.unwrap(), final_tx) {
                     tracing::error!("{err:#}");
                 } else {
                     *base_tx = Transaction::default();

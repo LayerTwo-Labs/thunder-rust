@@ -1,4 +1,4 @@
-use eframe::egui;
+use eframe::egui::{self, Button};
 use futures::FutureExt;
 use thunder::types::proto::mainchain;
 
@@ -10,7 +10,7 @@ struct Inner {
     sidechain_wealth: bitcoin::Amount,
 }
 
-pub(super) struct Info(anyhow::Result<Inner>);
+pub(super) struct Info(Option<anyhow::Result<Inner>>);
 
 impl Info {
     fn get_parent_chain_info(app: &App) -> anyhow::Result<Inner> {
@@ -25,27 +25,35 @@ impl Info {
         })
     }
 
-    pub fn new(app: &App) -> Self {
-        let inner = Self::get_parent_chain_info(app)
-            .inspect_err(|err| tracing::error!("{err:#}"));
+    pub fn new(app: Option<&App>) -> Self {
+        let inner = app.map(|app| {
+            Self::get_parent_chain_info(app)
+                .inspect_err(|err| tracing::error!("{err:#}"))
+        });
         Self(inner)
     }
 
     fn refresh_parent_chain_info(&mut self, app: &App) {
-        self.0 = Self::get_parent_chain_info(app)
-            .inspect_err(|err| tracing::error!("{err:#}"));
+        self.0 = Some(
+            Self::get_parent_chain_info(app)
+                .inspect_err(|err| tracing::error!("{err:#}")),
+        );
     }
 
-    pub fn show(&mut self, app: &mut App, ui: &mut egui::Ui) {
-        if ui.button("Refresh").clicked() {
-            let () = self.refresh_parent_chain_info(app);
+    pub fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
+        if ui
+            .add_enabled(app.is_some(), Button::new("Refresh"))
+            .clicked()
+        {
+            let () = self.refresh_parent_chain_info(app.unwrap());
         }
         let parent_chain_info = match self.0.as_ref() {
-            Ok(parent_chain_info) => parent_chain_info,
-            Err(err) => {
+            Some(Ok(parent_chain_info)) => parent_chain_info,
+            Some(Err(err)) => {
                 ui.monospace_selectable_multiline(format!("{err:#}"));
                 return;
             }
+            None => return,
         };
         ui.horizontal(|ui| {
             ui.monospace("Mainchain tip hash: ");

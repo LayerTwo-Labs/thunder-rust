@@ -89,7 +89,7 @@ impl ConsoleLogs {
         });
     }
 
-    pub fn show(&mut self, app: &App, ui: &mut egui::Ui) {
+    pub fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
         ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
             let line_buffer_read = self.line_buffer.as_str();
             let mut logs: &str = &line_buffer_read;
@@ -106,7 +106,8 @@ impl ConsoleLogs {
                 .hint_text("help")
                 .return_key(SHIFT_ENTER);
             let command_input_resp = ui.add_enabled(
-                !self.running_command.load(atomic::Ordering::SeqCst),
+                app.is_some()
+                    && !self.running_command.load(atomic::Ordering::SeqCst),
                 command_input,
             );
             if command_input_resp.ctx.input_mut(|input| {
@@ -114,7 +115,7 @@ impl ConsoleLogs {
                     && input.consume_key(Modifiers::NONE, Key::Enter)
                     && !self.running_command.load(atomic::Ordering::SeqCst)
             }) {
-                self.console_command(app);
+                self.console_command(app.unwrap());
             }
         });
     }

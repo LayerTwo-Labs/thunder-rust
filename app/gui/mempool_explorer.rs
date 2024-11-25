@@ -10,9 +10,13 @@ pub struct MemPoolExplorer {
 }
 
 impl MemPoolExplorer {
-    pub fn show(&mut self, app: &mut App, ui: &mut egui::Ui) {
-        let transactions = app.node.get_all_transactions().unwrap_or_default();
-        let utxos = app.wallet.get_utxos().unwrap_or_default();
+    pub fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
+        let transactions = app
+            .and_then(|app| app.node.get_all_transactions().ok())
+            .unwrap_or_default();
+        let utxos = app
+            .and_then(|app| app.wallet.get_utxos().ok())
+            .unwrap_or_default();
         egui::SidePanel::left("transaction_picker")
             .resizable(false)
             .show_inside(ui, |ui| {

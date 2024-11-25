@@ -19,11 +19,13 @@ impl BlockExplorer {
         Self { height }
     }
 
-    pub fn show(&mut self, app: &mut App, ui: &mut egui::Ui) {
-        let max_height = app.node.get_height().unwrap_or(0);
+    pub fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
+        let max_height =
+            app.and_then(|app| app.node.get_height().ok()).unwrap_or(0);
         let block: Option<(Header, Body)> = {
-            if let Ok(Some(block_hash)) =
-                app.node.try_get_block_hash(self.height)
+            if let Some(app) = app
+                && let Ok(Some(block_hash)) =
+                    app.node.try_get_block_hash(self.height)
                 && let Ok(header) = app.node.get_header(block_hash)
                 && let Ok(body) = app.node.get_body(block_hash)
             {
@@ -97,8 +99,9 @@ impl BlockExplorer {
                 let body_sigops_limit = State::body_sigops_limit(self.height);
                 ui.monospace(format!("Body sigops limit: {body_sigops_limit}"));
 
-                if let Ok(Some(acc)) =
-                    app.node.try_get_accumulator(header.hash())
+                if let Some(app) = app
+                    && let Ok(Some(acc)) =
+                        app.node.try_get_accumulator(header.hash())
                 {
                     ui.monospace_selectable_multiline(format!(
                         "Utreexo accumulator: \n{}",

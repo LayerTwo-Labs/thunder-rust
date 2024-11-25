@@ -1,4 +1,4 @@
-use eframe::egui;
+use eframe::egui::{self, Button};
 use thunder::types::Address;
 
 use crate::{app::App, gui::util::UiExt};
@@ -25,7 +25,7 @@ fn create_transfer(
 }
 
 impl Transfer {
-    fn show(&mut self, app: &App, ui: &mut egui::Ui) {
+    fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
         ui.add_sized((250., 10.), |ui: &mut egui::Ui| {
             ui.horizontal(|ui| {
                 let dest_edit = egui::TextEdit::singleline(&mut self.dest)
@@ -66,13 +66,16 @@ impl Transfer {
         );
         if ui
             .add_enabled(
-                dest.is_some() && amount.is_ok() && fee.is_ok(),
+                app.is_some()
+                    && dest.is_some()
+                    && amount.is_ok()
+                    && fee.is_ok(),
                 egui::Button::new("transfer"),
             )
             .clicked()
         {
             if let Err(err) = create_transfer(
-                app,
+                app.unwrap(),
                 dest.expect("should not happen"),
                 amount.expect("should not happen"),
                 fee.expect("should not happen"),
@@ -87,29 +90,38 @@ impl Transfer {
 
 #[derive(Debug)]
 struct Receive {
-    address: anyhow::Result<Address>,
+    address: Option<anyhow::Result<Address>>,
 }
 
 impl Receive {
-    fn new(app: &App) -> Self {
+    fn new(app: Option<&App>) -> Self {
+        let Some(app) = app else {
+            return Self { address: None };
+        };
         let address = app
             .wallet
             .get_new_address()
             .map_err(anyhow::Error::from)
             .inspect_err(|err| tracing::error!("{err:#}"));
-        Self { address }
+        Self {
+            address: Some(address),
+        }
     }
 
-    fn show(&mut self, app: &App, ui: &mut egui::Ui) {
+    fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
         match &self.address {
-            Ok(address) => {
+            Some(Ok(address)) => {
                 ui.monospace_selectable_singleline(false, address.to_string());
             }
-            Err(err) => {
+            Some(Err(err)) => {
                 ui.monospace_selectable_multiline(format!("{err:#}"));
             }
+            None => (),
         }
-        if ui.button("generate").clicked() {
+        if ui
+            .add_enabled(app.is_some(), Button::new("generate"))
+            .clicked()
+        {
             *self = Self::new(app)
         }
     }
@@ -122,14 +134,14 @@ pub(super) struct TransferReceive {
 }
 
 impl TransferReceive {
-    pub fn new(app: &App) -> Self {
+    pub fn new(app: Option<&App>) -> Self {
         Self {
             transfer: Transfer::default(),
             receive: Receive::new(app),
         }
     }
 
-    pub fn show(&mut self, app: &mut App, ui: &mut egui::Ui) {
+    pub fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
         egui::SidePanel::left("transfer")
             .exact_width(ui.available_width() / 2.)
             .resizable(false)

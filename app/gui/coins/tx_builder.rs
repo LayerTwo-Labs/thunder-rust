@@ -21,8 +21,11 @@ pub struct TxBuilder {
 }
 
 impl TxBuilder {
-    pub fn show_value_in(&mut self, app: &mut App, ui: &mut egui::Ui) {
+    pub fn show_value_in(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
         ui.heading("Value In");
+        let Some(app) = app else {
+            return;
+        };
         let selected: HashSet<_> = self
             .base_tx
             .inputs
@@ -102,7 +105,7 @@ impl TxBuilder {
 
     pub fn show(
         &mut self,
-        app: &mut App,
+        app: Option<&App>,
         ui: &mut egui::Ui,
     ) -> anyhow::Result<()> {
         egui::SidePanel::left("spend_utxo")

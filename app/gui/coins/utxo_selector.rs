@@ -13,22 +13,28 @@ pub struct UtxoSelector;
 impl UtxoSelector {
     pub fn show(
         &mut self,
-        app: &mut App,
+        app: Option<&App>,
         ui: &mut egui::Ui,
         tx: &mut Transaction,
     ) {
         ui.heading("Spend UTXO");
         let selected: HashSet<_> =
             tx.inputs.iter().map(|(outpoint, _)| *outpoint).collect();
-        let utxos_read = app.utxos.read();
-        let total: bitcoin::Amount = utxos_read
-            .iter()
-            .filter(|(outpoint, _)| !selected.contains(outpoint))
-            .map(|(_, output)| output.get_value())
-            .sum();
-        let mut utxos: Vec<_> = (*utxos_read).clone().into_iter().collect();
-        drop(utxos_read);
-        utxos.sort_by_key(|(outpoint, _)| format!("{outpoint}"));
+        let (total, utxos): (bitcoin::Amount, Vec<_>) = app
+            .map(|app| {
+                let utxos_read = app.utxos.read();
+                let total: bitcoin::Amount = utxos_read
+                    .iter()
+                    .filter(|(outpoint, _)| !selected.contains(outpoint))
+                    .map(|(_, output)| output.get_value())
+                    .sum();
+                let mut utxos: Vec<_> =
+                    (*utxos_read).clone().into_iter().collect();
+                drop(utxos_read);
+                utxos.sort_by_key(|(outpoint, _)| format!("{outpoint}"));
+                (total, utxos)
+            })
+            .unwrap_or_default();
         ui.separator();
         ui.monospace(format!("Total: {}", total));
         ui.separator();

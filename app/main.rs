@@ -93,13 +93,18 @@ fn main() -> anyhow::Result<()> {
     let config = cli.get_config()?;
     let (line_buffer, _rolling_log_guard) =
         set_tracing_subscriber(config.log_dir.as_deref(), config.log_level)?;
-    let app = app::App::new(&config)?;
-    // spawn rpc server
-    app.runtime.spawn({
-        let app = app.clone();
-        async move { rpc_server::run_server(app, config.rpc_addr).await.unwrap() }
-    });
+    let app: Result<app::App, app::Error> =
+        app::App::new(&config).inspect(|app| {
+            // spawn rpc server
+            app.runtime.spawn({
+                let app = app.clone();
+                async move {
+                    rpc_server::run_server(app, config.rpc_addr).await.unwrap()
+                }
+            });
+        });
     if config.headless {
+        let _app = app?;
         // wait for ctrlc signal
         let (tx, rx) = mpsc::channel();
         ctrlc::set_handler(move || {
@@ -110,6 +115,14 @@ fn main() -> anyhow::Result<()> {
         println!("Received Ctrl-C signal, exiting...");
     } else {
         let native_options = eframe::NativeOptions::default();
+        let app: Option<_> = app.map_or_else(
+            |err| {
+                let err = anyhow::Error::from(err);
+                tracing::error!("{err:#}");
+                None
+            },
+            Some,
+        );
         eframe::run_native(
             "Thunder",
             native_options,

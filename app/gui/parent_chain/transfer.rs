@@ -1,4 +1,4 @@
-use eframe::egui;
+use eframe::egui::{self, Button};
 
 use crate::app::App;
 
@@ -9,7 +9,7 @@ pub struct Deposit {
 }
 
 impl Deposit {
-    pub fn show(&mut self, app: &mut App, ui: &mut egui::Ui) {
+    pub fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
         ui.add_sized((110., 10.), |ui: &mut egui::Ui| {
             ui.horizontal(|ui| {
                 let amount_edit = egui::TextEdit::singleline(&mut self.amount)
@@ -41,11 +41,12 @@ impl Deposit {
 
         if ui
             .add_enabled(
-                amount.is_ok() && fee.is_ok(),
+                app.is_some() && amount.is_ok() && fee.is_ok(),
                 egui::Button::new("deposit"),
             )
             .clicked()
         {
+            let app = app.unwrap();
             if let Err(err) = app.deposit(
                 app.wallet.get_new_address().expect("should not happen"),
                 amount.expect("should not happen"),
@@ -87,7 +88,7 @@ fn create_withdrawal(
 }
 
 impl Withdrawal {
-    pub fn show(&mut self, app: &mut App, ui: &mut egui::Ui) {
+    pub fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
         ui.add_sized((250., 10.), |ui: &mut egui::Ui| {
             ui.horizontal(|ui| {
                 let mainchain_address_edit =
@@ -95,8 +96,11 @@ impl Withdrawal {
                         .hint_text("mainchain address")
                         .desired_width(150.);
                 ui.add(mainchain_address_edit);
-                if ui.button("generate").clicked() {
-                    match app.get_new_main_address() {
+                if ui
+                    .add_enabled(app.is_some(), Button::new("generate"))
+                    .clicked()
+                {
+                    match app.unwrap().get_new_main_address() {
                         Ok(main_address) => {
                             self.mainchain_address = main_address.to_string();
                         }
@@ -158,7 +162,8 @@ impl Withdrawal {
 
         if ui
             .add_enabled(
-                mainchain_address.is_some()
+                app.is_some()
+                    && mainchain_address.is_some()
                     && amount.is_ok()
                     && fee.is_ok()
                     && mainchain_fee.is_ok(),
@@ -167,7 +172,7 @@ impl Withdrawal {
             .clicked()
         {
             if let Err(err) = create_withdrawal(
-                app,
+                app.unwrap(),
                 mainchain_address.expect("should not happen"),
                 amount.expect("should not happen"),
                 fee.expect("should not happen"),
@@ -188,7 +193,7 @@ pub(super) struct Transfer {
 }
 
 impl Transfer {
-    pub fn show(&mut self, app: &mut App, ui: &mut egui::Ui) {
+    pub fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
         egui::SidePanel::left("deposit")
             .exact_width(ui.available_width() / 2.)
             .resizable(false)

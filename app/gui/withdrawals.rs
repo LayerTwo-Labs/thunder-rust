@@ -7,9 +7,11 @@ use crate::app::App;
 pub struct Withdrawals {}
 
 impl Withdrawals {
-    pub fn show(&mut self, app: &mut App, ui: &mut egui::Ui) {
+    pub fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
         ui.heading("Pending withdrawals");
-        let bundle = app.node.get_pending_withdrawal_bundle().ok().flatten();
+        let bundle = app.and_then(|app| {
+            app.node.get_pending_withdrawal_bundle().ok().flatten()
+        });
         if let Some(bundle) = bundle {
             let mut spent_utxos: Vec<_> = bundle.spend_utxos().iter().collect();
             spent_utxos.sort_by_key(|(outpoint, _)| format!("{outpoint}"));

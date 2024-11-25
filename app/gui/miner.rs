@@ -21,18 +21,22 @@ impl Default for Miner {
 }
 
 impl Miner {
-    pub fn show(&mut self, app: &App, ui: &mut egui::Ui) {
-        let block_height = app.node.get_height().unwrap_or(0);
-        let best_hash = app.node.get_best_hash().unwrap_or([0; 32].into());
+    pub fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
+        let block_height =
+            app.and_then(|app| app.node.get_height().ok()).unwrap_or(0);
+        let best_hash = app
+            .and_then(|app| app.node.get_best_hash().ok())
+            .unwrap_or([0; 32].into());
         ui.label("Block height: ");
         ui.monospace(format!("{block_height}"));
         ui.label("Best hash: ");
         let best_hash = &format!("{best_hash}")[0..8];
         ui.monospace(format!("{best_hash}..."));
         let running = self.running.load(atomic::Ordering::SeqCst);
-        if ui
-            .add_enabled(!running, Button::new("Mine / Refresh Block"))
-            .clicked()
+        if let Some(app) = app
+            && ui
+                .add_enabled(!running, Button::new("Mine / Refresh Block"))
+                .clicked()
         {
             self.running.store(true, atomic::Ordering::SeqCst);
             app.local_pool.spawn_pinned({
