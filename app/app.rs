@@ -1,6 +1,9 @@
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    net::SocketAddr,
+    sync::Arc,
+};
 
-use eframe::egui::ahash::HashSet;
 use futures::{StreamExt, TryFutureExt, TryStreamExt as _};
 use parking_lot::RwLock;
 use rustreexo::accumulator::proof::Proof;

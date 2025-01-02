@@ -104,6 +104,7 @@ fn main() -> anyhow::Result<()> {
             });
         });
     if config.headless {
+        drop(line_buffer);
         let _app = app?;
         // wait for ctrlc signal
         let (tx, rx) = mpsc::channel();

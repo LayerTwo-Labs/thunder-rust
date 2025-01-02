@@ -20,5 +20,3 @@ pub use heed;
 pub fn format_deposit_address(dest: types::Address) -> String {
     format!("s{}_{}", types::THIS_SIDECHAIN, dest.to_base58ck())
 }
-
-// TODO: Add error log.

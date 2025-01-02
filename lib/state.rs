@@ -48,8 +48,8 @@ struct RollBack<T>(NonEmpty<HeightStamped<T>>);
 
 impl<T> RollBack<T> {
     fn new(value: T, height: u32) -> Self {
-        let txid_stamped = HeightStamped { value, height };
-        Self(nonempty![txid_stamped])
+        let height_stamped = HeightStamped { value, height };
+        Self(nonempty![height_stamped])
     }
 
     /// Pop the most recent value
@@ -713,6 +713,7 @@ impl State {
             if let Some(bundle) =
                 self.collect_withdrawal_bundle(rwtxn, block_height)?
             {
+                let m6id = bundle.compute_m6id();
                 for (outpoint, spend_output) in bundle.spend_utxos() {
                     let utxo_hash = hash(&PointedOutput {
                         outpoint: *outpoint,
@@ -720,14 +721,12 @@ impl State {
                     });
                     accumulator_del.insert(utxo_hash.into());
                     self.utxos.delete(rwtxn, outpoint)?;
-                    let m6id = bundle.compute_m6id();
                     let spent_output = SpentOutput {
                         output: spend_output.clone(),
                         inpoint: InPoint::Withdrawal { m6id },
                     };
                     self.stxos.put(rwtxn, outpoint, &spent_output)?;
                 }
-                let m6id = bundle.compute_m6id();
                 self.pending_withdrawal_bundle.put(
                     rwtxn,
                     &UnitKey,
