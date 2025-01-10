@@ -36,6 +36,9 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --all-features
       
+      - name: Deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+
       - name: Build
         run: cargo build --release
 

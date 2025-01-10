@@ -1,6 +1,6 @@
 //! Load fonts for egui
 
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use eframe::egui::{FontData, FontDefinitions, FontFamily};
 
@@ -17,11 +17,11 @@ pub static FONT_DEFINITIONS: LazyLock<FontDefinitions> = LazyLock::new(|| {
     // Install fonts
     fonts.font_data.insert(
         "Fira Mono Nerd Regular".to_owned(),
-        FontData::from_static(FIRA_MONO_NERD_REGULAR),
+        Arc::new(FontData::from_static(FIRA_MONO_NERD_REGULAR)),
     );
     fonts.font_data.insert(
         "Noto Sans Mono Nerd Regular".to_owned(),
-        FontData::from_static(NOTO_SANS_MONO_NERD_REGULAR),
+        Arc::new(FontData::from_static(NOTO_SANS_MONO_NERD_REGULAR)),
     );
     // Set Fira Mono Nerd Regular as first monospace font
     fonts

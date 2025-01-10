@@ -51,6 +51,8 @@ pub enum ConnectionError {
     Archive(#[from] archive::Error),
     #[error("bincode error")]
     Bincode(#[from] bincode::Error),
+    #[error("connection already closed")]
+    ClosedStream(#[from] quinn::ClosedStream),
     #[error("connect error")]
     Connect(#[from] quinn::ConnectError),
     #[error("connection error")]
@@ -327,7 +329,7 @@ impl Connection {
         let (mut send, mut recv) = self.0.open_bi().await?;
         let message = bincode::serialize(message)?;
         send.write_all(&message).await?;
-        send.finish().await?;
+        send.finish()?;
         if read_response_limit > 0 {
             let response_bytes = recv.read_to_end(read_response_limit).await?;
             let response: Response = bincode::deserialize(&response_bytes)?;

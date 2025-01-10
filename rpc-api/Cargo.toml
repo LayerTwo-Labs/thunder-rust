@@ -2,18 +2,20 @@
 name = "thunder_app_rpc_api"
 authors.workspace = true
 edition.workspace = true
+license-file.workspace = true
+publish.workspace = true
 version.workspace = true
 
 [dependencies]
 bitcoin = { version = "0.32.2", features = ["serde"] }
-jsonrpsee = { version = "0.23.2", features = ["macros"] }
+jsonrpsee = { version = "0.24.7", features = ["macros"] }
 thunder = { path = "../lib" }
 serde_json = "1.0.113"
 utoipa = "5.2.0"
 
 [dependencies.l2l-openapi]
 git = "https://github.com/Ash-L2L/l2l-openapi"
-rev = "a3e84daa19fd7c1121346984c3ef85304a144792"
+rev = "38c42ee637d083f1cdc807b546f6930b880dcad9"
 
 [lib]
 name = "thunder_app_rpc_api"

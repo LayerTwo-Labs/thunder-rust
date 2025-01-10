@@ -48,7 +48,7 @@ impl UtxoCreator {
     ) {
         ui.horizontal(|ui| {
             ui.heading("Create");
-            egui::ComboBox::from_id_source("utxo_type")
+            egui::ComboBox::from_id_salt("utxo_type")
                 .selected_text(format!("{}", self.utxo_type))
                 .show_ui(ui, |ui| {
                     ui.selectable_value(

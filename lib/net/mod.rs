@@ -52,12 +52,14 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("peer connection not found for {0}")]
     MissingPeerConnection(SocketAddr),
+    #[error(transparent)]
+    NoInitialCipherSuite(#[from] quinn::crypto::rustls::NoInitialCipherSuite),
     #[error("peer connection")]
     PeerConnection(#[from] PeerConnectionError),
     #[error("quinn rustls error")]
     QuinnRustls(#[from] quinn::crypto::rustls::Error),
     #[error("rcgen")]
-    RcGen(#[from] rcgen::RcgenError),
+    RcGen(#[from] rcgen::Error),
     #[error("read to end error")]
     ReadToEnd(#[from] quinn::ReadToEndError),
     #[error("send datagram error")]
@@ -69,7 +71,7 @@ pub enum Error {
 }
 
 pub fn make_client_endpoint(bind_addr: SocketAddr) -> Result<Endpoint, Error> {
-    let client_cfg = configure_client();
+    let client_cfg = configure_client()?;
     let mut endpoint = Endpoint::client(bind_addr)?;
     endpoint.set_default_client_config(client_cfg);
     Ok(endpoint)
@@ -345,11 +347,12 @@ pub fn make_server_endpoint(
 
 /// Returns default server configuration along with its certificate.
 fn configure_server() -> Result<(ServerConfig, Vec<u8>), Error> {
-    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
-    let cert_der = cert.serialize_der()?;
-    let priv_key = cert.serialize_private_key_der();
-    let priv_key = rustls::PrivateKey(priv_key);
-    let cert_chain = vec![rustls::Certificate(cert_der.clone())];
+    let cert_key =
+        rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
+    let keypair_der = cert_key.key_pair.serialize_der();
+    let priv_key = rustls::pki_types::PrivateKeyDer::Pkcs8(keypair_der.into());
+    let cert_der = cert_key.cert.der().to_vec();
+    let cert_chain = vec![cert_key.cert.into()];
 
     let mut server_config =
         ServerConfig::with_single_cert(cert_chain, priv_key)?;
@@ -361,6 +364,7 @@ fn configure_server() -> Result<(ServerConfig, Vec<u8>), Error> {
 
 /// Dummy certificate verifier that treats any certificate as valid.
 /// NOTE, such verification is vulnerable to MITM attacks, but convenient for testing.
+#[derive(Debug)]
 struct SkipServerVerification;
 
 impl SkipServerVerification {
@@ -369,25 +373,64 @@ impl SkipServerVerification {
     }
 }
 
-impl rustls::client::ServerCertVerifier for SkipServerVerification {
+impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
     fn verify_server_cert(
         &self,
-        _end_entity: &rustls::Certificate,
-        _intermediates: &[rustls::Certificate],
-        _server_name: &rustls::ServerName,
-        _scts: &mut dyn Iterator<Item = &[u8]>,
+        _end_entity: &rustls::pki_types::CertificateDer,
+        _intermediates: &[rustls::pki_types::CertificateDer],
+        _server_name: &rustls::pki_types::ServerName,
         _ocsp_response: &[u8],
-        _now: std::time::SystemTime,
-    ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::ServerCertVerified::assertion())
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error>
+    {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider()
+                .signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error>
+    {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider()
+                .signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
-fn configure_client() -> ClientConfig {
+fn configure_client(
+) -> Result<ClientConfig, quinn::crypto::rustls::NoInitialCipherSuite> {
     let crypto = rustls::ClientConfig::builder()
-        .with_safe_defaults()
+        .dangerous()
         .with_custom_certificate_verifier(SkipServerVerification::new())
         .with_no_client_auth();
-
-    ClientConfig::new(Arc::new(crypto))
+    let client_config =
+        quinn::crypto::rustls::QuicClientConfig::try_from(crypto)?;
+    Ok(ClientConfig::new(Arc::new(client_config)))
 }

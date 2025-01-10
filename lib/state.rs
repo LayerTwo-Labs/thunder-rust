@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use futures::Stream;
 use heed::{types::SerdeBincode, Database, RoTxn, RwTxn};
-use nonempty::{nonempty, NonEmpty};
+use nonempty::NonEmpty;
 use rustreexo::accumulator::{node_hash::NodeHash, proof::Proof};
 use serde::{Deserialize, Serialize};
 
@@ -49,7 +49,7 @@ struct RollBack<T>(NonEmpty<HeightStamped<T>>);
 impl<T> RollBack<T> {
     fn new(value: T, height: u32) -> Self {
         let height_stamped = HeightStamped { value, height };
-        Self(nonempty![height_stamped])
+        Self(NonEmpty::new(height_stamped))
     }
 
     /// Pop the most recent value

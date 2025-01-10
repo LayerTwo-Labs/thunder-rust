@@ -69,7 +69,7 @@ pub enum Error {
     #[error("utxo doesn't exist")]
     NoUtxo,
     #[error("failed to parse mnemonic seed phrase")]
-    ParseMnemonic(#[source] anyhow::Error),
+    ParseMnemonic(#[source] bip39::ErrorKind),
     #[error("seed has already been set")]
     SeedAlreadyExists,
     #[error("utreexo error: {0}")]

@@ -2,13 +2,15 @@
 name = "thunder_app_cli"
 authors.workspace = true
 edition.workspace = true
+license-file.workspace = true
+publish.workspace = true
 version.workspace = true
 
 [dependencies]
 anyhow = "1.0.72"
 bitcoin = { version = "0.32.2", features = ["serde"] }
 clap = { version = "4.5.4", features = ["derive"] }
-jsonrpsee = { version = "0.23.2", features = ["http-client"] }
+jsonrpsee = { version = "0.24.7", features = ["http-client"] }
 serde_json = "1.0.113"
 thunder = { path = "../lib" }
 thunder_app_rpc_api = { path = "../rpc-api" }

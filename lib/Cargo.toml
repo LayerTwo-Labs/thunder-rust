@@ -2,6 +2,8 @@
 name = "thunder"
 authors.workspace = true
 edition.workspace = true
+license-file.workspace = true
+publish.workspace = true
 version.workspace = true
 
 [build-dependencies]
@@ -22,25 +24,25 @@ ed25519-dalek = { version = "2.1.1", features = ["batch", "serde"] }
 ed25519-dalek-bip32 = "0.3.0"
 fallible-iterator = "0.3.0"
 futures = "0.3.30"
-hashlink = { version = "0.9.1", features = ["serde_impl"] }
-heed = "0.20.1"
+hashlink = { version = "0.10.0", features = ["serde_impl"] }
+heed = "0.21.0"
 hex = { version = "0.4.3", features = ["serde"] }
-jsonrpsee = { version = "0.23.2" }
-nonempty = { version = "0.10.0", features = ["serialize"] }
+jsonrpsee = { version = "0.24.7" }
+nonempty = { version = "0.11.0", features = ["serialize"] }
 parking_lot = "0.12.1"
 prost = "0.13.3"
 prost-types = "0.13.3"
-quinn = "0.10.1"
+quinn = "0.11.6"
 rayon = "1.7.0"
-rcgen = "0.11.1"
-rustls = { version = "0.21.5", features = ["dangerous_configuration"] }
+rcgen = "0.13.2"
+rustls = { version = "0.23.21", default-features = false, features = ["ring"] }
 rustreexo = { workspace = true, features = ["with-serde"] }
 serde = { version = "1.0.179", features = ["derive"] }
 serde_json = "1.0.113"
 serde_with = { version = "3.4.0", default-features = false }
 sha256 = "1.2.2"
-thiserror = "1.0.44"
-tiny-bip39 = "1.0.0"
+thiserror = "2.0.10"
+tiny-bip39 = "2.0.0"
 tokio = { version = "1.29.1", features = ["sync"] }
 tokio-stream = { version = "0.1.15", features = ["sync"] }
 tokio-util = { version = "0.7.10", features = ["rt"] }
