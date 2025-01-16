@@ -5,7 +5,7 @@ use strum::{EnumIter, IntoEnumIterator};
 use thunder::{util::Watchable, wallet::Wallet};
 use util::{show_btc_amount, BITCOIN_LOGO_FA, BITCOIN_ORANGE};
 
-use crate::{app::App, line_buffer::LineBuffer, util::PromiseStream};
+use crate::{app::App, cli::Config, line_buffer::LineBuffer, util::PromiseStream};
 
 mod block_explorer;
 mod coins;
@@ -223,12 +223,12 @@ impl EguiApp {
 
 impl eframe::App for EguiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if let Some(app) = self.app.as_ref()
-            && !app.wallet.has_seed().unwrap_or(false)
-        {
+        if self.app.is_none() || !self.app.as_ref().unwrap().wallet.has_seed().unwrap_or(false) {
             egui::CentralPanel::default().show(ctx, |_ui| {
                 egui::Window::new("Set Seed").show(ctx, |ui| {
-                    self.set_seed.show(app, ui);
+                    if let Some(app) = self.app.as_ref() {
+                        self.set_seed.show(app, ui);
+                    }
                 });
             });
         } else {
@@ -243,11 +243,14 @@ impl eframe::App for EguiApp {
                         );
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Reset Seed").clicked() {
+                        if ui.button("Reset Wallet").clicked() {
                             if let Some(app) = self.app.as_ref() {
+                                // Reset the wallet
                                 app.wallet
-                                    .clear_seed()
-                                    .expect("Failed to clear seed");
+                                    .reset_wallet()
+                                    .expect("Failed to reset wallet");
+                                
+                                // Reset the seed input UI
                                 self.set_seed = SetSeed::new();
                             }
                         }

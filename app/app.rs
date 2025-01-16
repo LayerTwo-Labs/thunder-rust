@@ -7,6 +7,7 @@ use std::{
 use futures::{StreamExt, TryFutureExt, TryStreamExt as _};
 use parking_lot::RwLock;
 use rustreexo::accumulator::proof::Proof;
+use serde::Deserialize;
 use thunder::{
     miner::{self, Miner},
     node::{self, Node},
@@ -30,6 +31,17 @@ use tonic_reflection::pb::v1::{
 
 use crate::cli::Config;
 
+#[derive(Debug, Deserialize)]
+struct StarterFile {
+    mnemonic: String,
+}
+
+impl StarterFile {
+    fn validate(&self) -> bool {
+        bip39::Mnemonic::from_phrase(&self.mnemonic, bip39::Language::English).is_ok()
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("CUSF mainchain proto error")]
@@ -48,6 +60,8 @@ pub enum Error {
     Utreexo(String),
     #[error("wallet error")]
     Wallet(#[from] wallet::Error),
+    #[error("other error: {0}")]
+    Other(#[from] anyhow::Error),
 }
 
 fn update_wallet(node: &Node, wallet: &Wallet) -> Result<(), Error> {
@@ -181,10 +195,27 @@ impl App {
             .enable_all()
             .build()?;
         let wallet = Wallet::new(&config.datadir.join("wallet.mdb"))?;
-        if let Some(seed_phrase_path) = &config.mnemonic_seed_phrase_path {
-            let mnemonic = std::fs::read_to_string(seed_phrase_path)?;
-            let () = wallet.set_seed_from_mnemonic(mnemonic.as_str())?;
+
+        // Handle wallet reset first if requested
+        if config.reset_wallet {
+            wallet.reset_wallet()?;
         }
+
+        // Then handle setting new seed if provided
+        if let Some(mnemonic_seed_phrase_path) = &config.mnemonic_seed_phrase_path {
+            let content = std::fs::read_to_string(mnemonic_seed_phrase_path)
+                .map_err(|e| Error::Other(anyhow::anyhow!("Failed to read mnemonic seed phrase file: {}", e)))?;
+            
+            let starter: StarterFile = serde_json::from_str(&content)
+                .map_err(|e| Error::Other(anyhow::anyhow!("Failed to parse mnemonic seed phrase file JSON: {}", e)))?;
+            
+            if !starter.validate() {
+                return Err(Error::Other(anyhow::anyhow!("Invalid mnemonic in seed phrase file")));
+            }
+            
+            let () = wallet.set_seed_from_mnemonic(&starter.mnemonic)?;
+        }
+
         let rt_guard = runtime.enter();
         let transport = tonic::transport::channel::Channel::from_shared(
             format!("https://{}", config.main_addr),
