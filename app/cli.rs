@@ -6,7 +6,19 @@ use std::{
 };
 
 use clap::{Arg, Parser};
+use serde::Deserialize;
 use thunder::types::THIS_SIDECHAIN;
+
+#[derive(Debug, Deserialize)]
+struct StarterFile {
+    mnemonic: String,
+}
+
+impl StarterFile {
+    fn validate(&self) -> bool {
+        bip39::Mnemonic::from_phrase(&self.mnemonic, bip39::Language::English).is_ok()
+    }
+}
 
 const fn ipv4_socket_addr(ipv4_octets: [u8; 4], port: u16) -> SocketAddr {
     let [a, b, c, d] = ipv4_octets;
@@ -126,6 +138,9 @@ pub(super) struct Cli {
     /// Socket address to host the RPC server
     #[arg(default_value_t = DEFAULT_RPC_ADDR, long, short)]
     rpc_addr: SocketAddr,
+    /// Reset the wallet, removing all data including seed and transaction history
+    #[arg(long)]
+    reset_wallet: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -139,6 +154,7 @@ pub struct Config {
     pub mnemonic_seed_phrase_path: Option<PathBuf>,
     pub net_addr: SocketAddr,
     pub rpc_addr: SocketAddr,
+    pub reset_wallet: bool,
 }
 
 impl Cli {
@@ -159,6 +175,21 @@ impl Cli {
                 }
             }
         };
+
+        // Validate mnemonic seed phrase file if provided
+        if let Some(path) = &self.mnemonic_seed_phrase_path {
+            let content = std::fs::read_to_string(path)
+                .map_err(|e| anyhow::anyhow!("Failed to read mnemonic seed phrase file: {}", e))?;
+            
+            let starter: StarterFile = serde_json::from_str(&content)
+                .map_err(|e| anyhow::anyhow!("Failed to parse mnemonic seed phrase file JSON: {}", e))?;
+            
+
+                if !starter.validate() {
+                return Err(anyhow::anyhow!("Invalid mnemonic in seed phrase file"));
+            }
+        }
+
         Ok(Config {
             datadir: self.datadir.0,
             headless: self.headless,
@@ -168,6 +199,7 @@ impl Cli {
             mnemonic_seed_phrase_path: self.mnemonic_seed_phrase_path,
             net_addr: self.net_addr,
             rpc_addr: self.rpc_addr,
+            reset_wallet: self.reset_wallet,
         })
     }
 }
