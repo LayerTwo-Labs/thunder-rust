@@ -76,9 +76,22 @@ impl SetSeed {
 
         let starter_file = app_dir
             .join(format!("sidechain_{}_starter.txt", THIS_SIDECHAIN));
-        let content = std::fs::read_to_string(&starter_file).ok()?;
-        let starter = serde_json::from_str(&content).ok()?;
-        Some(starter)
+        
+        let content = match std::fs::read_to_string(&starter_file) {
+            Ok(content) => content,
+            Err(err) => {
+                tracing::error!("Failed to read starter file: {}", err);
+                return None;
+            }
+        };
+
+        match serde_json::from_str(&content) {
+            Ok(starter) => Some(starter),
+            Err(err) => {
+                tracing::error!("Failed to parse starter file JSON: {}", err);
+                return None;
+            }
+        }
     }
 
     pub fn show(&mut self, app: &App, ui: &mut egui::Ui) {
