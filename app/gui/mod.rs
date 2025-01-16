@@ -242,15 +242,16 @@ impl eframe::App for EguiApp {
                             tab_name,
                         );
                     });
-                    ui.add_space(20.0);
-                    if ui.button("Reset Seed").clicked() {
-                        if let Some(app) = self.app.as_ref() {
-                            app.wallet
-                                .clear_seed()
-                                .expect("Failed to clear seed");
-                            self.set_seed = SetSeed::new();
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Reset Seed").clicked() {
+                            if let Some(app) = self.app.as_ref() {
+                                app.wallet
+                                    .clear_seed()
+                                    .expect("Failed to clear seed");
+                                self.set_seed = SetSeed::new();
+                            }
                         }
-                    }
+                    });
                 });
             });
             egui::TopBottomPanel::bottom("bottom_panel")
