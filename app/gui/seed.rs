@@ -10,6 +10,12 @@ struct StarterFile {
     mnemonic: String,
 }
 
+impl StarterFile {
+    fn validate(&self) -> bool {
+        bip39::Mnemonic::from_phrase(&self.mnemonic, bip39::Language::English).is_ok()
+    }
+}
+
 pub struct SetSeed {
     seed: String,
     passphrase: String,
@@ -50,7 +56,7 @@ impl SetSeed {
                 false
             } else {
                 let starter_file = dir.join(format!(
-                    "sidechain_{}_starter.txt",
+                    "sidechain_{}_starter.json",
                     THIS_SIDECHAIN
                 ));
                 let exists = starter_file.exists();
@@ -77,7 +83,7 @@ impl SetSeed {
             .join("wallet_starters");
 
         let starter_file = app_dir
-            .join(format!("sidechain_{}_starter.txt", THIS_SIDECHAIN));
+            .join(format!("sidechain_{}_starter.json", THIS_SIDECHAIN));
         
         let content = match std::fs::read_to_string(&starter_file) {
             Ok(content) => content,
@@ -87,11 +93,15 @@ impl SetSeed {
             }
         };
 
-        match serde_json::from_str(&content) {
-            Ok(starter) => Some(starter),
+        match serde_json::from_str::<StarterFile>(&content) {
+            Ok(starter) if starter.validate() => Some(starter),
+            Ok(_) => {
+                tracing::error!("Invalid mnemonic in starter file");
+                None
+            }
             Err(err) => {
                 tracing::error!("Failed to parse starter file JSON: {}", err);
-                return None;
+                None
             }
         }
     }

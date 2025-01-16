@@ -2,7 +2,7 @@ use std::{net::SocketAddr, task::Poll};
 
 use eframe::egui::{self, RichText};
 use strum::{EnumIter, IntoEnumIterator};
-use thunder::{types::THIS_SIDECHAIN, util::Watchable, wallet::Wallet};
+use thunder::{util::Watchable, wallet::Wallet};
 use util::{show_btc_amount, BITCOIN_LOGO_FA, BITCOIN_ORANGE};
 
 use crate::{app::App, line_buffer::LineBuffer, util::PromiseStream};
