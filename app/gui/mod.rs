@@ -205,7 +205,7 @@ impl EguiApp {
             .unwrap_or(0);
         let parent_chain = ParentChain::new(app.as_ref());
         let sidechain_slot = 9;
-            
+
         Self {
             app,
             block_explorer: BlockExplorer::new(height),
@@ -243,9 +243,7 @@ impl eframe::App for EguiApp {
                             tab_name,
                         );
                     });
-                    
                     ui.add_space(20.0);
-                    
                     if ui.button("Reset Seed").clicked() {
                         if let Some(app) = self.app.as_ref() {
                             app.wallet

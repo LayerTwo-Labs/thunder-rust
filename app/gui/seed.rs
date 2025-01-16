@@ -79,7 +79,7 @@ impl SetSeed {
         let starter_file = app_dir
             .join(format!("sidechain_{}_starter.txt", self.sidechain_slot));
         let content = std::fs::read_to_string(&starter_file).ok()?;
-        let starter: StarterFile = serde_json::from_str(&content).ok()?;
+        let starter = serde_json::from_str(&content).ok()?;
         Some(starter)
     }
 
