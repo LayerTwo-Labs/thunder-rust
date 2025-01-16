@@ -3,6 +3,8 @@ use eframe::egui;
 use serde::Deserialize;
 use thunder::types::THIS_SIDECHAIN;
 
+pub const CIRCLE_ARROW: char = '\u{27f3}';
+
 #[derive(Debug, Deserialize)]
 struct StarterFile {
     mnemonic: String,
@@ -124,7 +126,7 @@ impl SetSeed {
                         self.seed = starter.mnemonic;
                     }
                 }
-                if ui.small_button("⟳").clicked() {
+                if ui.small_button(CIRCLE_ARROW.to_string()).clicked() {
                     self.initial_check_done = false;
                     self.check_starter_file();
                 }
