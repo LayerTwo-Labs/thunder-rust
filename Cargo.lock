@@ -4956,6 +4956,7 @@ dependencies = [
  "poll-promise",
  "rustreexo",
  "serde",
+ "serde_json",
  "shlex",
  "strum",
  "tempfile",
