@@ -439,6 +439,17 @@ impl Wallet {
         let xsigning_key = xpriv.derive(&derivation_path)?;
         Ok(xsigning_key.signing_key)
     }
+
+    pub fn clear_seed(&self) -> Result<(), Error> {
+        let mut rwtxn = self.env.write_txn()?;
+        self.seed.clear(&mut rwtxn)?;
+        self.address_to_index.clear(&mut rwtxn)?;
+        self.index_to_address.clear(&mut rwtxn)?;
+        self.utxos.clear(&mut rwtxn)?;
+        self.stxos.clear(&mut rwtxn)?;
+        rwtxn.commit()?;
+        Ok(())
+    }
 }
 
 impl Watchable<()> for Wallet {
