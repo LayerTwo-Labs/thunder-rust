@@ -1,10 +1,12 @@
 //! Utility and convenience types and functions
 
 use futures::Stream;
-use heed::{Database, DefaultComparator, RoTxn, RwTxn};
+use heed::{Database, DefaultComparator, RoTxn, RwTxn, types::{Bytes, SerdeBincode, U8}};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
+
+use crate::types::{Address, Output, SpentOutput, OutPoint};
 
 /// Watchable types
 pub mod watchable {
@@ -184,8 +186,7 @@ impl<KC, DC, C> Watchable<()> for WatchableDb<KC, DC, C> {
 }
 
 /// Extension methods for [`Env`]
-pub(crate) trait EnvExt {
-    /// Create/open a [`MutableDb`]
+pub trait EnvExt {
     fn create_watchable_db<KC, DC>(
         &self,
         rwtxn: &mut RwTxn<'_>,
@@ -194,6 +195,9 @@ pub(crate) trait EnvExt {
     where
         KC: 'static,
         DC: 'static;
+
+    fn prepare_for_closing(&self) -> heed::Result<()>;
+    fn recreate_dbs(&self) -> heed::Result<()>;
 }
 
 impl EnvExt for heed::Env {
@@ -208,5 +212,21 @@ impl EnvExt for heed::Env {
     {
         self.create_database(rwtxn, Some(name))
             .map(WatchableDb::from)
+    }
+
+    fn prepare_for_closing(&self) -> heed::Result<()> {
+        self.force_sync()
+    }
+
+    fn recreate_dbs(&self) -> heed::Result<()> {
+        let mut rwtxn = self.write_txn()?;
+        // Recreate all databases with empty state
+        self.create_database::<U8, Bytes>(&mut rwtxn, Some("seed"))?;
+        self.create_database::<SerdeBincode<Address>, SerdeBincode<[u8; 4]>>(&mut rwtxn, Some("address_to_index"))?;
+        self.create_database::<SerdeBincode<[u8; 4]>, SerdeBincode<Address>>(&mut rwtxn, Some("index_to_address"))?;
+        self.create_database::<SerdeBincode<OutPoint>, SerdeBincode<Output>>(&mut rwtxn, Some("utxos"))?;
+        self.create_database::<SerdeBincode<OutPoint>, SerdeBincode<SpentOutput>>(&mut rwtxn, Some("stxos"))?;
+        rwtxn.commit()?;
+        Ok(())
     }
 }
