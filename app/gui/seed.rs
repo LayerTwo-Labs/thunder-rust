@@ -41,7 +41,7 @@ impl SetSeed {
     fn check_starter_file(&mut self) {
         let app_dir = dirs::data_dir()
             .map(|dir| dir.join("cusf_launcher").join("wallet_starters"));
-            
+
         self.has_starter = if let Some(dir) = app_dir {
             if !dir.exists() {
                 if !self.initial_check_done {
@@ -49,10 +49,16 @@ impl SetSeed {
                 }
                 false
             } else {
-                let starter_file = dir.join(format!("sidechain_{}_starter.txt", self.sidechain_slot));
+                let starter_file = dir.join(format!(
+                    "sidechain_{}_starter.txt",
+                    self.sidechain_slot
+                ));
                 let exists = starter_file.exists();
                 if !exists && !self.initial_check_done {
-                    tracing::debug!("No starter file found at {:?}", starter_file);
+                    tracing::debug!(
+                        "No starter file found at {:?}",
+                        starter_file
+                    );
                 }
                 exists
             }
@@ -70,7 +76,8 @@ impl SetSeed {
             .join("cusf_launcher")
             .join("wallet_starters");
 
-        let starter_file = app_dir.join(format!("sidechain_{}_starter.txt", self.sidechain_slot));
+        let starter_file = app_dir
+            .join(format!("sidechain_{}_starter.txt", self.sidechain_slot));
         let content = std::fs::read_to_string(&starter_file).ok()?;
         let starter: StarterFile = serde_json::from_str(&content).ok()?;
         Some(starter)
@@ -93,9 +100,15 @@ impl SetSeed {
                 );
                 self.seed = mnemonic.phrase().into();
             }
-            
+
             ui.horizontal(|ui| {
-                if ui.add_enabled(self.has_starter, egui::Button::new("use starter")).clicked() {
+                if ui
+                    .add_enabled(
+                        self.has_starter,
+                        egui::Button::new("use starter"),
+                    )
+                    .clicked()
+                {
                     if let Some(starter) = self.load_starter_file() {
                         self.seed = starter.mnemonic;
                     }
@@ -106,13 +119,13 @@ impl SetSeed {
                 }
             });
         });
-        
+
         let passphrase_edit = egui::TextEdit::singleline(&mut self.passphrase)
             .hint_text("passphrase")
             .password(true)
             .clip_text(false);
         ui.add(passphrase_edit);
-        
+
         let mnemonic =
             bip39::Mnemonic::from_phrase(&self.seed, bip39::Language::English);
         if ui

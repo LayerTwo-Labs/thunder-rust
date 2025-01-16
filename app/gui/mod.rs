@@ -248,7 +248,9 @@ impl eframe::App for EguiApp {
                     
                     if ui.button("Reset Seed").clicked() {
                         if let Some(app) = self.app.as_ref() {
-                            app.wallet.clear_seed().expect("Failed to clear seed");
+                            app.wallet
+                                .clear_seed()
+                                .expect("Failed to clear seed");
                             self.set_seed = SetSeed::new(9);
                         }
                     }
