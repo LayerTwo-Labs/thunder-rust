@@ -1,6 +1,7 @@
 use crate::app::App;
 use eframe::egui;
 use serde::Deserialize;
+use thunder::types::THIS_SIDECHAIN;
 
 #[derive(Debug, Deserialize)]
 struct StarterFile {
@@ -11,7 +12,6 @@ pub struct SetSeed {
     seed: String,
     passphrase: String,
     has_starter: bool,
-    sidechain_slot: u32,
     initial_check_done: bool,
 }
 
@@ -21,19 +21,17 @@ impl Default for SetSeed {
             seed: "".into(),
             passphrase: "".into(),
             has_starter: false,
-            sidechain_slot: 0,
             initial_check_done: false,
         }
     }
 }
 
 impl SetSeed {
-    pub fn new(sidechain_slot: u32) -> Self {
+    pub fn new() -> Self {
         Self {
             seed: "".into(),
             passphrase: "".into(),
             has_starter: false,
-            sidechain_slot,
             initial_check_done: false,
         }
     }
@@ -51,7 +49,7 @@ impl SetSeed {
             } else {
                 let starter_file = dir.join(format!(
                     "sidechain_{}_starter.txt",
-                    self.sidechain_slot
+                    THIS_SIDECHAIN
                 ));
                 let exists = starter_file.exists();
                 if !exists && !self.initial_check_done {
@@ -77,7 +75,7 @@ impl SetSeed {
             .join("wallet_starters");
 
         let starter_file = app_dir
-            .join(format!("sidechain_{}_starter.txt", self.sidechain_slot));
+            .join(format!("sidechain_{}_starter.txt", THIS_SIDECHAIN));
         let content = std::fs::read_to_string(&starter_file).ok()?;
         let starter = serde_json::from_str(&content).ok()?;
         Some(starter)

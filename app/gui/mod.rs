@@ -2,7 +2,7 @@ use std::{net::SocketAddr, task::Poll};
 
 use eframe::egui::{self, RichText};
 use strum::{EnumIter, IntoEnumIterator};
-use thunder::{util::Watchable, wallet::Wallet};
+use thunder::{types::THIS_SIDECHAIN, util::Watchable, wallet::Wallet};
 use util::{show_btc_amount, BITCOIN_LOGO_FA, BITCOIN_ORANGE};
 
 use crate::{app::App, line_buffer::LineBuffer, util::PromiseStream};
@@ -204,7 +204,6 @@ impl EguiApp {
             .and_then(|app| app.node.get_height().ok())
             .unwrap_or(0);
         let parent_chain = ParentChain::new(app.as_ref());
-        let sidechain_slot = 9;
 
         Self {
             app,
@@ -215,7 +214,7 @@ impl EguiApp {
             mempool_explorer: MemPoolExplorer::default(),
             miner: Miner::default(),
             parent_chain,
-            set_seed: SetSeed::new(sidechain_slot),
+            set_seed: SetSeed::new(),
             tab: Tab::default(),
             withdrawals: Withdrawals::default(),
         }
@@ -249,7 +248,7 @@ impl eframe::App for EguiApp {
                             app.wallet
                                 .clear_seed()
                                 .expect("Failed to clear seed");
-                            self.set_seed = SetSeed::new(9);
+                            self.set_seed = SetSeed::new();
                         }
                     }
                 });
