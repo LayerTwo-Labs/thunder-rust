@@ -29,8 +29,8 @@ use crate::cli::Config;
 pub enum Error {
     #[error("CUSF mainchain proto error")]
     CusfMainchain(#[from] thunder::types::proto::Error),
-    #[error("gRPC reflection client error")]
-    GrpcReflection(#[from] tonic::Status),
+    #[error("Unable to verify existence of CUSF mainchain service(s): {0}")]
+    VerifyMainchainServices(tonic::Status),
     #[error("io error")]
     Io(#[from] std::io::Error),
     #[error("miner error")]
@@ -200,7 +200,8 @@ impl App {
         .concurrency_limit(256)
         .connect_lazy();
         let (cusf_mainchain, cusf_mainchain_wallet) = if runtime
-            .block_on(Self::check_proto_support(transport.clone()))?
+            .block_on(Self::check_proto_support(transport.clone()))
+            .map_err(Error::VerifyMainchainServices)?
         {
             (
                 mainchain::ValidatorClient::new(transport.clone()),
