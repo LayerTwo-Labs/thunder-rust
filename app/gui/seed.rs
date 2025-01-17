@@ -12,7 +12,8 @@ struct StarterFile {
 
 impl StarterFile {
     fn validate(&self) -> bool {
-        bip39::Mnemonic::from_phrase(&self.mnemonic, bip39::Language::English).is_ok()
+        bip39::Mnemonic::from_phrase(&self.mnemonic, bip39::Language::English)
+            .is_ok()
     }
 }
 
@@ -55,10 +56,8 @@ impl SetSeed {
                 }
                 false
             } else {
-                let starter_file = dir.join(format!(
-                    "sidechain_{}_starter.json",
-                    THIS_SIDECHAIN
-                ));
+                let starter_file = dir
+                    .join(format!("sidechain_{}_starter.json", THIS_SIDECHAIN));
                 let exists = starter_file.exists();
                 if !exists && !self.initial_check_done {
                     tracing::debug!(
@@ -82,9 +81,9 @@ impl SetSeed {
             .join("cusf_launcher")
             .join("wallet_starters");
 
-        let starter_file = app_dir
-            .join(format!("sidechain_{}_starter.json", THIS_SIDECHAIN));
-        
+        let starter_file =
+            app_dir.join(format!("sidechain_{}_starter.json", THIS_SIDECHAIN));
+
         let content = match std::fs::read_to_string(&starter_file) {
             Ok(content) => content,
             Err(err) => {

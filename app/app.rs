@@ -38,7 +38,8 @@ struct StarterFile {
 
 impl StarterFile {
     fn validate(&self) -> bool {
-        bip39::Mnemonic::from_phrase(&self.mnemonic, bip39::Language::English).is_ok()
+        bip39::Mnemonic::from_phrase(&self.mnemonic, bip39::Language::English)
+            .is_ok()
     }
 }
 
@@ -202,17 +203,31 @@ impl App {
         }
 
         // Then handle setting new seed if provided
-        if let Some(mnemonic_seed_phrase_path) = &config.mnemonic_seed_phrase_path {
+        if let Some(mnemonic_seed_phrase_path) =
+            &config.mnemonic_seed_phrase_path
+        {
             let content = std::fs::read_to_string(mnemonic_seed_phrase_path)
-                .map_err(|e| Error::Other(anyhow::anyhow!("Failed to read mnemonic seed phrase file: {}", e)))?;
-            
-            let starter: StarterFile = serde_json::from_str(&content)
-                .map_err(|e| Error::Other(anyhow::anyhow!("Failed to parse mnemonic seed phrase file JSON: {}", e)))?;
-            
+                .map_err(|e| {
+                    Error::Other(anyhow::anyhow!(
+                        "Failed to read mnemonic seed phrase file: {}",
+                        e
+                    ))
+                })?;
+
+            let starter: StarterFile =
+                serde_json::from_str(&content).map_err(|e| {
+                    Error::Other(anyhow::anyhow!(
+                        "Failed to parse mnemonic seed phrase file JSON: {}",
+                        e
+                    ))
+                })?;
+
             if !starter.validate() {
-                return Err(Error::Other(anyhow::anyhow!("Invalid mnemonic in seed phrase file")));
+                return Err(Error::Other(anyhow::anyhow!(
+                    "Invalid mnemonic in seed phrase file"
+                )));
             }
-            
+
             let () = wallet.set_seed_from_mnemonic(&starter.mnemonic)?;
         }
 

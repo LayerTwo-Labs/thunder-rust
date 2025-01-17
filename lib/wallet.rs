@@ -455,14 +455,14 @@ impl Wallet {
     /// This ensures the wallet can only be restored by re-inputting the correct seed phrase.
     pub fn reset_wallet(&self) -> Result<(), Error> {
         let mut txn = self.env.write_txn()?;
-        
+
         // Clear all databases
         self.seed.clear(&mut txn)?;
         self.address_to_index.clear(&mut txn)?;
         self.index_to_address.clear(&mut txn)?;
         self.utxos.clear(&mut txn)?;
         self.stxos.clear(&mut txn)?;
-        
+
         txn.commit()?;
         Ok(())
     }

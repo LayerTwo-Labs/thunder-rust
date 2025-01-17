@@ -16,7 +16,8 @@ struct StarterFile {
 
 impl StarterFile {
     fn validate(&self) -> bool {
-        bip39::Mnemonic::from_phrase(&self.mnemonic, bip39::Language::English).is_ok()
+        bip39::Mnemonic::from_phrase(&self.mnemonic, bip39::Language::English)
+            .is_ok()
     }
 }
 
@@ -178,15 +179,25 @@ impl Cli {
 
         // Validate mnemonic seed phrase file if provided
         if let Some(path) = &self.mnemonic_seed_phrase_path {
-            let content = std::fs::read_to_string(path)
-                .map_err(|e| anyhow::anyhow!("Failed to read mnemonic seed phrase file: {}", e))?;
-            
-            let starter: StarterFile = serde_json::from_str(&content)
-                .map_err(|e| anyhow::anyhow!("Failed to parse mnemonic seed phrase file JSON: {}", e))?;
-            
+            let content = std::fs::read_to_string(path).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to read mnemonic seed phrase file: {}",
+                    e
+                )
+            })?;
 
-                if !starter.validate() {
-                return Err(anyhow::anyhow!("Invalid mnemonic in seed phrase file"));
+            let starter: StarterFile =
+                serde_json::from_str(&content).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to parse mnemonic seed phrase file JSON: {}",
+                        e
+                    )
+                })?;
+
+            if !starter.validate() {
+                return Err(anyhow::anyhow!(
+                    "Invalid mnemonic in seed phrase file"
+                ));
             }
         }
 
