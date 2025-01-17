@@ -104,6 +104,7 @@ fn main() -> anyhow::Result<()> {
             });
         });
     if config.headless {
+        tracing::info!("Running in headless mode");
         drop(line_buffer);
         let _app = app?;
         // wait for ctrlc signal

@@ -1,10 +1,6 @@
-use std::{
-    collections::{HashMap, HashSet},
-    net::SocketAddr,
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
-use futures::{StreamExt, TryFutureExt, TryStreamExt as _};
+use futures::{StreamExt, TryFutureExt};
 use parking_lot::RwLock;
 use rustreexo::accumulator::proof::Proof;
 use thunder::{
@@ -22,10 +18,9 @@ use thunder::{
 };
 use tokio::{spawn, sync::RwLock as TokioRwLock, task::JoinHandle};
 use tokio_util::task::LocalPoolHandle;
-use tonic_reflection::pb::v1::{
-    self as server_reflection,
-    server_reflection_client::ServerReflectionClient,
-    server_reflection_request, server_reflection_response,
+use tonic_health::{
+    pb::{health_client::HealthClient, HealthCheckRequest},
+    ServingStatus,
 };
 
 use crate::cli::Config;
@@ -111,67 +106,70 @@ impl App {
         }))
     }
 
+    async fn check_status_serving(
+        client: &mut HealthClient<tonic::transport::Channel>,
+        service_name: &str,
+    ) -> Result<bool, tonic::Status> {
+        match client
+            .check(HealthCheckRequest {
+                service: service_name.to_string(),
+            })
+            .await
+        {
+            Ok(res) => {
+                let expected_status = ServingStatus::Serving;
+                let status = res.into_inner().status;
+
+                let as_expected = status == expected_status as i32;
+                if !as_expected {
+                    tracing::warn!(
+                        "Expected status {} for {}, got {}",
+                        expected_status,
+                        service_name,
+                        status
+                    );
+                }
+                Ok(as_expected)
+            }
+            Err(status) if status.code() == tonic::Code::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Returns `true` if validator service AND wallet service are available,
     /// `false` if only validator service is available, and error if validator
     /// service is unavailable.
     async fn check_proto_support(
-        host: SocketAddr,
         transport: tonic::transport::channel::Channel,
     ) -> Result<bool, tonic::Status> {
-        let mut reflection_client = ServerReflectionClient::new(transport);
-        let request = server_reflection::ServerReflectionRequest {
-            host: host.to_string(),
-            message_request: Some(
-                server_reflection_request::MessageRequest::ListServices(
-                    String::new(),
-                ),
-            ),
-        };
-        let mut resp_stream = reflection_client
-            .server_reflection_info(futures::stream::once(
-                futures::future::ready(request),
-            ))
+        let mut client = HealthClient::new(transport);
+
+        let validator_service_name = validator_service_server::SERVICE_NAME;
+        let wallet_service_name = wallet_service_server::SERVICE_NAME;
+
+        // The validator service MUST exist. We therefore error out here directly.
+        if !Self::check_status_serving(&mut client, validator_service_name)
             .await?
-            .into_inner();
-        let resp = resp_stream.try_next().await?.ok_or_else(|| {
-            tonic::Status::aborted(
-                "reflection server closed response stream unexpectedly",
-            )
-        })?;
-        let resp = resp.message_response.ok_or_else(|| {
-            tonic::Status::aborted("Missing message response")
-        })?;
-        match resp {
-            server_reflection_response::MessageResponse::ListServicesResponse(
-                server_reflection::ListServiceResponse {
-                    service
-                }
-            ) => {
-                let services: HashSet<String> =
-                    service.into_iter().map(|resp| resp.name).collect();
-                if !services.contains(validator_service_server::SERVICE_NAME) {
-                    let err_msg = format!(
-                        "{} is not supported",
-                        validator_service_server::SERVICE_NAME
-                    );
-                    Err(tonic::Status::aborted(err_msg))
-                } else {
-                    Ok(services.contains(wallet_service_server::SERVICE_NAME))
-                }
-            }
-            server_reflection_response::MessageResponse::ErrorResponse(
-                err_resp
-            ) => {
-                let err_msg = format!(
-                    "Received error from reflection server: `{}`",
-                    err_resp.error_message
-                );
-                Err(tonic::Status::aborted(err_msg))
-            }
-            _ => Err(tonic::Status::aborted(
-                    "unexpected response from reflection server"
-                ))
+        {
+            return Err(tonic::Status::aborted(format!(
+                "{} is not supported in mainchain client",
+                validator_service_name
+            )));
         }
+
+        tracing::info!("Verified existence of {}", wallet_service_name);
+
+        // The wallet service is optional.
+        let has_wallet_service =
+            Self::check_status_serving(&mut client, wallet_service_name)
+                .await?;
+
+        tracing::info!(
+            "Checked existence of {}: {}",
+            wallet_service_name,
+            has_wallet_service
+        );
+        Ok(has_wallet_service)
     }
 
     pub fn new(config: &Config) -> Result<Self, Error> {
@@ -180,11 +178,20 @@ impl App {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
+
+        tracing::info!(
+            "Instantiating wallet with data directory: {}",
+            config.datadir.display()
+        );
+
         let wallet = Wallet::new(&config.datadir.join("wallet.mdb"))?;
         if let Some(seed_phrase_path) = &config.mnemonic_seed_phrase_path {
             let mnemonic = std::fs::read_to_string(seed_phrase_path)?;
             let () = wallet.set_seed_from_mnemonic(mnemonic.as_str())?;
         }
+
+        tracing::info!("Connecting to mainchain at {}", config.main_addr);
+
         let rt_guard = runtime.enter();
         let transport = tonic::transport::channel::Channel::from_shared(
             format!("https://{}", config.main_addr),
@@ -192,9 +199,9 @@ impl App {
         .unwrap()
         .concurrency_limit(256)
         .connect_lazy();
-        let (cusf_mainchain, cusf_mainchain_wallet) = if runtime.block_on(
-            Self::check_proto_support(config.main_addr, transport.clone()),
-        )? {
+        let (cusf_mainchain, cusf_mainchain_wallet) = if runtime
+            .block_on(Self::check_proto_support(transport.clone()))?
+        {
             (
                 mainchain::ValidatorClient::new(transport.clone()),
                 Some(mainchain::WalletClient::new(transport)),
@@ -207,6 +214,8 @@ impl App {
             .map(|wallet| Miner::new(cusf_mainchain.clone(), wallet))
             .transpose()?;
         let local_pool = LocalPoolHandle::new(1);
+
+        tracing::debug!("Instantiating node struct");
         let node = Node::new(
             &config.datadir,
             config.net_addr,

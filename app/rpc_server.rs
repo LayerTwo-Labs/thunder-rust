@@ -239,6 +239,8 @@ pub async fn run_server(
     let server = Server::builder().build(rpc_addr).await?;
 
     let addr = server.local_addr()?;
+    tracing::info!("RPC server listening on {}", addr);
+
     let handle = server.start(RpcServerImpl { app }.into_rpc());
 
     // In this example we don't care about doing shutdown so let's it run forever.
