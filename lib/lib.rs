@@ -14,9 +14,3 @@ pub mod util;
 pub mod wallet;
 
 pub use heed;
-
-/// Format `b58_dest` with the proper `s{sidechain_number}_` prefix and a
-/// checksum postfix for calling createsidechaindeposit on mainchain.
-pub fn format_deposit_address(dest: types::Address) -> String {
-    format!("s{}_{}", types::THIS_SIDECHAIN, dest.to_base58ck())
-}

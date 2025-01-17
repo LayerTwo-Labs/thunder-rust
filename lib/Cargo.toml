@@ -40,7 +40,6 @@ rustreexo = { workspace = true, features = ["with-serde"] }
 serde = { version = "1.0.179", features = ["derive"] }
 serde_json = "1.0.113"
 serde_with = { version = "3.4.0", default-features = false }
-sha256 = "1.2.2"
 thiserror = "2.0.10"
 tiny-bip39 = "2.0.0"
 tokio = { version = "1.29.1", features = ["sync"] }

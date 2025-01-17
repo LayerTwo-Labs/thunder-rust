@@ -1,7 +1,10 @@
+use bitcoin::hashes::{sha256, Hash as _};
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeAs, DisplayFromStr};
 use utoipa::ToSchema;
+
+use crate::types::THIS_SIDECHAIN;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AddressParseError {
@@ -18,24 +21,28 @@ pub enum AddressParseError {
 pub struct Address(pub [u8; 20]);
 
 impl Address {
-    pub fn to_base58(self) -> String {
+    pub fn as_base58(&self) -> String {
         bitcoin::base58::encode(&self.0)
     }
 
-    pub fn to_base58ck(self) -> String {
-        bitcoin::base58::encode_check(&self.0)
+    /// Format with `s{sidechain_number}_` prefix and a checksum postfix
+    pub fn format_for_deposit(&self) -> String {
+        let prefix = format!("s{}_{}", THIS_SIDECHAIN, self.as_base58());
+        let prefix_digest =
+            sha256::Hash::hash(prefix.as_bytes()).to_byte_array();
+        format!("{prefix}_{}", hex::encode(&prefix_digest[..6]))
     }
 }
 
 impl std::fmt::Display for Address {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.to_base58())
+        write!(f, "{}", self.as_base58())
     }
 }
 
 impl std::fmt::Debug for Address {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.to_base58())
+        write!(f, "{}", self.as_base58())
     }
 }
 
@@ -74,7 +81,7 @@ impl Serialize for Address {
         S: serde::Serializer,
     {
         if serializer.is_human_readable() {
-            Serialize::serialize(&self.to_base58(), serializer)
+            Serialize::serialize(&self.as_base58(), serializer)
         } else {
             Serialize::serialize(&self.0, serializer)
         }
