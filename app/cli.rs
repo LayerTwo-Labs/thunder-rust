@@ -23,8 +23,6 @@ static DEFAULT_DATA_DIR: LazyLock<Option<PathBuf>> =
         Some(data_dir) => Some(data_dir.join("thunder")),
     });
 
-const DEFAULT_MAIN_ADDR: SocketAddr = ipv4_socket_addr([127, 0, 0, 1], 50051);
-
 const DEFAULT_NET_ADDR: SocketAddr =
     ipv4_socket_addr([0, 0, 0, 0], 4000 + THIS_SIDECHAIN as u16);
 
@@ -114,9 +112,11 @@ pub(super) struct Cli {
     /// Log level
     #[arg(default_value_t = tracing::Level::DEBUG, long)]
     log_level: tracing::Level,
-    /// Socket address to connect to mainchain node gRPC server
-    #[arg(default_value_t = DEFAULT_MAIN_ADDR, long, short)]
-    main_addr: SocketAddr,
+
+    /// Address (protocol + host + port) to connect to mainchain node gRPC server
+    #[arg(default_value = "http://localhost:50051", long)]
+    mainchain_grpc_address: url::Url,
+
     /// Path to a mnemonic seed phrase
     #[arg(long)]
     mnemonic_seed_phrase_path: Option<PathBuf>,
@@ -135,7 +135,7 @@ pub struct Config {
     /// If None, logging to file should be disabled.
     pub log_dir: Option<PathBuf>,
     pub log_level: tracing::Level,
-    pub main_addr: SocketAddr,
+    pub mainchain_grpc_address: url::Url,
     pub mnemonic_seed_phrase_path: Option<PathBuf>,
     pub net_addr: SocketAddr,
     pub rpc_addr: SocketAddr,
@@ -164,7 +164,7 @@ impl Cli {
             headless: self.headless,
             log_dir,
             log_level: self.log_level,
-            main_addr: self.main_addr,
+            mainchain_grpc_address: self.mainchain_grpc_address,
             mnemonic_seed_phrase_path: self.mnemonic_seed_phrase_path,
             net_addr: self.net_addr,
             rpc_addr: self.rpc_addr,
