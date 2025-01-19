@@ -27,10 +27,10 @@ impl Address {
 
     /// Format with `s{sidechain_number}_` prefix and a checksum postfix
     pub fn format_for_deposit(&self) -> String {
-        let prefix = format!("s{}_{}", THIS_SIDECHAIN, self.as_base58());
+        let prefix = format!("s{}_{}_", THIS_SIDECHAIN, self.as_base58());
         let prefix_digest =
             sha256::Hash::hash(prefix.as_bytes()).to_byte_array();
-        format!("{prefix}_{}", hex::encode(&prefix_digest[..6]))
+        format!("{prefix}_{}", hex::encode(&prefix_digest[..3]))
     }
 }
 
