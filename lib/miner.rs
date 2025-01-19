@@ -59,7 +59,7 @@ where
                 header.prev_main_hash,
             )
             .await?;
-        tracing::info!("created BMM tx: {txid}");
+        tracing::info!("attempt BMM: created TX: {txid}");
         assert_eq!(header.merkle_root, body.compute_merkle_root());
         self.block = Some((header, body));
         Ok(txid)
@@ -74,16 +74,18 @@ where
             return Ok(None);
         };
         let block_hash = header.hash();
-        tracing::trace!(%block_hash, "verifying bmm...");
+        tracing::debug!(%block_hash, "confirm BMM: verifying...");
+
         let mut events_stream = self.cusf_mainchain.subscribe_events().await?;
         if let Some(event) = events_stream.try_next().await? {
             match event {
+                // Our BMM request made it into a block!
                 Event::ConnectBlock {
                     header_info,
                     block_info,
                 } => {
                     if block_info.bmm_commitment == Some(block_hash) {
-                        tracing::trace!(%block_hash, "verified bmm");
+                        tracing::debug!(%block_hash, "confirm BMM: verified");
                         self.block = None;
                         return Ok(Some((
                             header_info.block_hash,
@@ -92,10 +94,12 @@ where
                         )));
                     }
                 }
+                // BMM requests expire after one block, so if we we weren't able to
+                // get it in, the request failed.
                 Event::DisconnectBlock { .. } => (),
             }
         };
-        tracing::trace!(%block_hash, "bmm verification failed");
+        tracing::debug!(%block_hash, "confirm BMM: verification failed");
         self.block = None;
         Ok(None)
     }

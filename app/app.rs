@@ -345,21 +345,37 @@ impl App {
                 Self::EMPTY_BLOCK_BMM_BRIBE
             }
         });
+
         let mut miner_write = miner.write().await;
-        miner_write
+        let bmm_txid = miner_write
             .attempt_bmm(bribe.to_sat(), 0, header, body)
             .await?;
+
         // miner_write.generate().await?;
-        tracing::trace!("confirming bmm...");
+        tracing::debug!(%bmm_txid, "mine: confirming BMM...");
         if let Some((main_hash, header, body)) =
             miner_write.confirm_bmm().await?
         {
-            tracing::trace!(
-                "confirmed bmm, submitting block {}",
+            tracing::debug!(
+                "mine: confirmed BMM, submitting block {}",
                 header.hash()
             );
-            self.node.submit_block(main_hash, &header, &body).await?;
+            match self.node.submit_block(main_hash, &header, &body).await? {
+                true => {
+                    tracing::debug!(
+                        "mine: BMM accepted as new tip: {}",
+                        main_hash
+                    );
+                }
+                false => {
+                    tracing::warn!(
+                        "mine: BMM not accepted as new tip: {}",
+                        main_hash
+                    );
+                }
+            }
         }
+
         drop(miner_write);
         let () = self.update()?;
         self.node.regenerate_proof(&mut self.transaction.write())?;
