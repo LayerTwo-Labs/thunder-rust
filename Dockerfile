@@ -9,6 +9,7 @@ RUN cargo build --locked --release
 FROM debian:bookworm-slim
 
 COPY --from=builder /workspace/target/release/thunder_app /bin/thunder_app
+COPY --from=builder /workspace/target/release/thunder_app_cli /bin/thunder_app_cli
 
 # Verify we placed the binary in the right place, 
 # and that it's executable.
