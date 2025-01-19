@@ -47,6 +47,7 @@ tracing = "0.1.40"
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.18", features = ["json"] }
 utoipa = "5.2.0"
+url = "2.5.4"
 
 [dev-dependencies.bip300301]
 git = "https://github.com/Ash-L2L/bip300301.git"

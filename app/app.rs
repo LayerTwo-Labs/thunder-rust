@@ -190,11 +190,13 @@ impl App {
             let () = wallet.set_seed_from_mnemonic(mnemonic.as_str())?;
         }
 
-        tracing::info!("Connecting to mainchain at {}", config.main_addr);
-
+        tracing::info!(
+            "Connecting to mainchain at {}",
+            config.mainchain_grpc_address
+        );
         let rt_guard = runtime.enter();
         let transport = tonic::transport::channel::Channel::from_shared(
-            format!("https://{}", config.main_addr),
+            format!("{}", config.mainchain_grpc_address),
         )
         .unwrap()
         .concurrency_limit(256)
