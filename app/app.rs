@@ -157,7 +157,7 @@ impl App {
             )));
         }
 
-        tracing::info!("Verified existence of {}", wallet_service_name);
+        tracing::info!("Verified existence of {}", validator_service_name);
 
         // The wallet service is optional.
         let has_wallet_service =

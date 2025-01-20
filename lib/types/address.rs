@@ -30,7 +30,7 @@ impl Address {
         let prefix = format!("s{}_{}_", THIS_SIDECHAIN, self.as_base58());
         let prefix_digest =
             sha256::Hash::hash(prefix.as_bytes()).to_byte_array();
-        format!("{prefix}_{}", hex::encode(&prefix_digest[..3]))
+        format!("{prefix}{}", hex::encode(&prefix_digest[..3]))
     }
 }
 
