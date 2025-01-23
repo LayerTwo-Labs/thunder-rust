@@ -21,6 +21,8 @@ pub enum AddressParseError {
 pub struct Address(pub [u8; 20]);
 
 impl Address {
+    pub const ALL_ZEROS: Self = Self([0; 20]);
+
     pub fn as_base58(&self) -> String {
         bitcoin::base58::encode(&self.0)
     }

@@ -146,6 +146,21 @@ pub mod common {
     }
 
     impl Hex {
+        pub fn decode_bytes<Message>(
+            self,
+            field_name: &str,
+        ) -> Result<Vec<u8>, super::Error>
+        where
+            Message: prost::Name,
+        {
+            let Self { hex } = self;
+            let hex =
+                hex.ok_or_else(|| super::Error::missing_field::<Self>("hex"))?;
+            hex::decode(&hex).map_err(|_err| {
+                super::Error::invalid_field_value::<Message>(field_name, &hex)
+            })
+        }
+
         pub fn decode<Message, T>(
             self,
             field_name: &str,
@@ -222,6 +237,8 @@ pub mod common {
 }
 
 pub mod mainchain {
+    use std::str::FromStr;
+
     use bitcoin::{
         self, hashes::Hash as _, BlockHash, Network, OutPoint, Transaction,
         Txid, Work,
@@ -354,17 +371,47 @@ pub mod mainchain {
         fn try_from(
             output: generated::deposit::Output,
         ) -> Result<Self, Self::Error> {
+            use crate::types::Address;
             let generated::deposit::Output {
                 address,
                 value_sats,
             } = output;
-            let address = address
-                .ok_or_else(|| {
-                    super::Error::missing_field::<generated::deposit::Output>(
-                        "address",
-                    )
-                })?
-                .decode::<generated::deposit::Output, _>("address")?;
+            let address = 'address: {
+                // It is wrong to assume that the address is valid UTF8.
+                // In the case that it is not valid UTF8, the deposit should be
+                // ignored.
+                let address_bytes: Vec<u8> =
+                    address
+                        .ok_or_else(|| {
+                            super::Error::missing_field::<
+                                generated::deposit::Output,
+                            >("address")
+                        })?
+                        .decode_bytes::<generated::deposit::Output>(
+                            "address",
+                        )?;
+                let address_utf8: &str =
+                    match std::str::from_utf8(&address_bytes) {
+                        Ok(address_str) => address_str,
+                        Err(_) => {
+                            tracing::warn!(
+                                address_bytes = hex::encode(address_bytes),
+                                "Ignoring invalid deposit address"
+                            );
+                            break 'address Address::ALL_ZEROS;
+                        }
+                    };
+                match Address::from_str(address_utf8) {
+                    Ok(address) => address,
+                    Err(_) => {
+                        tracing::warn!(
+                            address_utf8,
+                            "Ignoring invalid deposit address"
+                        );
+                        Address::ALL_ZEROS
+                    }
+                }
+            };
             let value = value_sats
                 .ok_or_else(|| {
                     super::Error::missing_field::<generated::deposit::Output>(
