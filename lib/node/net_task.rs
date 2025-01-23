@@ -612,6 +612,7 @@ where
     }
 
     async fn run(mut self) -> Result<(), Error> {
+        #[derive(Debug)]
         enum MailboxItem {
             AcceptConnection(Result<(), Error>),
             // Forward a mainchain task request, along with the peer that
@@ -676,6 +677,7 @@ where
             HashSet<(SocketAddr, PeerStateId)>,
         >::new();
         while let Some(mailbox_item) = mailbox_stream.next().await {
+            tracing::trace!("received mailbox item: {:#?}", mailbox_item);
             match mailbox_item {
                 MailboxItem::AcceptConnection(res) => res?,
                 MailboxItem::ForwardMainchainTaskRequest(
@@ -828,6 +830,12 @@ where
                         }
                         PeerConnectionInfo::Response(boxed) => {
                             let (resp, req) = *boxed;
+
+                            tracing::trace!(
+                                resp = format!("{resp:#?}"),
+                                req = format!("{req:#?}"),
+                                "mail box: received PeerConnectionInfo::Response"
+                            );
                             let () = Self::handle_response(
                                 &self.ctxt,
                                 &mut descendant_tips,
