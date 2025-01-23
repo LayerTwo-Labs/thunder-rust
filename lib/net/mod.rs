@@ -141,10 +141,7 @@ impl Net {
 
     // TODO: This should have more context. Last received message, connection state, etc.
     pub fn get_active_peers(&self) -> Vec<SocketAddr> {
-        let guard = self.active_peers.read();
-        let keys = guard.keys();
-        let addresses = keys.map(|addr| *addr);
-        addresses.collect()
+        self.active_peers.read().keys().copied().collect()
     }
 
     pub fn connect_peer(
@@ -156,6 +153,7 @@ impl Net {
             tracing::error!(%addr, "connect peer: already connected");
             return Err(Error::AlreadyConnected(addr));
         }
+        let connecting = self.client.connect(addr, "localhost")?;
         let mut rwtxn = env.write_txn()?;
         self.known_peers.put(&mut rwtxn, &addr, &())?;
         rwtxn.commit()?;
@@ -165,8 +163,7 @@ impl Net {
             state: self.state.clone(),
         };
         let (connection_handle, info_rx) =
-            peer::connect(self.client.clone(), addr, connection_ctxt);
-
+            peer::connect(connecting, connection_ctxt);
         tracing::trace!(%addr, "connect peer: spawning info rx");
         tokio::spawn({
             let info_rx = StreamNotifyClose::new(info_rx)
@@ -178,7 +175,6 @@ impl Net {
                 }
             }
         });
-
         tracing::trace!(%addr, "connect peer: adding to active peers");
         self.add_active_peer(addr, connection_handle)?;
         Ok(())

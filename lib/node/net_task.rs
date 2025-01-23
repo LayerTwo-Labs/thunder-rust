@@ -26,9 +26,8 @@ use crate::{
     archive::{self, Archive},
     mempool::{self, MemPool},
     net::{
-        self, Net, PeerConnectionError, PeerConnectionInfo,
-        PeerConnectionMessage, PeerInfoRx, PeerRequest, PeerResponse,
-        PeerStateId,
+        self, Net, PeerConnectionInfo, PeerConnectionMessage, PeerInfoRx,
+        PeerRequest, PeerResponse, PeerStateId,
     },
     state::{self, State},
     types::{
@@ -778,16 +777,6 @@ where
                 MailboxItem::PeerInfo(Some((addr, Some(peer_info)))) => {
                     match peer_info {
                         PeerConnectionInfo::Error(err) => {
-                            // This means the peer address is not valid, and we
-                            // should not attempt to connect to it at a later point
-                            if let PeerConnectionError::Connect(
-                                quinn::ConnectError::InvalidRemoteAddress(addr),
-                            ) = err
-                            {
-                                tracing::error!(%addr, "peer address is not valid, propagating out");
-                                // TODO: how do I do that:P
-                            }
-
                             let err = anyhow::anyhow!(err);
                             tracing::error!(%addr, err = format!("{err:#}"), "Peer connection error");
                             let () = self.ctxt.net.remove_active_peer(addr);
@@ -841,7 +830,6 @@ where
                         }
                         PeerConnectionInfo::Response(boxed) => {
                             let (resp, req) = *boxed;
-
                             tracing::trace!(
                                 resp = format!("{resp:#?}"),
                                 req = format!("{req:#?}"),
