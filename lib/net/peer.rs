@@ -306,8 +306,22 @@ impl Connection {
         endpoint: &Endpoint,
         addr: SocketAddr,
     ) -> Result<Self, ConnectionError> {
-        let connection = endpoint.connect(addr, "localhost")?.await?;
-        tracing::info!("Connected to peer at {addr}");
+        tracing::trace!(%addr, "connecting to peer");
+
+        // We're receiving InvalidRemoteAddress here...
+        let connection_attempt =
+            endpoint.connect(addr, "localhost").inspect_err(|err| {
+                tracing::error!(
+                    %addr,
+                    err = format!("{err:?}"),
+                    "connection attempt failed"
+                );
+            })?;
+
+        tracing::trace!(%addr, "initialized connection attempt");
+
+        let connection = connection_attempt.await?;
+        tracing::info!(%addr, "connected successfully to peer");
         Ok(Self(connection))
     }
 

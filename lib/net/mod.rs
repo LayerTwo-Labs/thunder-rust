@@ -115,9 +115,14 @@ impl Net {
         addr: SocketAddr,
         peer_connection_handle: PeerConnectionHandle,
     ) -> Result<(), Error> {
+        tracing::trace!(%addr, "add active peer: starting");
+
         let mut active_peers_write = self.active_peers.write();
         match active_peers_write.entry(addr) {
-            hash_map::Entry::Occupied(_) => Err(Error::AlreadyConnected(addr)),
+            hash_map::Entry::Occupied(_) => {
+                tracing::error!(%addr, "add active peer: already connected");
+                Err(Error::AlreadyConnected(addr))
+            }
             hash_map::Entry::Vacant(active_peer_entry) => {
                 active_peer_entry.insert(peer_connection_handle);
                 Ok(())
@@ -126,10 +131,11 @@ impl Net {
     }
 
     pub fn remove_active_peer(&self, addr: SocketAddr) {
+        tracing::trace!(%addr, "remove active peer: starting");
         let mut active_peers_write = self.active_peers.write();
         if let Some(peer_connection) = active_peers_write.remove(&addr) {
             drop(peer_connection);
-            tracing::info!("Disconnected from peer at {addr}")
+            tracing::info!(%addr, "remove active peer: disconnected");
         }
     }
 
@@ -139,6 +145,7 @@ impl Net {
         addr: SocketAddr,
     ) -> Result<(), Error> {
         if self.active_peers.read().contains_key(&addr) {
+            tracing::error!(%addr, "connect peer: already connected");
             return Err(Error::AlreadyConnected(addr));
         }
         let mut rwtxn = env.write_txn()?;
@@ -151,6 +158,8 @@ impl Net {
         };
         let (connection_handle, info_rx) =
             peer::connect(self.client.clone(), addr, connection_ctxt);
+
+        tracing::trace!(%addr, "connect peer: spawning info rx");
         tokio::spawn({
             let info_rx = StreamNotifyClose::new(info_rx)
                 .map(move |info| Ok((addr, info)));
@@ -161,6 +170,8 @@ impl Net {
                 }
             }
         });
+
+        tracing::trace!(%addr, "connect peer: adding to active peers");
         self.add_active_peer(addr, connection_handle)?;
         Ok(())
     }
@@ -213,6 +224,9 @@ impl Net {
             known_peers
         };
         let () = known_peers.into_iter().try_for_each(|(peer_addr, _)| {
+            tracing::trace!(
+                "new net: connecting to already known peer at {peer_addr}"
+            );
             net.connect_peer(env.clone(), peer_addr)
         })?;
         Ok((net, peer_info_rx))
@@ -220,9 +234,22 @@ impl Net {
 
     /// Accept the next incoming connection
     pub async fn accept_incoming(&self, env: heed::Env) -> Result<(), Error> {
+        tracing::debug!(
+            "accept incoming: listening for connections on `{}`",
+            self.server
+                .local_addr()
+                .map(|socket| socket.to_string())
+                .unwrap_or("unknown address".into())
+        );
         let connection = match self.server.accept().await {
-            Some(conn) => Connection(conn.await?),
-            None => return Err(Error::ServerEndpointClosed),
+            Some(conn) => {
+                tracing::trace!("accepted connection from {conn:?}");
+                Connection(conn.await.map_err(Error::Connection)?)
+            }
+            None => {
+                tracing::debug!("server endpoint closed");
+                return Err(Error::ServerEndpointClosed);
+            }
         };
         let addr = connection.addr();
         if self.active_peers.read().contains_key(&addr) {
