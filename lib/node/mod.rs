@@ -50,7 +50,7 @@ pub enum Error {
     CusfMainchain(#[from] proto::Error),
     #[error("heed error")]
     Heed(#[from] heed::Error),
-    #[error("quinn error")]
+    #[error("I/O error")]
     Io(#[from] std::io::Error),
     #[error("error requesting mainchain ancestors")]
     MainchainAncestors(anyhow::Error),
