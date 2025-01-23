@@ -452,6 +452,10 @@ where
             .map_err(Error::from)
     }
 
+    pub fn get_active_peers(&self) -> Vec<SocketAddr> {
+        self.net.get_active_peers()
+    }
+
     /// Attempt to submit a block.
     /// Returns `Ok(true)` if the block was accepted successfully as the new tip.
     /// Returns `Ok(false)` if the block could not be submitted for some reason,

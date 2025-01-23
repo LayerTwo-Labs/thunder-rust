@@ -139,6 +139,14 @@ impl Net {
         }
     }
 
+    // TODO: This should have more context. Last received message, connection state, etc.
+    pub fn get_active_peers(&self) -> Vec<SocketAddr> {
+        let guard = self.active_peers.read();
+        let keys = guard.keys();
+        let addresses = keys.map(|addr| *addr);
+        addresses.collect()
+    }
+
     pub fn connect_peer(
         &self,
         env: heed::Env,
