@@ -7,15 +7,15 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
-bitcoin = { version = "0.32.2", features = ["serde"] }
-jsonrpsee = { version = "0.24.7", features = ["macros"] }
+bitcoin = { workspace = true, features = ["serde"] }
+jsonrpsee = { workspace = true, features = ["client", "macros", "server"] }
+l2l-openapi = { workspace = true }
 thunder = { path = "../lib" }
-serde_json = "1.0.113"
-utoipa = "5.2.0"
+serde_json = { workspace = true }
+utoipa = { workspace = true }
 
-[dependencies.l2l-openapi]
-git = "https://github.com/Ash-L2L/l2l-openapi"
-rev = "38c42ee637d083f1cdc807b546f6930b880dcad9"
+[lints]
+workspace = true
 
 [lib]
 name = "thunder_app_rpc_api"
