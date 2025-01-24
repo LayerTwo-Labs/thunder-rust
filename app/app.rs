@@ -46,6 +46,7 @@ pub enum Error {
 }
 
 fn update_wallet(node: &Node, wallet: &Wallet) -> Result<(), Error> {
+    tracing::trace!("starting wallet update");
     let addresses = wallet.get_addresses()?;
     let utxos = node.get_utxos_by_addresses(&addresses)?;
     let outpoints: Vec<_> = wallet.get_utxos()?.into_keys().collect();
@@ -56,6 +57,8 @@ fn update_wallet(node: &Node, wallet: &Wallet) -> Result<(), Error> {
         .collect();
     wallet.put_utxos(&utxos)?;
     wallet.spend_utxos(&spent)?;
+
+    tracing::debug!("finished wallet update");
     Ok(())
 }
 
@@ -381,8 +384,15 @@ impl App {
         }
 
         drop(miner_write);
-        let () = self.update()?;
-        self.node.regenerate_proof(&mut self.transaction.write())?;
+        let () = self.update().inspect_err(|err| {
+            tracing::error!("mine: unable to update wallet: {err:#}");
+        })?;
+
+        self.node
+            .regenerate_proof(&mut self.transaction.write())
+            .inspect_err(|err| {
+                tracing::error!("mine: unable to regenerate proof: {err:#}");
+            })?;
         Ok(())
     }
 
