@@ -159,7 +159,7 @@ fn main() -> anyhow::Result<()> {
         })
         .expect("Error setting Ctrl-C handler");
         rx.recv().unwrap();
-        println!("Received Ctrl-C signal, exiting...");
+        tracing::info!("Received Ctrl-C signal, exiting...");
     } else {
         let native_options = eframe::NativeOptions::default();
         let app: Option<_> = app.map_or_else(
