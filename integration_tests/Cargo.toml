@@ -1,0 +1,42 @@
+[package]
+name = "thunder_integration_tests"
+authors.workspace = true
+edition.workspace = true
+license-file.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dev-dependencies]
+anyhow = { workspace = true }
+bip300301_enforcer_lib = { workspace = true }
+bip300301_enforcer_integration_tests = { workspace = true }
+bitcoin = { workspace = true }
+clap = { workspace = true }
+dotenvy = "0.15.7"
+futures = { workspace = true }
+jsonrpsee = { workspace = true }
+libtest-mimic = "0.8.1"
+reserve-port = "2.0.1"
+thiserror = { workspace = true }
+thunder = { path = "../lib" }
+thunder_app_rpc_api = { path = "../rpc-api" }
+tracing = { workspace = true }
+tracing-indicatif = "0.3.8"
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[features]
+default = ["rustls"]
+openssl = ["bip300301_enforcer_lib/openssl", "bip300301_enforcer_integration_tests/openssl"]
+rustls = ["bip300301_enforcer_lib/rustls", "bip300301_enforcer_integration_tests/rustls"]
+
+[lints]
+workspace = true
+
+# Examples are checked by default, but not run as tests by default
+[[example]]
+name = "integration_tests"
+path = "main.rs"
+harness = false
+test = false
+crate-type = ["bin"]

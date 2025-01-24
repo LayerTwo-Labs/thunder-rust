@@ -8,7 +8,7 @@ use jsonrpsee::{
 };
 use thunder::{
     node,
-    types::{Address, PointedOutput, Txid},
+    types::{Address, PointedOutput, Txid, WithdrawalBundle},
     wallet::{self, Balance},
 };
 use thunder_app_rpc_api::RpcServer;
@@ -118,7 +118,21 @@ impl RpcServer for RpcServerImpl {
     }
 
     async fn getblockcount(&self) -> RpcResult<u32> {
-        self.app.node.get_height().map_err(convert_node_err)
+        let height =
+            self.app.node.try_get_height().map_err(convert_node_err)?;
+        let block_count = height.map_or(0, |height| height + 1);
+        Ok(block_count)
+    }
+
+    async fn latest_failed_withdrawal_bundle_height(
+        &self,
+    ) -> RpcResult<Option<u32>> {
+        let height = self
+            .app
+            .node
+            .get_latest_failed_withdrawal_bundle_height()
+            .map_err(convert_node_err)?;
+        Ok(height)
     }
 
     async fn list_peers(&self) -> RpcResult<Vec<SocketAddr>> {
@@ -141,6 +155,15 @@ impl RpcServer for RpcServerImpl {
             let app = self.app.clone();
             move || async move { app.mine(fee).await.map_err(convert_app_err) }
         }).await.unwrap()
+    }
+
+    async fn pending_withdrawal_bundle(
+        &self,
+    ) -> RpcResult<Option<WithdrawalBundle>> {
+        self.app
+            .node
+            .get_pending_withdrawal_bundle()
+            .map_err(convert_node_err)
     }
 
     async fn openapi_schema(&self) -> RpcResult<utoipa::openapi::OpenApi> {

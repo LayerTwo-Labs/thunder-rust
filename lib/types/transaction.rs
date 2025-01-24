@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use bitcoin::amount::CheckedSum;
 use borsh::BorshSerialize;
 use rustreexo::accumulator::{
-    node_hash::NodeHash, pollard::Pollard, proof::Proof,
+    mem_forest::MemForest, node_hash::BitcoinNodeHash, proof::Proof,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -347,7 +347,7 @@ pub struct PointedOutput {
     pub output: Output,
 }
 
-impl From<&PointedOutput> for NodeHash {
+impl From<&PointedOutput> for BitcoinNodeHash {
     fn from(pointed_output: &PointedOutput) -> Self {
         Self::new(hash(pointed_output))
     }
@@ -475,12 +475,15 @@ impl Body {
         hash(&(&self.coinbase, &self.transactions)).into()
     }
 
-    // Modifies the pollard, without checking tx proofs
-    pub fn modify_pollard(&self, pollard: &mut Pollard) -> Result<(), String> {
+    // Modifies the memforest, without checking tx proofs
+    pub fn modify_memforest(
+        &self,
+        memforest: &mut MemForest<BitcoinNodeHash>,
+    ) -> Result<(), String> {
         // New leaves for the accumulator
-        let mut accumulator_add = Vec::<NodeHash>::new();
+        let mut accumulator_add = Vec::<BitcoinNodeHash>::new();
         // Accumulator leaves to delete
-        let mut accumulator_del = Vec::<NodeHash>::new();
+        let mut accumulator_del = Vec::<BitcoinNodeHash>::new();
         let merkle_root = self.compute_merkle_root();
         for (vout, output) in self.coinbase.iter().enumerate() {
             let outpoint = OutPoint::Coinbase {
@@ -510,7 +513,7 @@ impl Body {
                 accumulator_add.push((&pointed_output).into());
             }
         }
-        pollard.modify(&accumulator_add, &accumulator_del)
+        memforest.modify(&accumulator_add, &accumulator_del)
     }
 
     pub fn get_inputs(&self) -> Vec<OutPoint> {

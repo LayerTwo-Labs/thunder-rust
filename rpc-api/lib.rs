@@ -7,7 +7,7 @@ use l2l_openapi::open_api;
 use thunder::{
     types::{
         schema as thunder_schema, Address, MerkleRoot, OutPoint, Output,
-        OutputContent, PointedOutput, Txid,
+        OutputContent, PointedOutput, Txid, WithdrawalBundle,
     },
     wallet::Balance,
 };
@@ -72,6 +72,12 @@ pub trait Rpc {
     #[method(name = "getblockcount")]
     async fn getblockcount(&self) -> RpcResult<u32>;
 
+    /// Get the height of the latest failed withdrawal bundle
+    #[method(name = "latest_failed_withdrawal_bundle_height")]
+    async fn latest_failed_withdrawal_bundle_height(
+        &self,
+    ) -> RpcResult<Option<u32>>;
+
     /// List peers
     #[open_api_method(output_schema(PartialSchema = "schema::SocketAddr"))]
     #[method(name = "list_peers")]
@@ -90,6 +96,13 @@ pub trait Rpc {
     #[open_api_method(output_schema(PartialSchema = "schema::OpenApi"))]
     #[method(name = "openapi_schema")]
     async fn openapi_schema(&self) -> RpcResult<utoipa::openapi::OpenApi>;
+
+    /// Get pending withdrawal bundle
+    #[open_api_method(output_schema(ToSchema))]
+    #[method(name = "pending_withdrawal_bundle")]
+    async fn pending_withdrawal_bundle(
+        &self,
+    ) -> RpcResult<Option<WithdrawalBundle>>;
 
     /// Remove a tx from the mempool
     #[open_api_method(output_schema(ToSchema))]

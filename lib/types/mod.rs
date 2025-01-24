@@ -1,6 +1,7 @@
-use bitcoin::{self, hashes::Hash as _};
 use borsh::BorshSerialize;
-use rustreexo::accumulator::{node_hash::NodeHash, pollard::Pollard};
+use rustreexo::accumulator::{
+    mem_forest::MemForest, node_hash::BitcoinNodeHash,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering,
@@ -8,6 +9,7 @@ use std::{
     sync::LazyLock,
 };
 use thiserror::Error;
+use utoipa::ToSchema;
 
 mod address;
 pub mod hashes;
@@ -66,7 +68,7 @@ mod serde_hexstr_human_readable {
 }
 
 fn borsh_serialize_utreexo_nodehash<W>(
-    node_hash: &NodeHash,
+    node_hash: &BitcoinNodeHash,
     writer: &mut W,
 ) -> borsh::io::Result<()>
 where
@@ -77,7 +79,7 @@ where
 }
 
 fn borsh_serialize_utreexo_roots<W>(
-    roots: &[NodeHash],
+    roots: &[BitcoinNodeHash],
     writer: &mut W,
 ) -> borsh::io::Result<()>
 where
@@ -85,12 +87,12 @@ where
 {
     #[derive(BorshSerialize)]
     #[repr(transparent)]
-    struct SerializeNodeHash<'a>(
+    struct SerializeBitcoinNodeHash<'a>(
         #[borsh(serialize_with = "borsh_serialize_utreexo_nodehash")]
-        &'a NodeHash,
+        &'a BitcoinNodeHash,
     );
-    let roots: Vec<SerializeNodeHash> =
-        roots.iter().map(SerializeNodeHash).collect();
+    let roots: Vec<SerializeBitcoinNodeHash> =
+        roots.iter().map(SerializeBitcoinNodeHash).collect();
     borsh::BorshSerialize::serialize(&roots, writer)
 }
 
@@ -110,12 +112,12 @@ where
 )]
 pub struct Header {
     pub merkle_root: MerkleRoot,
-    pub prev_side_hash: BlockHash,
+    pub prev_side_hash: Option<BlockHash>,
     #[borsh(serialize_with = "borsh_serialize_bitcoin_block_hash")]
     pub prev_main_hash: bitcoin::BlockHash,
     /// Utreexo roots
     #[borsh(serialize_with = "borsh_serialize_utreexo_roots")]
-    pub roots: Vec<NodeHash>,
+    pub roots: Vec<BitcoinNodeHash>,
 }
 
 impl Header {
@@ -158,9 +160,10 @@ enum WithdrawalBundleErrorInner {
 #[error("Withdrawal bundle error")]
 pub struct WithdrawalBundleError(#[from] WithdrawalBundleErrorInner);
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct WithdrawalBundle {
     spend_utxos: BTreeMap<transaction::OutPoint, transaction::Output>,
+    #[schema(value_type = schema::BitcoinTransaction)]
     tx: bitcoin::Transaction,
 }
 
@@ -289,7 +292,7 @@ impl PartialOrd for AggregatedWithdrawal {
 
 #[derive(Debug, Default)]
 #[repr(transparent)]
-pub struct Accumulator(pub Pollard);
+pub struct Accumulator(pub MemForest<BitcoinNodeHash>);
 
 impl<'de> Deserialize<'de> for Accumulator {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -298,12 +301,12 @@ impl<'de> Deserialize<'de> for Accumulator {
     {
         let bytes: Vec<u8> =
             <Vec<_> as Deserialize>::deserialize(deserializer)?;
-        let pollard = Pollard::deserialize(&*bytes)
+        let mem_forest = MemForest::deserialize(&*bytes)
             .inspect_err(|err| {
                 tracing::debug!("deserialize err: {err}\n bytes: {bytes:?}")
             })
             .map_err(<D::Error as serde::de::Error>::custom)?;
-        Ok(Self(pollard))
+        Ok(Self(mem_forest))
     }
 }
 
@@ -343,13 +346,4 @@ pub struct Tip {
     pub block_hash: BlockHash,
     #[borsh(serialize_with = "borsh_serialize_bitcoin_block_hash")]
     pub main_block_hash: bitcoin::BlockHash,
-}
-
-impl Default for Tip {
-    fn default() -> Self {
-        Self {
-            block_hash: BlockHash::default(),
-            main_block_hash: bitcoin::BlockHash::all_zeros(),
-        }
-    }
 }
