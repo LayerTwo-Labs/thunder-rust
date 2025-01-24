@@ -10,7 +10,7 @@ use std::{
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::{
     channel::{
-        mpsc::{self, UnboundedReceiver, UnboundedSender},
+        mpsc::{self, TrySendError, UnboundedReceiver, UnboundedSender},
         oneshot,
     },
     stream, StreamExt,
@@ -60,7 +60,7 @@ pub enum Error {
     #[error("Send mainchain task request failed")]
     SendMainchainTaskRequest,
     #[error("Send new tip ready failed")]
-    SendNewTipReady,
+    SendNewTipReady(#[source] TrySendError<NewTipReadyMessage>),
     #[error("Send reorg result error (oneshot)")]
     SendReorgResultOneshot,
     #[error("state error")]
@@ -494,7 +494,7 @@ where
                     if header.prev_side_hash == tip_hash {
                         let () = new_tip_ready_tx
                             .unbounded_send((block_tip, Some(addr), None))
-                            .map_err(|_| Error::SendNewTipReady)?;
+                            .map_err(Error::SendNewTipReady)?;
                     }
                     let Some(descendant_tips) =
                         descendant_tips.remove(&block_tip)
@@ -524,7 +524,9 @@ where
                                         Some(addr),
                                         None,
                                     ))
-                                    .map_err(|_| Error::SendNewTipReady)?;
+                                    .map_err(|err| {
+                                        Error::SendNewTipReady(err)
+                                    })?;
                             }
                         }
                     }
@@ -863,7 +865,7 @@ where
                         PeerConnectionInfo::NewTipReady(new_tip) => {
                             self.new_tip_ready_tx
                                 .unbounded_send((new_tip, Some(addr), None))
-                                .map_err(|_| Error::SendNewTipReady)?;
+                                .map_err(Error::SendNewTipReady)?;
                         }
                         PeerConnectionInfo::NewTransaction(mut new_tx) => {
                             let mut rwtxn = self.ctxt.env.write_txn()?;
@@ -975,7 +977,7 @@ impl NetTaskHandle {
     pub fn new_tip_ready(&self, new_tip: Tip) -> Result<(), Error> {
         self.new_tip_ready_tx
             .unbounded_send((new_tip, None, None))
-            .map_err(|_| Error::SendNewTipReady)
+            .map_err(Error::SendNewTipReady)
     }
 
     /// Push a tip that is ready to reorg to, and await successful application.
@@ -990,7 +992,7 @@ impl NetTaskHandle {
         let () = self
             .new_tip_ready_tx
             .unbounded_send((new_tip, None, Some(oneshot_tx)))
-            .map_err(|_| Error::SendNewTipReady)?;
+            .map_err(Error::SendNewTipReady)?;
         oneshot_rx
             .await
             .map_err(|_| Error::ReceiveReorgResultOneshot)
