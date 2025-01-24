@@ -12,7 +12,7 @@ use heed::{
     types::{Bytes, SerdeBincode, U8},
     RoTxn,
 };
-use rustreexo::accumulator::node_hash::NodeHash;
+use rustreexo::accumulator::node_hash::BitcoinNodeHash;
 use serde::{Deserialize, Serialize};
 use tokio_stream::{wrappers::WatchStream, StreamMap};
 
@@ -166,6 +166,14 @@ impl Wallet {
         main_fee: bitcoin::Amount,
         fee: bitcoin::Amount,
     ) -> Result<Transaction, Error> {
+        tracing::trace!(
+            accumulator = %accumulator.0,
+            fee = %fee.display_dynamic(),
+            ?main_address,
+            main_fee = %main_fee.display_dynamic(),
+            value = %value.display_dynamic(),
+            "Creating withdrawal"
+        );
         let (total, coins) = self.select_coins(
             value
                 .checked_add(fee)
@@ -182,7 +190,7 @@ impl Wallet {
                 (outpoint, utxo_hash)
             })
             .collect();
-        let input_utxo_hashes: Vec<NodeHash> =
+        let input_utxo_hashes: Vec<BitcoinNodeHash> =
             inputs.iter().map(|(_, hash)| hash.into()).collect();
         let proof = accumulator
             .0
@@ -226,7 +234,7 @@ impl Wallet {
                 (outpoint, utxo_hash)
             })
             .collect();
-        let input_utxo_hashes: Vec<NodeHash> =
+        let input_utxo_hashes: Vec<BitcoinNodeHash> =
             inputs.iter().map(|(_, hash)| hash.into()).collect();
         let proof = accumulator
             .0

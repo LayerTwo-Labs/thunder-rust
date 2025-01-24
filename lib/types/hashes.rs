@@ -16,7 +16,6 @@ pub type Hash = [u8; BLAKE3_LENGTH];
     BorshDeserialize,
     Clone,
     Copy,
-    Default,
     Deserialize,
     Eq,
     Hash,

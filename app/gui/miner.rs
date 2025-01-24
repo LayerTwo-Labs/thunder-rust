@@ -22,10 +22,11 @@ impl Default for Miner {
 
 impl Miner {
     pub fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
-        let block_height =
-            app.and_then(|app| app.node.get_height().ok()).unwrap_or(0);
+        let block_height = app
+            .and_then(|app| app.node.try_get_height().ok().flatten())
+            .unwrap_or(0);
         let best_hash = app
-            .and_then(|app| app.node.get_best_hash().ok())
+            .and_then(|app| app.node.try_get_best_hash().ok().flatten())
             .unwrap_or([0; 32].into());
         ui.label("Block height: ");
         ui.monospace(format!("{block_height}"));

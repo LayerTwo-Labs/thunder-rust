@@ -237,14 +237,14 @@ where
         res
     }
 
-    pub fn get_height(&self) -> Result<u32, Error> {
-        let txn = self.env.read_txn()?;
-        Ok(self.state.get_height(&txn)?)
+    pub fn try_get_height(&self) -> Result<Option<u32>, Error> {
+        let rotxn = self.env.read_txn()?;
+        Ok(self.state.try_get_height(&rotxn)?)
     }
 
-    pub fn get_best_hash(&self) -> Result<BlockHash, Error> {
-        let txn = self.env.read_txn()?;
-        Ok(self.state.get_tip(&txn)?)
+    pub fn try_get_best_hash(&self) -> Result<Option<BlockHash>, Error> {
+        let rotxn = self.env.read_txn()?;
+        Ok(self.state.try_get_tip(&rotxn)?)
     }
 
     pub fn submit_transaction(
@@ -252,10 +252,10 @@ where
         transaction: AuthorizedTransaction,
     ) -> Result<(), Error> {
         {
-            let mut txn = self.env.write_txn()?;
-            self.state.validate_transaction(&txn, &transaction)?;
-            self.mempool.put(&mut txn, &transaction)?;
-            txn.commit()?;
+            let mut rotxn = self.env.write_txn()?;
+            self.state.validate_transaction(&rotxn, &transaction)?;
+            self.mempool.put(&mut rotxn, &transaction)?;
+            rotxn.commit()?;
         }
         self.net.push_tx(Default::default(), transaction);
         Ok(())
@@ -264,6 +264,18 @@ where
     pub fn get_all_utxos(&self) -> Result<HashMap<OutPoint, Output>, Error> {
         let rotxn = self.env.read_txn()?;
         self.state.get_utxos(&rotxn).map_err(Error::from)
+    }
+
+    pub fn get_latest_failed_withdrawal_bundle_height(
+        &self,
+    ) -> Result<Option<u32>, Error> {
+        let rotxn = self.env.read_txn()?;
+        let res = self
+            .state
+            .get_latest_failed_withdrawal_bundle(&rotxn)
+            .map_err(Error::from)?
+            .map(|(height, _)| height);
+        Ok(res)
     }
 
     pub fn get_spent_utxos(
@@ -336,8 +348,12 @@ where
         height: u32,
     ) -> Result<Option<BlockHash>, Error> {
         let rotxn = self.env.read_txn()?;
-        let tip = self.state.get_tip(&rotxn)?;
-        let tip_height = self.state.get_height(&rotxn)?;
+        let Some(tip) = self.state.try_get_tip(&rotxn)? else {
+            return Ok(None);
+        };
+        let Some(tip_height) = self.state.try_get_height(&rotxn)? else {
+            return Ok(None);
+        };
         if tip_height >= height {
             self.archive
                 .ancestors(&rotxn, tip)
@@ -472,8 +488,8 @@ where
         };
         let block_hash = header.hash();
         // Store the header, if ancestors exist
-        if header.prev_side_hash != BlockHash::default()
-            && self.try_get_header(header.prev_side_hash)?.is_none()
+        if let Some(parent) = header.prev_side_hash
+            && self.try_get_header(parent)?.is_none()
         {
             tracing::error!(%block_hash,
                 "Rejecting block {block_hash} due to missing ancestor headers",
@@ -540,9 +556,12 @@ where
         // Check that ancestor bodies exist, and store body
         {
             let rotxn = self.env.read_txn()?;
-            let tip = self.state.get_tip(&rotxn)?;
-            let common_ancestor =
-                self.archive.last_common_ancestor(&rotxn, tip, block_hash)?;
+            let tip = self.state.try_get_tip(&rotxn)?;
+            let common_ancestor = if let Some(tip) = tip {
+                self.archive.last_common_ancestor(&rotxn, tip, block_hash)?
+            } else {
+                None
+            };
             let missing_bodies = self.archive.get_missing_bodies(
                 &rotxn,
                 block_hash,
@@ -569,6 +588,7 @@ where
             main_block_hash,
         };
         if !self.net_task.new_tip_ready_confirm(new_tip).await? {
+            tracing::warn!(%block_hash, "Not ready to reorg");
             return Ok(false);
         };
         let rotxn = self.env.read_txn()?;

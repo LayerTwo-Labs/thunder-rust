@@ -65,8 +65,10 @@ fn update(
     utxos: &mut HashMap<OutPoint, Output>,
     wallet: &Wallet,
 ) -> Result<(), Error> {
+    tracing::trace!("Updating wallet");
     let () = update_wallet(node, wallet)?;
     *utxos = wallet.get_utxos()?;
+    tracing::trace!("Updated wallet");
     Ok(())
 }
 
@@ -315,7 +317,7 @@ impl App {
             }],
         };
         let body = types::Body::new(txs, coinbase);
-        let prev_side_hash = self.node.get_best_hash()?;
+        let prev_side_hash = self.node.try_get_best_hash()?;
         let prev_main_hash = {
             let mut miner_write = miner.write().await;
             let prev_main_hash =
@@ -325,7 +327,7 @@ impl App {
         };
         let roots = {
             let mut accumulator = self.node.get_tip_accumulator()?;
-            body.modify_pollard(&mut accumulator.0)
+            body.modify_memforest(&mut accumulator.0)
                 .map_err(Error::Utreexo)?;
             accumulator
                 .0
