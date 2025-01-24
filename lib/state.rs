@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use futures::Stream;
 use heed::{types::SerdeBincode, Database, RoTxn, RwTxn};
 use nonempty::NonEmpty;
-use rustreexo::accumulator::{node_hash::NodeHash, proof::Proof};
+use rustreexo::accumulator::{node_hash::BitcoinNodeHash, proof::Proof};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -19,6 +19,8 @@ use crate::{
     util::{EnvExt, UnitKey, Watchable, WatchableDb},
 };
 
+pub const WITHDRAWAL_BUNDLE_FAILURE_GAP: u32 = 4;
+
 #[derive(Debug, thiserror::Error)]
 pub enum InvalidHeaderError {
     #[error("expected block hash {expected}, but computed {computed}")]
@@ -26,10 +28,10 @@ pub enum InvalidHeaderError {
         expected: BlockHash,
         computed: BlockHash,
     },
-    #[error("expected previous sidechain block hash {expected}, but received {received}")]
+    #[error("expected previous sidechain block hash {expected:?}, but received {received:?}")]
     PrevSideHash {
-        expected: BlockHash,
-        received: BlockHash,
+        expected: Option<BlockHash>,
+        received: Option<BlockHash>,
     },
 }
 
@@ -64,7 +66,7 @@ impl<T> RollBack<T> {
     /// Attempt to push a value as the new most recent.
     /// Returns the value if the operation fails.
     fn push(&mut self, value: T, height: u32) -> Result<(), T> {
-        if self.0.last().height >= height {
+        if self.0.last().height > height {
             return Err(value);
         }
         let height_stamped = HeightStamped { value, height };
@@ -165,7 +167,6 @@ pub struct State {
 
 impl State {
     pub const NUM_DBS: u32 = 10;
-    pub const WITHDRAWAL_BUNDLE_FAILURE_GAP: u32 = 4;
 
     pub fn new(env: &heed::Env) -> Result<Self, Error> {
         let mut rwtxn = env.write_txn()?;
@@ -204,13 +205,16 @@ impl State {
         })
     }
 
-    pub fn get_tip(&self, rotxn: &RoTxn) -> Result<BlockHash, Error> {
-        let tip = self.tip.try_get(rotxn, &UnitKey)?.unwrap_or_default();
+    pub fn try_get_tip(
+        &self,
+        rotxn: &RoTxn,
+    ) -> Result<Option<BlockHash>, Error> {
+        let tip = self.tip.try_get(rotxn, &UnitKey)?;
         Ok(tip)
     }
 
-    pub fn get_height(&self, rotxn: &RoTxn) -> Result<u32, Error> {
-        let height = self.height.get(rotxn, &UnitKey)?.unwrap_or_default();
+    pub fn try_get_height(&self, rotxn: &RoTxn) -> Result<Option<u32>, Error> {
+        let height = self.height.get(rotxn, &UnitKey)?;
         Ok(height)
     }
 
@@ -242,7 +246,7 @@ impl State {
     }
 
     /// Get the latest failed withdrawal bundle, and the height at which it failed
-    fn get_latest_failed_withdrawal_bundle(
+    pub fn get_latest_failed_withdrawal_bundle(
         &self,
         rotxn: &RoTxn,
     ) -> Result<Option<(u32, WithdrawalBundle)>, Error> {
@@ -294,8 +298,8 @@ impl State {
         Utxos: IntoIterator<Item = &'a PointedOutput>,
     {
         let accumulator = self.get_accumulator(rotxn)?;
-        let targets: Vec<NodeHash> =
-            utxos.into_iter().map(NodeHash::from).collect();
+        let targets: Vec<BitcoinNodeHash> =
+            utxos.into_iter().map(BitcoinNodeHash::from).collect();
         let proof = accumulator.0.prove(&targets).map_err(Error::Utreexo)?;
         Ok(proof)
     }
@@ -359,10 +363,10 @@ impl State {
                     .value
                     .checked_add(value)
                     .ok_or(AmountOverflowError)?;
-                // Set maximum mainchain fee.
-                if main_fee > aggregated.main_fee {
-                    aggregated.main_fee = main_fee;
-                }
+                aggregated.main_fee = aggregated
+                    .main_fee
+                    .checked_add(main_fee)
+                    .ok_or(AmountOverflowError)?;
                 aggregated.spend_utxos.insert(outpoint, output);
             }
         }
@@ -493,7 +497,7 @@ impl State {
         header: &Header,
         body: &Body,
     ) -> Result<bitcoin::Amount, Error> {
-        let tip_hash = self.get_tip(rotxn)?;
+        let tip_hash = self.try_get_tip(rotxn)?;
         if header.prev_side_hash != tip_hash {
             let err = InvalidHeaderError::PrevSideHash {
                 expected: tip_hash,
@@ -501,7 +505,7 @@ impl State {
             };
             return Err(Error::InvalidHeader(err));
         };
-        let height = self.get_height(rotxn)?;
+        let height = self.try_get_height(rotxn)?.map_or(0, |height| height + 1);
         if body.authorizations.len() > Self::body_sigops_limit(height) {
             return Err(Error::TooManySigops);
         }
@@ -515,9 +519,9 @@ impl State {
             .get(rotxn, &UnitKey)?
             .unwrap_or_default();
         // New leaves for the accumulator
-        let mut accumulator_add = Vec::<NodeHash>::new();
+        let mut accumulator_add = Vec::<BitcoinNodeHash>::new();
         // Accumulator leaves to delete
-        let mut accumulator_del = Vec::<NodeHash>::new();
+        let mut accumulator_del = Vec::<BitcoinNodeHash>::new();
         let mut coinbase_value = bitcoin::Amount::ZERO;
         let merkle_root = body.compute_merkle_root();
         if merkle_root != header.merkle_root {
@@ -551,7 +555,7 @@ impl State {
         for filled_transaction in &filled_transactions {
             let txid = filled_transaction.transaction.txid();
             // hashes of spent utxos, used to verify the utreexo proof
-            let mut spent_utxo_hashes = Vec::<NodeHash>::new();
+            let mut spent_utxo_hashes = Vec::<BitcoinNodeHash>::new();
             for (outpoint, utxo_hash) in &filled_transaction.transaction.inputs
             {
                 if spent_utxos.contains(outpoint) {
@@ -611,7 +615,7 @@ impl State {
             .0
             .modify(&accumulator_add, &accumulator_del)
             .map_err(Error::Utreexo)?;
-        let roots: Vec<NodeHash> = accumulator
+        let roots: Vec<BitcoinNodeHash> = accumulator
             .0
             .get_roots()
             .iter()
@@ -650,16 +654,17 @@ impl State {
         rwtxn: &mut RwTxn,
         two_way_peg_data: &TwoWayPegData,
     ) -> Result<(), Error> {
-        let block_height = self.get_height(rwtxn)?;
+        let block_height = self.try_get_height(rwtxn)?.ok_or(Error::NoTip)?;
         tracing::trace!(%block_height, "Connecting 2WPD...");
         let mut accumulator = self
             .utreexo_accumulator
             .get(rwtxn, &UnitKey)?
             .unwrap_or_default();
         // New leaves for the accumulator
-        let mut accumulator_add = Vec::<NodeHash>::new();
+        let mut accumulator_add = Vec::<BitcoinNodeHash>::new();
         // Accumulator leaves to delete
-        let mut accumulator_del = HashSet::<NodeHash>::new();
+        let mut accumulator_del =
+            hashlink::LinkedHashSet::<BitcoinNodeHash>::new();
         // Handle deposits.
         if let Some(latest_deposit_block_hash) =
             two_way_peg_data.latest_deposit_block_hash()
@@ -671,7 +676,7 @@ impl State {
             self.deposit_blocks.put(
                 rwtxn,
                 &deposit_block_seq_idx,
-                &(latest_deposit_block_hash, block_height - 1),
+                &(latest_deposit_block_hash, block_height),
             )?;
         }
         for deposit in two_way_peg_data
@@ -696,7 +701,7 @@ impl State {
             self.withdrawal_bundle_event_blocks.put(
                 rwtxn,
                 &withdrawal_bundle_event_block_seq_idx,
-                &(*latest_withdrawal_bundle_event_block_hash, block_height - 1),
+                &(*latest_withdrawal_bundle_event_block_hash, block_height),
             )?;
         }
         let last_withdrawal_bundle_failure_height = self
@@ -704,7 +709,7 @@ impl State {
             .map(|(height, _bundle)| height)
             .unwrap_or_default();
         if block_height - last_withdrawal_bundle_failure_height
-            > Self::WITHDRAWAL_BUNDLE_FAILURE_GAP
+            >= WITHDRAWAL_BUNDLE_FAILURE_GAP
             && self
                 .pending_withdrawal_bundle
                 .get(rwtxn, &UnitKey)?
@@ -714,19 +719,6 @@ impl State {
                 self.collect_withdrawal_bundle(rwtxn, block_height)?
             {
                 let m6id = bundle.compute_m6id();
-                for (outpoint, spend_output) in bundle.spend_utxos() {
-                    let utxo_hash = hash(&PointedOutput {
-                        outpoint: *outpoint,
-                        output: spend_output.clone(),
-                    });
-                    accumulator_del.insert(utxo_hash.into());
-                    self.utxos.delete(rwtxn, outpoint)?;
-                    let spent_output = SpentOutput {
-                        output: spend_output.clone(),
-                        inpoint: InPoint::Withdrawal { m6id },
-                    };
-                    self.stxos.put(rwtxn, outpoint, &spent_output)?;
-                }
                 self.pending_withdrawal_bundle.put(
                     rwtxn,
                     &UnitKey,
@@ -759,16 +751,30 @@ impl State {
                             m6id: event.m6id,
                         });
                     };
-                    assert_eq!(bundle_block_height, block_height - 2);
+                    assert_eq!(bundle_block_height, block_height - 1);
                     if bundle.compute_m6id() != event.m6id {
                         return Err(Error::UnknownWithdrawalBundle {
                             m6id: event.m6id,
                         });
                     }
                     tracing::debug!(
+                        %block_height,
                         m6id = %event.m6id,
                         "Withdrawal bundle successfully submitted"
                     );
+                    for (outpoint, spend_output) in bundle.spend_utxos() {
+                        let utxo_hash = hash(&PointedOutput {
+                            outpoint: *outpoint,
+                            output: spend_output.clone(),
+                        });
+                        accumulator_del.replace(utxo_hash.into());
+                        self.utxos.delete(rwtxn, outpoint)?;
+                        let spent_output = SpentOutput {
+                            output: spend_output.clone(),
+                            inpoint: InPoint::Withdrawal { m6id: event.m6id },
+                        };
+                        self.stxos.put(rwtxn, outpoint, &spent_output)?;
+                    }
                     self.withdrawal_bundles.put(
                         rwtxn,
                         &event.m6id,
@@ -811,6 +817,10 @@ impl State {
                     )?;
                 }
                 WithdrawalBundleStatus::Failed => {
+                    tracing::debug!(
+                        %block_height,
+                        m6id = %event.m6id,
+                        "Handling failed withdrawal bundle");
                     let Some((bundle, mut bundle_status)) =
                         self.withdrawal_bundles.get(rwtxn, &event.m6id)?
                     else {
@@ -839,7 +849,7 @@ impl State {
                             outpoint: *outpoint,
                             output: output.clone(),
                         });
-                        accumulator_del.remove(&utxo_hash.into());
+                        accumulator_add.push(utxo_hash.into());
                     }
                     let latest_failed_m6id =
                         if let Some(mut latest_failed_m6id) = self
@@ -869,10 +879,16 @@ impl State {
             }
         }
         let accumulator_del: Vec<_> = accumulator_del.into_iter().collect();
+        tracing::debug!(
+            accumulator = %accumulator.0,
+            accumulator_add = ?accumulator_add,
+            accumulator_del = ?accumulator_del,
+            "Updating accumulator");
         accumulator
             .0
             .modify(&accumulator_add, &accumulator_del)
             .map_err(Error::Utreexo)?;
+        tracing::debug!(accumulator = %accumulator.0, "Updated accumulator");
         self.utreexo_accumulator
             .put(rwtxn, &UnitKey, &accumulator)?;
         Ok(())
@@ -883,15 +899,18 @@ impl State {
         rwtxn: &mut RwTxn,
         two_way_peg_data: &TwoWayPegData,
     ) -> Result<(), Error> {
-        let block_height = self.get_height(rwtxn)?;
+        let block_height = self
+            .try_get_height(rwtxn)?
+            .expect("Height should not be None");
         let mut accumulator = self
             .utreexo_accumulator
             .get(rwtxn, &UnitKey)?
             .unwrap_or_default();
         // New leaves for the accumulator
-        let mut accumulator_add = Vec::<NodeHash>::new();
+        let mut accumulator_add = Vec::<BitcoinNodeHash>::new();
         // Accumulator leaves to delete
-        let mut accumulator_del = HashSet::<NodeHash>::new();
+        let mut accumulator_del =
+            hashlink::LinkedHashSet::<BitcoinNodeHash>::new();
 
         // Restore pending withdrawal bundle
         for (_, event) in two_way_peg_data.withdrawal_bundle_events().rev() {
@@ -918,10 +937,24 @@ impl State {
                         WithdrawalBundleStatus::Submitted
                     );
                     assert_eq!(bundle_status.height, block_height);
+                    for (outpoint, output) in bundle.spend_utxos().iter().rev()
+                    {
+                        if !self.stxos.delete(rwtxn, outpoint)? {
+                            return Err(Error::NoStxo {
+                                outpoint: *outpoint,
+                            });
+                        };
+                        self.utxos.put(rwtxn, outpoint, output)?;
+                        let utxo_hash = hash(&PointedOutput {
+                            outpoint: *outpoint,
+                            output: output.clone(),
+                        });
+                        accumulator_add.push(utxo_hash.into());
+                    }
                     self.pending_withdrawal_bundle.put(
                         rwtxn,
                         &UnitKey,
-                        &(bundle, bundle_status.height - 2),
+                        &(bundle, bundle_status.height - 1),
                     )?;
                     self.withdrawal_bundles.delete(rwtxn, &event.m6id)?;
                 }
@@ -1003,7 +1036,7 @@ impl State {
                             outpoint: *outpoint,
                             output: output.clone(),
                         });
-                        accumulator_add.push(utxo_hash.into());
+                        accumulator_del.replace(utxo_hash.into());
                     }
                     self.withdrawal_bundles.put(
                         rwtxn,
@@ -1066,10 +1099,10 @@ impl State {
             .map(|(height, _bundle)| height)
             .unwrap_or_default();
         if block_height - last_withdrawal_bundle_failure_height
-            > Self::WITHDRAWAL_BUNDLE_FAILURE_GAP
+            > WITHDRAWAL_BUNDLE_FAILURE_GAP
             && let Some((bundle, bundle_height)) =
                 self.pending_withdrawal_bundle.get(rwtxn, &UnitKey)?
-            && bundle_height == block_height - 2
+            && bundle_height == block_height - 1
         {
             self.pending_withdrawal_bundle.delete(rwtxn, &UnitKey)?;
             for (outpoint, output) in bundle.spend_utxos().iter().rev() {
@@ -1135,7 +1168,7 @@ impl State {
         header: &Header,
         body: &Body,
     ) -> Result<(), Error> {
-        let tip_hash = self.get_tip(rwtxn)?;
+        let tip_hash = self.try_get_tip(rwtxn)?;
         if tip_hash != header.prev_side_hash {
             let err = InvalidHeaderError::PrevSideHash {
                 expected: tip_hash,
@@ -1156,9 +1189,9 @@ impl State {
             .get(rwtxn, &UnitKey)?
             .unwrap_or_default();
         // New leaves for the accumulator
-        let mut accumulator_add = Vec::<NodeHash>::new();
+        let mut accumulator_add = Vec::<BitcoinNodeHash>::new();
         // Accumulator leaves to delete
-        let mut accumulator_del = Vec::<NodeHash>::new();
+        let mut accumulator_del = Vec::<BitcoinNodeHash>::new();
         for (vout, output) in body.coinbase.iter().enumerate() {
             let outpoint = OutPoint::Coinbase {
                 merkle_root,
@@ -1205,9 +1238,9 @@ impl State {
             }
         }
         let block_hash = header.hash();
-        let height = self.get_height(rwtxn)?;
+        let height = self.try_get_height(rwtxn)?.map_or(0, |height| height + 1);
         self.tip.put(rwtxn, &UnitKey, &block_hash)?;
-        self.height.put(rwtxn, &UnitKey, &(height + 1))?;
+        self.height.put(rwtxn, &UnitKey, &height)?;
         accumulator
             .0
             .modify(&accumulator_add, &accumulator_del)
@@ -1223,7 +1256,8 @@ impl State {
         header: &Header,
         body: &Body,
     ) -> Result<(), Error> {
-        let tip_hash = self.tip.try_get(rwtxn, &UnitKey)?.unwrap_or_default();
+        let tip_hash =
+            self.tip.try_get(rwtxn, &UnitKey)?.ok_or(Error::NoTip)?;
         if tip_hash != header.hash() {
             let err = InvalidHeaderError::BlockHash {
                 expected: tip_hash,
@@ -1245,9 +1279,9 @@ impl State {
             .unwrap_or_default();
         tracing::debug!("Got acc");
         // New leaves for the accumulator
-        let mut accumulator_add = Vec::<NodeHash>::new();
+        let mut accumulator_add = Vec::<BitcoinNodeHash>::new();
         // Accumulator leaves to delete
-        let mut accumulator_del = Vec::<NodeHash>::new();
+        let mut accumulator_del = Vec::<BitcoinNodeHash>::new();
         // revert txs, last-to-first
         body.transactions.iter().rev().try_for_each(|tx| {
             let txid = tx.txid();
@@ -1312,9 +1346,20 @@ impl State {
                 }
             },
         )?;
-        let height = self.get_height(rwtxn)?;
-        self.tip.put(rwtxn, &UnitKey, &header.prev_side_hash)?;
-        self.height.put(rwtxn, &UnitKey, &(height - 1))?;
+        let height = self
+            .try_get_height(rwtxn)?
+            .expect("Height should not be None");
+        match (header.prev_side_hash, height) {
+            (None, 0) => {
+                self.tip.delete(rwtxn, &UnitKey)?;
+                self.height.delete(rwtxn, &UnitKey)?;
+            }
+            (None, _) | (_, 0) => return Err(Error::NoTip),
+            (Some(prev_side_hash), height) => {
+                self.tip.put(rwtxn, &UnitKey, &prev_side_hash)?;
+                self.height.put(rwtxn, &UnitKey, &(height - 1))?;
+            }
+        }
         accumulator
             .0
             .modify(&accumulator_add, &accumulator_del)

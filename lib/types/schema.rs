@@ -34,3 +34,18 @@ impl ToSchema for BitcoinOutPoint {
         std::borrow::Cow::Borrowed("bitcoin.OutPoint")
     }
 }
+
+pub struct BitcoinTransaction;
+
+impl PartialSchema for BitcoinTransaction {
+    fn schema() -> RefOr<Schema> {
+        let obj = utoipa::openapi::Object::new();
+        RefOr::T(Schema::Object(obj))
+    }
+}
+
+impl ToSchema for BitcoinTransaction {
+    fn name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("bitcoin.Transaction")
+    }
+}

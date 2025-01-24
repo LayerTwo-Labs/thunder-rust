@@ -201,7 +201,7 @@ impl EguiApp {
         let console_logs = ConsoleLogs::new(logs_capture, rpc_addr);
         let height = app
             .as_ref()
-            .and_then(|app| app.node.get_height().ok())
+            .and_then(|app| app.node.try_get_height().ok().flatten())
             .unwrap_or(0);
         let parent_chain = ParentChain::new(app.as_ref());
         Self {

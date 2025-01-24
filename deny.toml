@@ -74,6 +74,7 @@ ignore = [
     #{ id = "RUSTSEC-0000-0000", reason = "you can specify a reason the advisory is ignored" },
     #"a-crate-that-is-yanked@0.1.1", # you can also ignore yanked crate versions if you wish
     #{ crate = "a-crate-that-is-yanked@0.1.1", reason = "you can specify why you are ignoring the yanked crate" },
+    { id = "RUSTSEC-2024-0370", reason = "Temporary ignore until the ouroboros branch gets updated"}
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
@@ -112,11 +113,17 @@ exceptions = [
     # Each entry is the crate and version constraint, and its specific allow
     # list
     { allow = ["LicenseRef-UFL-1.0", "OFL-1.1"], name = "epaint_default_fonts", version = "0.30.0" },
+    { allow = ["MPL-2.0"], name = "bitmaps", version = "3.2.1" },
+    { allow = ["MPL-2.0"], name = "imbl", version = "3.0.0" },
+    { allow = ["MPL-2.0"], name = "imbl-sized-chunks", version = "0.1.3" },
     { allow = ["MPL-2.0"], name = "option-ext", version = "0.2.0" },
     { allow = ["MPL-2.0"], name = "webpki-root-certs", version = "0.26.7" },
+    { allow = ["MPL-2.0"], name = "webpki-roots", version = "0.25.4" },
     { allow = ["MPL-2.0"], name = "webpki-roots", version = "0.26.7" },
+    { allow = ["Zlib"], name = "foldhash" },
     { allow = ["Zlib"], name = "slotmap", version = "1.0.7" },
-    { allow = ["Zlib"], crate = "foldhash" },
+    { allow = ["Zlib"], name = "typewit", version = "1.11.0" },
+    { allow = ["Zlib"], name = "typewit_proc_macros", version = "1.8.1" },
 ]
 
 # Some crates don't have (easily) machine readable licensing information,
@@ -221,8 +228,13 @@ skip = [
 skip-tree = [
     #"ansi_term@0.11.0", # will be skipped along with _all_ of its direct and transitive dependencies
     #{ crate = "ansi_term@0.11.0", depth = 20 },
-    { crate = "bitcoin_hashes@0.12.0" },
+    { crate = "base64@0.21.7" },
+    { crate = "bitcoin_hashes@0.13.0" },
     { crate = "hashbrown@0.14.5" },
+    { crate = "hashlink@0.9.1" },
+    { crate = "heck@0.4.1" },
+    { crate = "hex-conservative@0.1.2" },
+    { crate = "itertools@0.11.0" },
     { crate = "litrs@0.2.3" },
     { crate = "quick-xml@0.30.0" },
     { crate = "redox_syscall@0.4.1" },
@@ -232,6 +244,8 @@ skip-tree = [
     { crate = "rustls-platform-verifier@0.3.4" },
     { crate = "thiserror@1" },
     { crate = "tower@0.4.13" },
+    { crate = "unicode-width@0.1.14" },
+    { crate = "windows-core@0.52.0" },
     { crate = "windows-sys@0.45.0" },
     { crate = "windows-sys@0.48.0" },
     { crate = "windows-sys@0.52.0" },
@@ -254,8 +268,13 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # List of URLs for allowed Git repositories
 allow-git = [
     "https://github.com/Ash-L2L/bip300301.git",
+    "https://github.com/Ash-L2L/bip300301_enforcer.git",
+    "https://github.com/Ash-L2L/bitcoin-send-tx-p2p",
     "https://github.com/Ash-L2L/l2l-openapi.git",
-    "https://github.com/Ash-L2L/rustreexo.git"
+    "https://gitlab.com/A-Manning/leonhard-llc-ops",
+    "https://github.com/erikjohnston/ouroboros.git?rev=ea82b33947f60c511dac6eb3815b6af3f6c3f555",
+    "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git",
+    "https://github.com/mit-dci/rustreexo.git",
 ]
 
 [sources.allow-org]

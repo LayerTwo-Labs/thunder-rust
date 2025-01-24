@@ -32,6 +32,8 @@ pub enum Command {
     GetWalletUtxos,
     /// Get the current block count
     GetBlockcount,
+    /// Get the height of the latest failed withdrawal bundle
+    LatestFailedWithdrawalBundleHeight,
     /// List peers
     ListPeers,
     /// List all UTXOs
@@ -41,6 +43,8 @@ pub enum Command {
         #[arg(long)]
         fee_sats: Option<u64>,
     },
+    /// Get pending withdrawal bundle
+    PendingWithdrawalBundle,
     /// Show OpenAPI schema
     #[command(name = "openapi-schema")]
     OpenApiSchema,
@@ -131,6 +135,11 @@ impl Cli {
                 let blockcount = rpc_client.getblockcount().await?;
                 format!("{blockcount}")
             }
+            Command::LatestFailedWithdrawalBundleHeight => {
+                let height =
+                    rpc_client.latest_failed_withdrawal_bundle_height().await?;
+                serde_json::to_string_pretty(&height)?
+            }
             Command::ListPeers => {
                 let peers = rpc_client.list_peers().await?;
                 serde_json::to_string_pretty(&peers)?
@@ -142,6 +151,11 @@ impl Cli {
             Command::Mine { fee_sats } => {
                 let () = rpc_client.mine(fee_sats).await?;
                 String::default()
+            }
+            Command::PendingWithdrawalBundle => {
+                let withdrawal_bundle =
+                    rpc_client.pending_withdrawal_bundle().await?;
+                serde_json::to_string_pretty(&withdrawal_bundle)?
             }
             Command::OpenApiSchema => {
                 let openapi =
