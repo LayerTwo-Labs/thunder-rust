@@ -679,7 +679,7 @@ where
         tracing::debug!("starting net task");
         #[derive(Debug)]
         enum MailboxItem {
-            AcceptConnection(Result<(), Error>),
+            AcceptConnection(Result<Option<SocketAddr>, Error>),
             // Forward a mainchain task request, along with the peer that
             // caused the request, and the peer state ID of the request
             ForwardMainchainTaskRequest(
@@ -699,8 +699,16 @@ where
             let env = self.ctxt.env.clone();
             let net = self.ctxt.net.clone();
             let fut = async move {
-                let () = net.accept_incoming(env).await?;
-                Result::<_, Error>::Ok(Some(((), ())))
+                let maybe_socket_addr = net.accept_incoming(env).await?;
+
+                // / Return:
+                // - The value to yield (maybe_socket_addr)
+                // - The state for the next iteration (())
+                // Wrapped in Result and Option
+                Result::<Option<(Option<SocketAddr>, ())>, Error>::Ok(Some((
+                    maybe_socket_addr,
+                    (),
+                )))
             };
             Box::pin(fut)
         })
@@ -744,7 +752,19 @@ where
         while let Some(mailbox_item) = mailbox_stream.next().await {
             tracing::trace!(?mailbox_item, "received new mailbox item");
             match mailbox_item {
-                MailboxItem::AcceptConnection(res) => res?,
+                MailboxItem::AcceptConnection(res) => match res {
+                    // We received a connection new incoming network connection, but no peer
+                    // was added
+                    Ok(None) => {
+                        continue;
+                    }
+                    Ok(Some(addr)) => {
+                        tracing::trace!(%addr, "accepted new incoming connection");
+                    }
+                    Err(err) => {
+                        tracing::error!(%err, "failed to accept connection");
+                    }
+                },
                 MailboxItem::ForwardMainchainTaskRequest(
                     request,
                     peer,

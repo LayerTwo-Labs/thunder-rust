@@ -332,8 +332,12 @@ impl Net {
         Ok((net, peer_info_rx))
     }
 
-    /// Accept the next incoming connection
-    pub async fn accept_incoming(&self, env: heed::Env) -> Result<(), Error> {
+    /// Accept the next incoming connection. Returns Some(addr) if a connection was accepted
+    /// and a new peer was added.
+    pub async fn accept_incoming(
+        &self,
+        env: heed::Env,
+    ) -> Result<Option<SocketAddr>, Error> {
         tracing::debug!(
             "accept incoming: listening for connections on `{}`",
             self.server
@@ -363,7 +367,7 @@ impl Net {
                 .close(quinn::VarInt::from_u32(1), b"already connected");
         }
         if connection.0.close_reason().is_some() {
-            return Ok(());
+            return Ok(None);
         }
         tracing::info!(%addr, "connected to new peer");
         let mut rwtxn = env.write_txn()?;
@@ -389,7 +393,7 @@ impl Net {
             }
         });
         self.add_active_peer(addr, connection_handle)?;
-        Ok(())
+        Ok(Some(addr))
     }
 
     // Push an internal message to the specified peer
