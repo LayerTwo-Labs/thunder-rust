@@ -56,7 +56,7 @@ pub enum Error {
     #[error("Receive mainchain task response cancelled")]
     ReceiveMainchainTaskResponse,
     #[error("Receive reorg result cancelled (oneshot)")]
-    ReceiveReorgResultOneshot,
+    ReceiveReorgResultOneshot(#[source] oneshot::Canceled),
     #[error("Send mainchain task request failed")]
     SendMainchainTaskRequest,
     #[error("Send new tip ready failed")]
@@ -417,6 +417,7 @@ where
         resp: PeerResponse,
         req: PeerRequest,
     ) -> Result<(), Error> {
+        tracing::debug!(?req, ?resp, "starting response handler");
         match (req, resp) {
             (
                 req @ PeerRequest::GetBlock {
@@ -491,7 +492,10 @@ where
                         block_hash,
                         main_block_hash,
                     };
+
                     if header.prev_side_hash == tip_hash {
+                        tracing::trace!(?block_tip, "sending new tip ready (what's the prev side hash stuff)");
+
                         let () = new_tip_ready_tx
                             .unbounded_send((block_tip, Some(addr), None))
                             .map_err(Error::SendNewTipReady)?;
@@ -517,7 +521,10 @@ where
                             common_ancestor,
                         )?;
                         if missing_bodies.is_empty() {
+                            tracing::debug!(?descendant_tip, "no missing bodies, submitting new tip ready to sources");
+
                             for addr in sources {
+                                tracing::trace!(%addr, ?descendant_tip, "sending new tip ready");
                                 let () = new_tip_ready_tx
                                     .unbounded_send((
                                         descendant_tip,
@@ -863,6 +870,7 @@ where
                                 })?;
                         }
                         PeerConnectionInfo::NewTipReady(new_tip) => {
+                            tracing::debug!(?new_tip, "mailbox item: received NewTipReady, sending on channel");
                             self.new_tip_ready_tx
                                 .unbounded_send((new_tip, Some(addr), None))
                                 .map_err(Error::SendNewTipReady)?;
@@ -973,6 +981,7 @@ impl NetTaskHandle {
     }
 
     /// Push a tip that is ready to reorg to.
+    /// TODO: delete this function?
     #[allow(dead_code)]
     pub fn new_tip_ready(&self, new_tip: Tip) -> Result<(), Error> {
         self.new_tip_ready_tx
@@ -988,14 +997,14 @@ impl NetTaskHandle {
         &self,
         new_tip: Tip,
     ) -> Result<bool, Error> {
+        tracing::debug!(?new_tip, "sending new tip ready confirm");
+
         let (oneshot_tx, oneshot_rx) = oneshot::channel();
         let () = self
             .new_tip_ready_tx
             .unbounded_send((new_tip, None, Some(oneshot_tx)))
             .map_err(Error::SendNewTipReady)?;
-        oneshot_rx
-            .await
-            .map_err(|_| Error::ReceiveReorgResultOneshot)
+        oneshot_rx.await.map_err(Error::ReceiveReorgResultOneshot)
     }
 }
 
