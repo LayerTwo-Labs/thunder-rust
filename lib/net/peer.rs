@@ -9,7 +9,7 @@ use bitcoin::{self, hashes::Hash as _, Work};
 use borsh::BorshSerialize;
 use fallible_iterator::FallibleIterator;
 use futures::{channel::mpsc, stream, StreamExt, TryFutureExt, TryStreamExt};
-use quinn::{Endpoint, SendStream};
+use quinn::SendStream;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{
@@ -53,8 +53,6 @@ pub enum ConnectionError {
     Bincode(#[from] bincode::Error),
     #[error("connection already closed")]
     ClosedStream(#[from] quinn::ClosedStream),
-    #[error("connect error")]
-    Connect(#[from] quinn::ConnectError),
     #[error("connection error")]
     Connection(#[from] quinn::ConnectionError),
     #[error("Heartbeat timeout")]
@@ -303,11 +301,12 @@ impl Connection {
     }
 
     pub async fn new(
-        endpoint: &Endpoint,
-        addr: SocketAddr,
+        connecting: quinn::Connecting,
     ) -> Result<Self, ConnectionError> {
-        let connection = endpoint.connect(addr, "localhost")?.await?;
-        tracing::info!("Connected to peer at {addr}");
+        let addr = connecting.remote_address();
+        tracing::trace!(%addr, "connecting to peer");
+        let connection = connecting.await?;
+        tracing::info!(%addr, "connected successfully to peer");
         Ok(Self(connection))
     }
 
@@ -1244,8 +1243,7 @@ pub fn handle(
 }
 
 pub fn connect(
-    endpoint: Endpoint,
-    addr: SocketAddr,
+    connecting: quinn::Connecting,
     ctxt: ConnectionContext,
 ) -> (ConnectionHandle, mpsc::UnboundedReceiver<Info>) {
     let (internal_message_tx, internal_message_rx) = mpsc::unbounded();
@@ -1254,7 +1252,7 @@ pub fn connect(
         let info_tx = info_tx.clone();
         let internal_message_tx = internal_message_tx.clone();
         move || async move {
-            let connection = Connection::new(&endpoint, addr).await?;
+            let connection = Connection::new(connecting).await?;
             let connection_task = ConnectionTask {
                 connection,
                 ctxt,

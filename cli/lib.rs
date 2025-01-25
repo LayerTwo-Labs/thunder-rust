@@ -12,6 +12,8 @@ pub enum Command {
     Balance,
     /// Connect to a peer
     ConnectPeer { addr: SocketAddr },
+    /// List peers
+    ListPeers,
     /// Deposit to address
     CreateDeposit {
         address: Address,
@@ -98,6 +100,10 @@ impl Cli {
             Command::ConnectPeer { addr } => {
                 let () = rpc_client.connect_peer(addr).await?;
                 String::default()
+            }
+            Command::ListPeers => {
+                let peers = rpc_client.list_peers().await?;
+                serde_json::to_string_pretty(&peers)?
             }
             Command::CreateDeposit {
                 address,

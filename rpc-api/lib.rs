@@ -35,6 +35,12 @@ pub trait Rpc {
         addr: SocketAddr,
     ) -> RpcResult<()>;
 
+    /// List peers
+    /// TODO: Use schema::SocketAddr. Cannot get it to work. Also, add more info about peers
+    #[open_api_method(output_schema(ToSchema))]
+    #[method(name = "list_peers")]
+    async fn list_peers(&self) -> RpcResult<Vec<String>>;
+
     /// Deposit to address
     #[open_api_method(output_schema(PartialSchema = "schema::BitcoinTxid"))]
     #[method(name = "create_deposit")]
