@@ -494,7 +494,11 @@ where
                     };
 
                     if header.prev_side_hash == tip_hash {
-                        tracing::trace!(?block_tip, "sending new tip ready (what's the prev side hash stuff)");
+                        tracing::trace!(
+                            ?block_tip,
+                            %addr,
+                            "sending new tip ready, originating from peer"
+                        );
 
                         let () = new_tip_ready_tx
                             .unbounded_send((block_tip, Some(addr), None))
@@ -672,6 +676,7 @@ where
     }
 
     async fn run(mut self) -> Result<(), Error> {
+        tracing::debug!("starting net task");
         #[derive(Debug)]
         enum MailboxItem {
             AcceptConnection(Result<(), Error>),
@@ -737,7 +742,7 @@ where
             HashSet<(SocketAddr, PeerStateId)>,
         >::new();
         while let Some(mailbox_item) = mailbox_stream.next().await {
-            tracing::trace!("received mailbox item: {:#?}", mailbox_item);
+            tracing::trace!(?mailbox_item, "received new mailbox item");
             match mailbox_item {
                 MailboxItem::AcceptConnection(res) => res?,
                 MailboxItem::ForwardMainchainTaskRequest(
@@ -835,6 +840,7 @@ where
                     continue;
                 }
                 MailboxItem::PeerInfo(Some((addr, Some(peer_info)))) => {
+                    tracing::trace!(%addr, ?peer_info, "mailbox item: received PeerInfo");
                     match peer_info {
                         PeerConnectionInfo::Error(err) => {
                             let err = anyhow::anyhow!(err);
@@ -870,7 +876,11 @@ where
                                 })?;
                         }
                         PeerConnectionInfo::NewTipReady(new_tip) => {
-                            tracing::debug!(?new_tip, "mailbox item: received NewTipReady, sending on channel");
+                            tracing::debug!(
+                                ?new_tip,
+                                %addr,
+                                "mailbox item: received NewTipReady from peer, sending on channel"
+                            );
                             self.new_tip_ready_tx
                                 .unbounded_send((new_tip, Some(addr), None))
                                 .map_err(Error::SendNewTipReady)?;
@@ -984,6 +994,11 @@ impl NetTaskHandle {
     /// TODO: delete this function?
     #[allow(dead_code)]
     pub fn new_tip_ready(&self, new_tip: Tip) -> Result<(), Error> {
+        tracing::debug!(
+            ?new_tip,
+            "sending new tip ready originating from THIS node"
+        );
+
         self.new_tip_ready_tx
             .unbounded_send((new_tip, None, None))
             .map_err(Error::SendNewTipReady)
@@ -1014,6 +1029,7 @@ impl Drop for NetTaskHandle {
         // use `Arc::get_mut` since `Arc::into_inner` requires ownership of the
         // Arc, and cloning would increase the reference count
         if let Some(task) = Arc::get_mut(&mut self.task) {
+            tracing::debug!("dropping net task handle, aborting task");
             task.abort()
         }
     }

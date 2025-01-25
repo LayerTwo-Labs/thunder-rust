@@ -352,9 +352,11 @@ impl Net {
             }
         };
         let addr = connection.addr();
+
+        tracing::trace!(%addr, "accepted incoming connection");
         if self.active_peers.read().contains_key(&addr) {
             tracing::info!(
-                "already connected to {addr}, refusing duplicate connection",
+                %addr, "incoming connection: already peered, refusing duplicate",
             );
             connection
                 .0
@@ -363,10 +365,12 @@ impl Net {
         if connection.0.close_reason().is_some() {
             return Ok(());
         }
-        tracing::info!("connected to peer at {addr}");
+        tracing::info!(%addr, "connected to new peer");
         let mut rwtxn = env.write_txn()?;
         self.known_peers.put(&mut rwtxn, &addr, &())?;
         rwtxn.commit()?;
+
+        tracing::trace!(%addr, "wrote peer to database");
         let connection_ctxt = PeerConnectionCtxt {
             env,
             archive: self.archive.clone(),
