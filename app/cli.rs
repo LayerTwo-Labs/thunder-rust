@@ -109,6 +109,11 @@ pub(super) struct Cli {
     /// If set to the empty string, logging to file will be disabled.
     #[arg(long)]
     log_dir: Option<PathBuf>,
+
+    /// Log level for logs that get written to file
+    #[arg(default_value_t = tracing::Level::WARN, long)]
+    log_level_file: tracing::Level,
+
     /// Log level
     #[arg(default_value_t = tracing::Level::DEBUG, long)]
     log_level: tracing::Level,
@@ -135,6 +140,7 @@ pub struct Config {
     /// If None, logging to file should be disabled.
     pub log_dir: Option<PathBuf>,
     pub log_level: tracing::Level,
+    pub log_level_file: tracing::Level, // Level for logs that get written to file
     pub mainchain_grpc_address: url::Url,
     pub mnemonic_seed_phrase_path: Option<PathBuf>,
     pub net_addr: SocketAddr,
@@ -164,6 +170,7 @@ impl Cli {
             headless: self.headless,
             log_dir,
             log_level: self.log_level,
+            log_level_file: self.log_level_file,
             mainchain_grpc_address: self.mainchain_grpc_address,
             mnemonic_seed_phrase_path: self.mnemonic_seed_phrase_path,
             net_addr: self.net_addr,
