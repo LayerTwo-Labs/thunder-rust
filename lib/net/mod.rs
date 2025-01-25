@@ -42,8 +42,12 @@ pub enum Error {
     Bincode(#[from] bincode::Error),
     #[error("connect error")]
     Connect(#[from] quinn::ConnectError),
-    #[error("connection error")]
-    Connection(#[from] quinn::ConnectionError),
+    #[error("connection error (remote address: {remote_address})")]
+    Connection {
+        #[source]
+        error: quinn::ConnectionError,
+        remote_address: SocketAddr,
+    },
     #[error("heed error")]
     Heed(#[from] heed::Error),
     #[error("quinn error")]
@@ -348,7 +352,15 @@ impl Net {
         let connection = match self.server.accept().await {
             Some(conn) => {
                 tracing::trace!("accepted connection from {conn:?}");
-                Connection(conn.await.map_err(Error::Connection)?)
+
+                let remote_address = conn.remote_address();
+
+                let raw_conn =
+                    conn.await.map_err(|error| Error::Connection {
+                        error,
+                        remote_address,
+                    })?;
+                Connection(raw_conn)
             }
             None => {
                 tracing::debug!("server endpoint closed");
