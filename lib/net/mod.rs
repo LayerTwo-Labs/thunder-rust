@@ -352,7 +352,7 @@ impl Net {
         let connection = match self.server.accept().await {
             Some(conn) => {
                 let remote_address = conn.remote_address();
-                tracing::trace!("accepted connection from {remote_address}",);
+                tracing::trace!("accepting connection from {remote_address}",);
 
                 let raw_conn =
                     conn.await.map_err(|error| Error::Connection {

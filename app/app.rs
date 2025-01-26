@@ -358,26 +358,22 @@ impl App {
             .attempt_bmm(bribe.to_sat(), 0, header, body)
             .await?;
 
-        // miner_write.generate().await?;
         tracing::debug!(%bmm_txid, "mine: confirming BMM...");
         if let Some((main_hash, header, body)) =
             miner_write.confirm_bmm().await?
         {
             tracing::debug!(
-                "mine: confirmed BMM, submitting block {}",
-                header.hash()
+                %main_hash, side_hash = %header.hash(), "mine: confirmed BMM, submitting block",
             );
             match self.node.submit_block(main_hash, &header, &body).await? {
                 true => {
                     tracing::debug!(
-                        "mine: BMM accepted as new tip: {}",
-                        main_hash
+                         %main_hash, "mine: BMM accepted as new tip",
                     );
                 }
                 false => {
                     tracing::warn!(
-                        "mine: BMM not accepted as new tip: {}",
-                        main_hash
+                        %main_hash, "mine: BMM not accepted as new tip",
                     );
                 }
             }
