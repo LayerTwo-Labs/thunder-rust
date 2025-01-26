@@ -99,12 +99,8 @@ pub struct Cli {
     #[arg(default_value_t = DEFAULT_RPC_ADDR, long)]
     pub rpc_addr: SocketAddr,
 
-    #[arg(
-        long,
-        default_value_t = 60,
-        help = "Timeout for RPC requests in seconds"
-    )]
-    pub timeout: u64,
+    #[arg(long, help = "Timeout for RPC requests in seconds (default: 60)")]
+    pub timeout: Option<u64>,
 
     #[command(subcommand)]
     pub command: Command,
@@ -112,8 +108,11 @@ pub struct Cli {
 
 impl Cli {
     pub async fn run(self) -> anyhow::Result<String> {
+        const DEFAULT_TIMEOUT: u64 = 60;
         let rpc_client: HttpClient = HttpClientBuilder::default()
-            .request_timeout(Duration::from_secs(self.timeout))
+            .request_timeout(Duration::from_secs(
+                self.timeout.unwrap_or(DEFAULT_TIMEOUT),
+            ))
             .build(format!("http://{}", self.rpc_addr))?;
         let res = match self.command {
             Command::Balance => {
