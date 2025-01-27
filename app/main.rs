@@ -17,6 +17,36 @@ mod util;
 
 use line_buffer::{LineBuffer, LineBufferWriter};
 
+/// Saturating predecessor of a log level
+fn saturating_pred_level(log_level: tracing::Level) -> tracing::Level {
+    match log_level {
+        tracing::Level::TRACE => tracing::Level::DEBUG,
+        tracing::Level::DEBUG => tracing::Level::INFO,
+        tracing::Level::INFO => tracing::Level::WARN,
+        tracing::Level::WARN => tracing::Level::ERROR,
+        tracing::Level::ERROR => tracing::Level::ERROR,
+    }
+}
+
+/// The empty string target `""` can be used to set a default level.
+fn targets_directive_str<'a, Targets>(targets: Targets) -> String
+where
+    Targets: IntoIterator<Item = (&'a str, tracing::Level)>,
+{
+    targets
+        .into_iter()
+        .map(|(target, level)| {
+            let level = level.as_str().to_ascii_lowercase();
+            if target.is_empty() {
+                level
+            } else {
+                format!("{target}={level}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// Must be held for the lifetime of the program in order to keep the file
 /// logger alive.
 type RollingLoggerGuard = tracing_appender::non_blocking::WorkerGuard;
@@ -56,16 +86,31 @@ fn set_tracing_subscriber(
     log_dir: Option<&Path>,
     log_level: tracing::Level,
 ) -> anyhow::Result<(LineBuffer, Option<RollingLoggerGuard>)> {
-    let targets_filter = tracing_filter::Targets::new().with_targets([
-        ("bip300301", log_level),
-        ("jsonrpsee_core::tracing", log_level),
-        ("thunder", log_level),
-        ("thunder_app", log_level),
-    ]);
+    let targets_filter = {
+        let default_directives_str = targets_directive_str([
+            ("", saturating_pred_level(log_level)),
+            ("bip300301", log_level),
+            ("jsonrpsee_core::tracing", log_level),
+            ("thunder", log_level),
+            ("thunder_app", log_level),
+        ]);
+        let directives_str =
+            match std::env::var(tracing_filter::EnvFilter::DEFAULT_ENV) {
+                Ok(env_directives) => {
+                    format!("{default_directives_str},{env_directives}")
+                }
+                Err(std::env::VarError::NotPresent) => default_directives_str,
+                Err(err) => return Err(anyhow::Error::from(err)),
+            };
+        tracing_filter::EnvFilter::builder().parse(directives_str)?
+    };
     let line_buffer = LineBuffer::default();
-    let stdout_layer = tracing_subscriber::fmt::layer()
+    let mut stdout_layer = tracing_subscriber::fmt::layer()
         .compact()
         .with_line_number(true);
+    let is_terminal =
+        std::io::IsTerminal::is_terminal(&stdout_layer.writer()());
+    stdout_layer.set_ansi(is_terminal);
     let (rolling_log_layer, rolling_log_guard) = match log_dir {
         None => (None, None),
         Some(log_dir) => {

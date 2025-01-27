@@ -36,7 +36,7 @@ pub(super) enum Request {
 
 /// Error included in a response
 #[derive(Debug, Error)]
-pub(super) enum ResponseError {
+pub enum ResponseError {
     #[error("Archive error")]
     Archive(#[from] archive::Error),
     #[error("CUSF Mainchain proto error")]
