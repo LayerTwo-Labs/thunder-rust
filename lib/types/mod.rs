@@ -3,6 +3,7 @@ use rustreexo::accumulator::{
     mem_forest::MemForest, node_hash::BitcoinNodeHash,
 };
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, HashMap},
@@ -160,8 +161,11 @@ enum WithdrawalBundleErrorInner {
 #[error("Withdrawal bundle error")]
 pub struct WithdrawalBundleError(#[from] WithdrawalBundleErrorInner);
 
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+#[serde_as]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 pub struct WithdrawalBundle {
+    #[schema(value_type = Vec<(transaction::OutPoint, transaction::Output)>)]
+    #[serde_as(as = "serde_with::IfIsHumanReadable<serde_with::Seq<(_, _)>>")]
     spend_utxos: BTreeMap<transaction::OutPoint, transaction::Output>,
     #[schema(value_type = schema::BitcoinTransaction)]
     tx: bitcoin::Transaction,
