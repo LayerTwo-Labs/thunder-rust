@@ -12,8 +12,6 @@ pub enum Command {
     Balance,
     /// Connect to a peer
     ConnectPeer { addr: SocketAddr },
-    /// List peers
-    ListPeers,
     /// Deposit to address
     CreateDeposit {
         address: Address,
@@ -34,6 +32,8 @@ pub enum Command {
     GetWalletUtxos,
     /// Get the current block count
     GetBlockcount,
+    /// List peers
+    ListPeers,
     /// List all UTXOs
     ListUtxos,
     /// Attempt to mine a sidechain block
@@ -101,10 +101,6 @@ impl Cli {
                 let () = rpc_client.connect_peer(addr).await?;
                 String::default()
             }
-            Command::ListPeers => {
-                let peers = rpc_client.list_peers().await?;
-                serde_json::to_string_pretty(&peers)?
-            }
             Command::CreateDeposit {
                 address,
                 value_sats,
@@ -134,6 +130,10 @@ impl Cli {
             Command::GetBlockcount => {
                 let blockcount = rpc_client.getblockcount().await?;
                 format!("{blockcount}")
+            }
+            Command::ListPeers => {
+                let peers = rpc_client.list_peers().await?;
+                serde_json::to_string_pretty(&peers)?
             }
             Command::ListUtxos => {
                 let utxos = rpc_client.list_utxos().await?;

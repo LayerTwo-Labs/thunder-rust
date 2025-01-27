@@ -35,12 +35,6 @@ pub trait Rpc {
         addr: SocketAddr,
     ) -> RpcResult<()>;
 
-    /// List peers
-    /// TODO: Use schema::SocketAddr. Cannot get it to work. Also, add more info about peers
-    #[open_api_method(output_schema(ToSchema))]
-    #[method(name = "list_peers")]
-    async fn list_peers(&self) -> RpcResult<Vec<String>>;
-
     /// Deposit to address
     #[open_api_method(output_schema(PartialSchema = "schema::BitcoinTxid"))]
     #[method(name = "create_deposit")]
@@ -77,6 +71,11 @@ pub trait Rpc {
     /// Get the current block count
     #[method(name = "getblockcount")]
     async fn getblockcount(&self) -> RpcResult<u32>;
+
+    /// List peers
+    #[open_api_method(output_schema(PartialSchema = "schema::SocketAddr"))]
+    #[method(name = "list_peers")]
+    async fn list_peers(&self) -> RpcResult<Vec<SocketAddr>>;
 
     /// List all UTXOs
     #[method(name = "list_utxos")]
