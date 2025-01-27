@@ -39,7 +39,7 @@ rustls = { version = "0.23.21", default-features = false, features = ["ring"] }
 rustreexo = { workspace = true, features = ["with-serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-serde_with = { version = "3.4.0", default-features = false }
+serde_with = { version = "3.4.0" }
 thiserror = { workspace = true }
 tiny-bip39 = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
