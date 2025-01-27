@@ -6,18 +6,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check-lint-build-stable:
-    name: Check, Lint, Build (ubuntu stable)
+  check-lint:
+    name: Check, Lint
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    timeout-minutes: 20
-    # env:
-    #  RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      
       - name: Install latest nightly toolchain
         uses: dtolnay/rust-toolchain@master
         with:
@@ -41,176 +37,10 @@ jobs:
       - name: Deny
         uses: EmbarkStudios/cargo-deny-action@v2
 
-      - name: Build
-        run: cargo build --release
-
-      - name: 'Set environment variables: version number and output filenames'
-        run: |
-          THUNDER_APP_VERSION=$(cargo metadata --format-version 1 | \
-            jq -er '.packages | map(select(.name == "thunder_app") | .version) | .[0]')
-          THUNDER_APP_FILENAME="thunder-${THUNDER_APP_VERSION}-x86_64-unknown-linux-gnu"
-          THUNDER_CLI_FILENAME="thunder-cli-${THUNDER_APP_VERSION}-x86_64-unknown-linux-gnu"
-          echo "THUNDER_APP_VERSION=$THUNDER_APP_VERSION" >> "$GITHUB_ENV"
-          echo "THUNDER_APP_FILENAME=$THUNDER_APP_FILENAME" >> "$GITHUB_ENV"
-          echo "THUNDER_CLI_FILENAME=$THUNDER_CLI_FILENAME" >> "$GITHUB_ENV"
-
-
-      - name: 'Set filenames for release binaries'
-        run: |
-          pushd "target/release"
-          ln -fs "thunder_app" "${THUNDER_APP_FILENAME}"
-          ln -fs "thunder_app_cli" "${THUNDER_CLI_FILENAME}"
-          popd
-
-      - name: 'Upload Artifacts (thunder)'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.THUNDER_APP_FILENAME }}
-          if-no-files-found: error
-          path: |
-            target/release/${{ env.THUNDER_APP_FILENAME }}
-            target/release/${{ env.THUNDER_CLI_FILENAME }}
-
-      - name: Release
-        uses: softprops/action-gh-release@v2.0.2
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: |
-            target/release/${{ env.THUNDER_APP_FILENAME }}
-            target/release/${{ env.THUNDER_CLI_FILENAME }}
-          fail_on_unmatched_files: true
-  
-  build-macos:
-    name: Build (macos-x86_64)
-    runs-on: macos-latest
-    permissions:
-      contents: write
-    timeout-minutes: 20
-    # env:
-    #  RUSTFLAGS: -D warnings
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: Install latest nightly toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2.5.1
-        with:
-          shared-key: x86_64-apple-darwin
-
-      - name: Build
-        run: cargo build --release
-
-      - name: 'Set environment variables: version number and output filenames'
-        run: |
-          THUNDER_APP_VERSION=$(cargo metadata --format-version 1 | \
-            jq -er '.packages | map(select(.name == "thunder_app") | .version) | .[0]')
-          THUNDER_APP_FILENAME="thunder-${THUNDER_APP_VERSION}-x86_64-apple-darwin"
-          THUNDER_CLI_FILENAME="thunder-cli-${THUNDER_APP_VERSION}-x86_64-apple-darwin"
-          echo "THUNDER_APP_VERSION=$THUNDER_APP_VERSION" >> "$GITHUB_ENV"
-          echo "THUNDER_APP_FILENAME=$THUNDER_APP_FILENAME" >> "$GITHUB_ENV"
-          echo "THUNDER_CLI_FILENAME=$THUNDER_CLI_FILENAME" >> "$GITHUB_ENV"
-
-      - name: 'Set filenames for release binaries'
-        run: |
-          pushd "target/release"
-          ln -fs "thunder_app" "${THUNDER_APP_FILENAME}"
-          ln -fs "thunder_app_cli" "${THUNDER_CLI_FILENAME}"
-          popd
-
-      - name: 'Upload Artifacts (thunder)'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.THUNDER_APP_FILENAME }}
-          if-no-files-found: error
-          path: |
-            target/release/${{ env.THUNDER_APP_FILENAME }}
-            target/release/${{ env.THUNDER_CLI_FILENAME }}
-
-      - name: Release
-        uses: softprops/action-gh-release@v2.0.2
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: |
-            target/release/${{ env.THUNDER_APP_FILENAME }}
-            target/release/${{ env.THUNDER_CLI_FILENAME }}
-          fail_on_unmatched_files: true
-
-  build-windows:
-    name: Build (x86_64-pc-windows-gnu)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    timeout-minutes: 20
-    # env:
-    #  RUSTFLAGS: -D warnings
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: Install latest nightly toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly
-          target: x86_64-pc-windows-gnu
-        
-      - name: Install mingw-w64
-        run: sudo apt install mingw-w64
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2.5.1
-        with:
-          shared-key: x86_64-pc-windows-gnu
-
-      - name: Build
-        run: cargo build --release --target x86_64-pc-windows-gnu
-        env:
-          RUSTFLAGS: "-C linker=/usr/bin/x86_64-w64-mingw32-gcc"
-
-      - name: 'Set environment variables: version number and output filenames'
-        run: |
-          THUNDER_APP_VERSION=$(cargo metadata --format-version 1 | \
-            jq -er '.packages | map(select(.name == "thunder_app") | .version) | .[0]')
-          THUNDER_APP_FILENAME="thunder-${THUNDER_APP_VERSION}-x86_64-pc-windows-gnu.exe"
-          THUNDER_CLI_FILENAME="thunder-cli-${THUNDER_APP_VERSION}-x86_64-pc-windows-gnu.exe"
-          echo "THUNDER_APP_VERSION=$THUNDER_APP_VERSION" >> "$GITHUB_ENV"
-          echo "THUNDER_APP_FILENAME=$THUNDER_APP_FILENAME" >> "$GITHUB_ENV"
-          echo "THUNDER_CLI_FILENAME=$THUNDER_CLI_FILENAME" >> "$GITHUB_ENV"
-
-
-      - name: 'Set filenames for release binaries'
-        run: |
-          pushd "target/x86_64-pc-windows-gnu/release"
-          ln -fs "thunder_app.exe" "${THUNDER_APP_FILENAME}"
-          ln -fs "thunder_app_cli.exe" "${THUNDER_CLI_FILENAME}"
-          popd
-
-      - name: 'Upload Artifacts (thunder)'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.THUNDER_APP_FILENAME }}
-          if-no-files-found: error
-          path: |
-            target/x86_64-pc-windows-gnu/release/${{ env.THUNDER_APP_FILENAME }}
-            target/x86_64-pc-windows-gnu/release/${{ env.THUNDER_CLI_FILENAME }}
-
-      - name: Release
-        uses: softprops/action-gh-release@v2.0.2
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: |
-            target/x86_64-pc-windows-gnu/release/${{ env.THUNDER_APP_FILENAME }}
-            target/x86_64-pc-windows-gnu/release/${{ env.THUNDER_CLI_FILENAME }}
-          fail_on_unmatched_files: true
-  
   integration-test:
     name: Integration test
     runs-on: ubuntu-latest
-    needs: [check-lint-build-stable]
+    needs: [check-lint]
     steps:
       - name: Download latest bitcoin-patched
         run: |
@@ -280,10 +110,92 @@ jobs:
           export THUNDER_APP='target/debug/thunder_app'
           cargo run --example integration_tests
 
+  build-release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: x86_64-unknown-linux-gnu
+            binary-suffix: ""
+            rustflags: ""
+          - os: macos-latest-large
+            name: x86_64-apple-darwin
+            binary-suffix: ""
+            rustflags: ""
+          - os: ubuntu-latest
+            name: x86_64-pc-windows-gnu
+            binary-suffix: .exe
+            rustflags: "-C linker=/usr/bin/x86_64-w64-mingw32-gcc"
+    name: Build, Release ((${{ matrix.name }}))
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      
+      - name: Install latest nightly toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          target: ${{ matrix.name }}
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2.5.1
+        with:
+          key: ${{ matrix.name }}
+
+      - name: Install windows-specific deps
+        run: sudo apt install mingw-w64
+        if: ${{ matrix.name == 'x86_64-pc-windows-gnu' }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.name }}
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+
+      - name: 'Set environment variables: version number and output filenames'
+        run: |
+          THUNDER_APP_VERSION=$(cargo metadata --format-version 1 | \
+            jq -er '.packages | map(select(.name == "thunder_app") | .version) | .[0]')
+          THUNDER_APP_FILENAME="thunder-${THUNDER_APP_VERSION}-${{ matrix.name }}${{ matrix.binary-suffix }}"
+          THUNDER_CLI_FILENAME="thunder-cli-${THUNDER_APP_VERSION}-${{ matrix.name }}${{ matrix.binary-suffix }}"
+          echo "THUNDER_APP_VERSION=$THUNDER_APP_VERSION" >> "$GITHUB_ENV"
+          echo "THUNDER_APP_FILENAME=$THUNDER_APP_FILENAME" >> "$GITHUB_ENV"
+          echo "THUNDER_CLI_FILENAME=$THUNDER_CLI_FILENAME" >> "$GITHUB_ENV"
+
+      - name: 'Set filenames for release binaries'
+        run: |
+          pushd "target/${{ matrix.name }}/release/"
+          ln -fs "thunder_app${{ matrix.binary-suffix }}" "${THUNDER_APP_FILENAME}"
+          ln -fs "thunder_app_cli${{ matrix.binary-suffix }}" "${THUNDER_CLI_FILENAME}"
+          popd
+
+      - name: 'Upload Artifacts (thunder)'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.THUNDER_APP_FILENAME }}
+          if-no-files-found: error
+          path: |
+            target/${{ matrix.name }}/release/${{ env.THUNDER_APP_FILENAME }}
+            target/${{ matrix.name }}/release/${{ env.THUNDER_CLI_FILENAME }}
+
+      - name: Release
+        uses: softprops/action-gh-release@v2.0.2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            target/${{ matrix.name }}/release/${{ env.THUNDER_APP_FILENAME }}
+            target/${{ matrix.name }}/release/${{ env.THUNDER_CLI_FILENAME }}
+          fail_on_unmatched_files: true
+
   upload-releases-to-releases-drivechain-info:
     name: Upload releases to releases.drivechain.info
     runs-on: ubuntu-latest
-    needs: [check-lint-build-stable, build-macos, build-windows, integration-test]
+    needs: [build-release, integration-test]
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - name: Download release assets
