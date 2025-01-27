@@ -74,13 +74,6 @@ impl RpcServer for RpcServerImpl {
         self.app.node.connect_peer(addr).map_err(convert_node_err)
     }
 
-    async fn list_peers(&self) -> RpcResult<Vec<String>> {
-        let peers = self.app.node.get_active_peers();
-        let res: Vec<_> =
-            peers.into_iter().map(|addr| addr.to_string()).collect();
-        Ok(res)
-    }
-
     async fn format_deposit_address(
         &self,
         address: Address,
@@ -126,6 +119,11 @@ impl RpcServer for RpcServerImpl {
 
     async fn getblockcount(&self) -> RpcResult<u32> {
         self.app.node.get_height().map_err(convert_node_err)
+    }
+
+    async fn list_peers(&self) -> RpcResult<Vec<SocketAddr>> {
+        let peers = self.app.node.get_active_peers();
+        Ok(peers)
     }
 
     async fn list_utxos(&self) -> RpcResult<Vec<PointedOutput>> {
