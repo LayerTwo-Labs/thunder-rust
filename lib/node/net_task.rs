@@ -1010,20 +1010,6 @@ impl NetTaskHandle {
         }
     }
 
-    /// Push a tip that is ready to reorg to.
-    /// TODO: delete this function?
-    #[allow(dead_code)]
-    pub fn new_tip_ready(&self, new_tip: Tip) -> Result<(), Error> {
-        tracing::debug!(
-            ?new_tip,
-            "sending new tip ready originating from THIS node"
-        );
-
-        self.new_tip_ready_tx
-            .unbounded_send((new_tip, None, None))
-            .map_err(Error::SendNewTipReady)
-    }
-
     /// Push a tip that is ready to reorg to, and await successful application.
     /// A result of Ok(true) indicates that the tip was applied and reorged
     /// to successfully.
