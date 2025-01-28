@@ -85,7 +85,7 @@ where
 fn set_tracing_subscriber(
     log_dir: Option<&Path>,
     log_level: tracing::Level,
-    log_dir_level: tracing::Level,
+    log_level_file: tracing::Level,
 ) -> anyhow::Result<(LineBuffer, Option<RollingLoggerGuard>)> {
     let targets_filter = {
         let default_directives_str = targets_directive_str([
@@ -115,7 +115,7 @@ fn set_tracing_subscriber(
     let (rolling_log_layer, rolling_log_guard) = match log_dir {
         None => (None, None),
         Some(log_dir) => {
-            let (layer, guard) = rolling_logger(log_dir, log_dir_level)?;
+            let (layer, guard) = rolling_logger(log_dir, log_level_file)?;
             (Some(layer), Some(guard))
         }
     };
