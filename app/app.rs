@@ -380,9 +380,7 @@ impl App {
         }
 
         drop(miner_write);
-        let () = self.update().inspect_err(|err| {
-            tracing::error!("mine: unable to update wallet: {err:#}");
-        })?;
+        let () = self.update()?;
 
         self.node
             .regenerate_proof(&mut self.transaction.write())
