@@ -331,7 +331,30 @@ impl Net {
             tracing::trace!(
                 "new net: connecting to already known peer at {peer_addr}"
             );
-            net.connect_peer(env.clone(), peer_addr)
+            match net.connect_peer(env.clone(), peer_addr) {
+                Err(Error::Connect(
+                    quinn::ConnectError::InvalidRemoteAddress(addr),
+                )) => {
+                    tracing::warn!(
+                        %addr, "new net: known peer with invalid remote address, removing"
+                    );
+                    let mut tx = env.write_txn()?;
+                    net.known_peers.delete(&mut tx, &peer_addr)?;
+                    tx.commit()?;
+
+                    tracing::info!(
+                        %addr,
+                        "new net: removed known peer with invalid remote address"
+                    );
+                    Ok(())
+                }
+                res => res,
+            }
+        })
+        // TODO: would be better to indicate this in the return error? tbh I want to scrap
+        // the typed error out of here, and just use anyhow
+        .inspect_err(|err| {
+            tracing::error!("unable to connect to known peers during net construction: {err:#}");
         })?;
         Ok((net, peer_info_rx))
     }

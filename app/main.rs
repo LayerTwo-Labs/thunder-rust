@@ -142,8 +142,8 @@ fn main() -> anyhow::Result<()> {
         config.log_level,
         config.log_level_file,
     )?;
-    let app: Result<app::App, app::Error> =
-        app::App::new(&config).inspect(|app| {
+    let app: Result<app::App, app::Error> = app::App::new(&config)
+        .inspect(|app| {
             // spawn rpc server
             app.runtime.spawn({
                 let app = app.clone();
@@ -151,7 +151,11 @@ fn main() -> anyhow::Result<()> {
                     rpc_server::run_server(app, config.rpc_addr).await.unwrap()
                 }
             });
+        })
+        .inspect_err(|err| {
+            tracing::error!("application error: {:?}", err);
         });
+
     if config.headless {
         tracing::info!("Running in headless mode");
         drop(line_buffer);
