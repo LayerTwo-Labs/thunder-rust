@@ -24,6 +24,14 @@ pub enum Command {
     FormatDepositAddress { address: Address },
     /// Generate a mnemonic seed phrase
     GenerateMnemonic,
+    /// Get the block with specified block hash, if it exists
+    GetBlock {
+        block_hash: thunder::types::BlockHash,
+    },
+    /// Get mainchain blocks that commit to a specified block hash
+    GetBmmInclusions {
+        block_hash: thunder::types::BlockHash,
+    },
     /// Get a new address
     GetNewAddress,
     /// Get wallet addresses, sorted by base58 encoding
@@ -117,6 +125,15 @@ impl Cli {
             }
             Command::FormatDepositAddress { address } => {
                 rpc_client.format_deposit_address(address).await?
+            }
+            Command::GetBlock { block_hash } => {
+                let block = rpc_client.get_block(block_hash).await?;
+                serde_json::to_string_pretty(&block)?
+            }
+            Command::GetBmmInclusions { block_hash } => {
+                let bmm_inclusions =
+                    rpc_client.get_bmm_inclusions(block_hash).await?;
+                serde_json::to_string_pretty(&bmm_inclusions)?
             }
             Command::GenerateMnemonic => rpc_client.generate_mnemonic().await?,
             Command::GetNewAddress => {

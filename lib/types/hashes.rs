@@ -63,6 +63,27 @@ impl std::fmt::Debug for BlockHash {
     }
 }
 
+impl FromStr for BlockHash {
+    type Err = hex::FromHexError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Hash::from_hex(s).map(Self)
+    }
+}
+
+impl utoipa::PartialSchema for BlockHash {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        let obj =
+            utoipa::openapi::Object::with_type(utoipa::openapi::Type::String);
+        utoipa::openapi::RefOr::T(utoipa::openapi::Schema::Object(obj))
+    }
+}
+
+impl utoipa::ToSchema for BlockHash {
+    fn name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("BlockHash")
+    }
+}
+
 #[derive(
     BorshSerialize,
     Clone,

@@ -20,6 +20,21 @@ impl ToSchema for BitcoinAddr {
     }
 }
 
+pub struct BitcoinBlockHash;
+
+impl PartialSchema for BitcoinBlockHash {
+    fn schema() -> RefOr<Schema> {
+        let obj = utoipa::openapi::Object::with_type(openapi::Type::String);
+        RefOr::T(Schema::Object(obj))
+    }
+}
+
+impl ToSchema for BitcoinBlockHash {
+    fn name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("bitcoin.BlockHash")
+    }
+}
+
 pub struct BitcoinOutPoint;
 
 impl PartialSchema for BitcoinOutPoint {
@@ -47,5 +62,35 @@ impl PartialSchema for BitcoinTransaction {
 impl ToSchema for BitcoinTransaction {
     fn name() -> std::borrow::Cow<'static, str> {
         std::borrow::Cow::Borrowed("bitcoin.Transaction")
+    }
+}
+
+pub struct UtreexoNodeHash;
+
+impl PartialSchema for UtreexoNodeHash {
+    fn schema() -> RefOr<Schema> {
+        let obj = utoipa::openapi::Object::with_type(openapi::Type::String);
+        RefOr::T(Schema::Object(obj))
+    }
+}
+
+impl ToSchema for UtreexoNodeHash {
+    fn name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("utreexo.NodeHash")
+    }
+}
+
+pub struct UtreexoProof;
+
+impl PartialSchema for UtreexoProof {
+    fn schema() -> RefOr<Schema> {
+        let obj = utoipa::openapi::Object::new();
+        RefOr::T(Schema::Object(obj))
+    }
+}
+
+impl ToSchema for UtreexoProof {
+    fn name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("utreexo.Proof")
     }
 }

@@ -56,6 +56,23 @@ pub trait Rpc {
     #[method(name = "generate_mnemonic")]
     async fn generate_mnemonic(&self) -> RpcResult<String>;
 
+    /// Get the block with specified block hash, if it exists
+    #[method(name = "get_block")]
+    async fn get_block(
+        &self,
+        block_hash: thunder::types::BlockHash,
+    ) -> RpcResult<Option<thunder::types::Block>>;
+
+    /// Get mainchain blocks that commit to a specified block hash
+    #[open_api_method(output_schema(
+        PartialSchema = "thunder_schema::BitcoinBlockHash"
+    ))]
+    #[method(name = "get_bmm_inclusions")]
+    async fn get_bmm_inclusions(
+        &self,
+        block_hash: thunder::types::BlockHash,
+    ) -> RpcResult<Vec<bitcoin::BlockHash>>;
+
     /// Get a new address
     #[method(name = "get_new_address")]
     async fn get_new_address(&self) -> RpcResult<Address>;

@@ -109,15 +109,25 @@ where
 }
 
 #[derive(
-    BorshSerialize, Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize,
+    BorshSerialize,
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    Hash,
+    PartialEq,
+    Serialize,
+    ToSchema,
 )]
 pub struct Header {
     pub merkle_root: MerkleRoot,
     pub prev_side_hash: Option<BlockHash>,
     #[borsh(serialize_with = "borsh_serialize_bitcoin_block_hash")]
+    #[schema(value_type = schema::BitcoinBlockHash)]
     pub prev_main_hash: bitcoin::BlockHash,
     /// Utreexo roots
     #[borsh(serialize_with = "borsh_serialize_utreexo_roots")]
+    #[schema(value_type = Vec<schema::UtreexoNodeHash>)]
     pub roots: Vec<BitcoinNodeHash>,
 }
 
@@ -350,4 +360,51 @@ pub struct Tip {
     pub block_hash: BlockHash,
     #[borsh(serialize_with = "borsh_serialize_bitcoin_block_hash")]
     pub main_block_hash: bitcoin::BlockHash,
+}
+
+/// Semver-compatible version
+#[derive(
+    BorshSerialize,
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    Hash,
+    PartialEq,
+    Serialize,
+)]
+pub struct Version {
+    pub major: u64,
+    pub minor: u64,
+    pub patch: u64,
+}
+
+impl From<semver::Version> for Version {
+    fn from(version: semver::Version) -> Self {
+        let semver::Version {
+            major,
+            minor,
+            patch,
+            pre: _,
+            build: _,
+        } = version;
+        Self {
+            major,
+            minor,
+            patch,
+        }
+    }
+}
+
+// Do not make this public outside of this crate, as it could break semver
+pub(crate) static VERSION: LazyLock<Version> = LazyLock::new(|| {
+    const VERSION_STR: &str = env!("CARGO_PKG_VERSION");
+    semver::Version::parse(VERSION_STR).unwrap().into()
+});
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct Block {
+    pub header: Header,
+    pub body: Body,
 }
