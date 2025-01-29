@@ -5,7 +5,7 @@ use std::{path::Path, sync::mpsc};
 use clap::Parser as _;
 
 use tracing_subscriber::{
-    filter as tracing_filter, layer::SubscriberExt, Layer,
+    filter as tracing_filter, fmt::format, layer::SubscriberExt, Layer,
 };
 
 mod app;
@@ -104,10 +104,14 @@ fn set_tracing_subscriber(
             };
         tracing_filter::EnvFilter::builder().parse(directives_str)?
     };
-    let line_buffer = LineBuffer::default();
+    // Adding source location here means that the file name + line number
+    // is included, in such a way that it can be clicked on from within
+    // the IDE, and you're sent right to the specific line of code. Very handy!
+    let stdout_format = format().with_source_location(true);
     let mut stdout_layer = tracing_subscriber::fmt::layer()
-        .compact()
-        .with_line_number(true);
+        .with_target(true)
+        .event_format(stdout_format);
+
     let is_terminal =
         std::io::IsTerminal::is_terminal(&stdout_layer.writer()());
     stdout_layer.set_ansi(is_terminal);
@@ -118,6 +122,8 @@ fn set_tracing_subscriber(
             (Some(layer), Some(guard))
         }
     };
+
+    let line_buffer = LineBuffer::default();
     let capture_layer = tracing_subscriber::fmt::layer()
         .compact()
         .with_line_number(true)
