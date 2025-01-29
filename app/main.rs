@@ -1,6 +1,6 @@
 #![feature(let_chains)]
 
-use std::{path::Path, sync::mpsc};
+use std::{path::Path, sync::mpsc, thread};
 
 use clap::Parser as _;
 
@@ -148,13 +148,24 @@ fn main() -> anyhow::Result<()> {
         config.log_level,
         config.log_level_file,
     )?;
+
+    let (app_tx, app_rx) = mpsc::channel::<anyhow::Error>();
+
     let app: Result<app::App, app::Error> = app::App::new(&config)
         .inspect(|app| {
             // spawn rpc server
             app.runtime.spawn({
                 let app = app.clone();
                 async move {
-                    rpc_server::run_server(app, config.rpc_addr).await.unwrap()
+                    tracing::info!(
+                        "RPC server listening on {}",
+                        config.rpc_addr
+                    );
+                    if let Err(err) =
+                        rpc_server::run_server(app, config.rpc_addr).await
+                    {
+                        app_tx.send(anyhow::anyhow!("RPC server error: {err}"));
+                    }
                 }
             });
         })
@@ -162,18 +173,16 @@ fn main() -> anyhow::Result<()> {
             tracing::error!("application error: {:?}", err);
         });
 
+    let (interrupt_tx, interrupt_rx) = mpsc::channel();
     if config.headless {
         tracing::info!("Running in headless mode");
         drop(line_buffer);
         let _app = app?;
         // wait for ctrlc signal
-        let (tx, rx) = mpsc::channel();
         ctrlc::set_handler(move || {
-            tx.send(()).unwrap();
+            interrupt_tx.send(()).unwrap();
         })
         .expect("Error setting Ctrl-C handler");
-        rx.recv().unwrap();
-        tracing::info!("Received Ctrl-C signal, exiting...");
     } else {
         let native_options = eframe::NativeOptions::default();
         let app: Option<_> = app.map_or_else(
@@ -198,5 +207,22 @@ fn main() -> anyhow::Result<()> {
         )
         .map_err(|err| anyhow::anyhow!("failed to launch egui app: {err}"))?
     }
+
+    thread::spawn(move || {
+        if let Err(err) = interrupt_rx.recv() {
+            tracing::error!("Failed to receive Ctrl-C signal: {err}");
+            return;
+        }
+        tracing::info!("Received Ctrl-C signal, exiting...");
+
+        if let Err(err) = app_tx.send(anyhow::anyhow!("Ctrl-C signal received"))
+        {
+            tracing::error!(
+                "Failed to send interrupt error to main channel: {err}"
+            );
+        }
+    });
+
+    app_rx.recv()?;
     Ok(())
 }
