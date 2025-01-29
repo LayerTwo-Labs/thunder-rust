@@ -10,7 +10,7 @@ use std::{
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::{
     channel::{
-        mpsc::{self, UnboundedReceiver, UnboundedSender},
+        mpsc::{self, TrySendError, UnboundedReceiver, UnboundedSender},
         oneshot,
     },
     stream, StreamExt,
@@ -56,11 +56,11 @@ pub enum Error {
     #[error("Receive mainchain task response cancelled")]
     ReceiveMainchainTaskResponse,
     #[error("Receive reorg result cancelled (oneshot)")]
-    ReceiveReorgResultOneshot,
+    ReceiveReorgResultOneshot(#[source] oneshot::Canceled),
     #[error("Send mainchain task request failed")]
     SendMainchainTaskRequest,
     #[error("Send new tip ready failed")]
-    SendNewTipReady,
+    SendNewTipReady(#[source] TrySendError<NewTipReadyMessage>),
     #[error("Send reorg result error (oneshot)")]
     SendReorgResultOneshot,
     #[error("state error")]
@@ -417,6 +417,7 @@ where
         resp: PeerResponse,
         req: PeerRequest,
     ) -> Result<(), Error> {
+        tracing::debug!(?req, ?resp, "starting response handler");
         match (req, resp) {
             (
                 req @ PeerRequest::GetBlock {
@@ -491,10 +492,17 @@ where
                         block_hash,
                         main_block_hash,
                     };
+
                     if header.prev_side_hash == tip_hash {
+                        tracing::trace!(
+                            ?block_tip,
+                            %addr,
+                            "sending new tip ready, originating from peer"
+                        );
+
                         let () = new_tip_ready_tx
                             .unbounded_send((block_tip, Some(addr), None))
-                            .map_err(|_| Error::SendNewTipReady)?;
+                            .map_err(Error::SendNewTipReady)?;
                     }
                     let Some(descendant_tips) =
                         descendant_tips.remove(&block_tip)
@@ -517,14 +525,19 @@ where
                             common_ancestor,
                         )?;
                         if missing_bodies.is_empty() {
+                            tracing::debug!(?descendant_tip, "no missing bodies, submitting new tip ready to sources");
+
                             for addr in sources {
+                                tracing::trace!(%addr, ?descendant_tip, "sending new tip ready");
                                 let () = new_tip_ready_tx
                                     .unbounded_send((
                                         descendant_tip,
                                         Some(addr),
                                         None,
                                     ))
-                                    .map_err(|_| Error::SendNewTipReady)?;
+                                    .map_err(|err| {
+                                        Error::SendNewTipReady(err)
+                                    })?;
                             }
                         }
                     }
@@ -663,9 +676,10 @@ where
     }
 
     async fn run(mut self) -> Result<(), Error> {
+        tracing::debug!("starting net task");
         #[derive(Debug)]
         enum MailboxItem {
-            AcceptConnection(Result<(), Error>),
+            AcceptConnection(Result<Option<SocketAddr>, Error>),
             // Forward a mainchain task request, along with the peer that
             // caused the request, and the peer state ID of the request
             ForwardMainchainTaskRequest(
@@ -685,8 +699,16 @@ where
             let env = self.ctxt.env.clone();
             let net = self.ctxt.net.clone();
             let fut = async move {
-                let () = net.accept_incoming(env).await?;
-                Result::<_, Error>::Ok(Some(((), ())))
+                let maybe_socket_addr = net.accept_incoming(env).await?;
+
+                // / Return:
+                // - The value to yield (maybe_socket_addr)
+                // - The state for the next iteration (())
+                // Wrapped in Result and Option
+                Result::<Option<(Option<SocketAddr>, ())>, Error>::Ok(Some((
+                    maybe_socket_addr,
+                    (),
+                )))
             };
             Box::pin(fut)
         })
@@ -728,9 +750,21 @@ where
             HashSet<(SocketAddr, PeerStateId)>,
         >::new();
         while let Some(mailbox_item) = mailbox_stream.next().await {
-            tracing::trace!("received mailbox item: {:#?}", mailbox_item);
+            tracing::trace!(?mailbox_item, "received new mailbox item");
             match mailbox_item {
-                MailboxItem::AcceptConnection(res) => res?,
+                MailboxItem::AcceptConnection(res) => match res {
+                    // We received a connection new incoming network connection, but no peer
+                    // was added
+                    Ok(None) => {
+                        continue;
+                    }
+                    Ok(Some(addr)) => {
+                        tracing::trace!(%addr, "accepted new incoming connection");
+                    }
+                    Err(err) => {
+                        tracing::error!(%err, "failed to accept connection");
+                    }
+                },
                 MailboxItem::ForwardMainchainTaskRequest(
                     request,
                     peer,
@@ -826,6 +860,7 @@ where
                     continue;
                 }
                 MailboxItem::PeerInfo(Some((addr, Some(peer_info)))) => {
+                    tracing::trace!(%addr, ?peer_info, "mailbox item: received PeerInfo");
                     match peer_info {
                         PeerConnectionInfo::Error(err) => {
                             let err = anyhow::anyhow!(err);
@@ -861,9 +896,14 @@ where
                                 })?;
                         }
                         PeerConnectionInfo::NewTipReady(new_tip) => {
+                            tracing::debug!(
+                                ?new_tip,
+                                %addr,
+                                "mailbox item: received NewTipReady from peer, sending on channel"
+                            );
                             self.new_tip_ready_tx
                                 .unbounded_send((new_tip, Some(addr), None))
-                                .map_err(|_| Error::SendNewTipReady)?;
+                                .map_err(Error::SendNewTipReady)?;
                         }
                         PeerConnectionInfo::NewTransaction(mut new_tx) => {
                             let mut rwtxn = self.ctxt.env.write_txn()?;
@@ -970,14 +1010,6 @@ impl NetTaskHandle {
         }
     }
 
-    /// Push a tip that is ready to reorg to.
-    #[allow(dead_code)]
-    pub fn new_tip_ready(&self, new_tip: Tip) -> Result<(), Error> {
-        self.new_tip_ready_tx
-            .unbounded_send((new_tip, None, None))
-            .map_err(|_| Error::SendNewTipReady)
-    }
-
     /// Push a tip that is ready to reorg to, and await successful application.
     /// A result of Ok(true) indicates that the tip was applied and reorged
     /// to successfully.
@@ -986,14 +1018,14 @@ impl NetTaskHandle {
         &self,
         new_tip: Tip,
     ) -> Result<bool, Error> {
+        tracing::debug!(?new_tip, "sending new tip ready confirm");
+
         let (oneshot_tx, oneshot_rx) = oneshot::channel();
         let () = self
             .new_tip_ready_tx
             .unbounded_send((new_tip, None, Some(oneshot_tx)))
-            .map_err(|_| Error::SendNewTipReady)?;
-        oneshot_rx
-            .await
-            .map_err(|_| Error::ReceiveReorgResultOneshot)
+            .map_err(Error::SendNewTipReady)?;
+        oneshot_rx.await.map_err(Error::ReceiveReorgResultOneshot)
     }
 }
 
@@ -1003,6 +1035,7 @@ impl Drop for NetTaskHandle {
         // use `Arc::get_mut` since `Arc::into_inner` requires ownership of the
         // Arc, and cloning would increase the reference count
         if let Some(task) = Arc::get_mut(&mut self.task) {
+            tracing::debug!("dropping net task handle, aborting task");
             task.abort()
         }
     }

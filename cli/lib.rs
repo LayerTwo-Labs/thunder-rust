@@ -1,4 +1,7 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    time::Duration,
+};
 
 use clap::{Parser, Subcommand};
 use jsonrpsee::http_client::{HttpClient, HttpClientBuilder};
@@ -96,13 +99,20 @@ pub struct Cli {
     #[arg(default_value_t = DEFAULT_RPC_ADDR, long)]
     pub rpc_addr: SocketAddr,
 
+    #[arg(long, help = "Timeout for RPC requests in seconds (default: 60)")]
+    pub timeout: Option<u64>,
+
     #[command(subcommand)]
     pub command: Command,
 }
 
 impl Cli {
     pub async fn run(self) -> anyhow::Result<String> {
+        const DEFAULT_TIMEOUT: u64 = 60;
         let rpc_client: HttpClient = HttpClientBuilder::default()
+            .request_timeout(Duration::from_secs(
+                self.timeout.unwrap_or(DEFAULT_TIMEOUT),
+            ))
             .build(format!("http://{}", self.rpc_addr))?;
         let res = match self.command {
             Command::Balance => {

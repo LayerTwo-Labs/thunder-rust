@@ -46,6 +46,7 @@ pub enum Error {
 }
 
 fn update_wallet(node: &Node, wallet: &Wallet) -> Result<(), Error> {
+    tracing::trace!("starting wallet update");
     let addresses = wallet.get_addresses()?;
     let utxos = node.get_utxos_by_addresses(&addresses)?;
     let outpoints: Vec<_> = wallet.get_utxos()?.into_keys().collect();
@@ -56,6 +57,8 @@ fn update_wallet(node: &Node, wallet: &Wallet) -> Result<(), Error> {
         .collect();
     wallet.put_utxos(&utxos)?;
     wallet.spend_utxos(&spent)?;
+
+    tracing::debug!("finished wallet update");
     Ok(())
 }
 
@@ -355,26 +358,22 @@ impl App {
             .attempt_bmm(bribe.to_sat(), 0, header, body)
             .await?;
 
-        // miner_write.generate().await?;
         tracing::debug!(%bmm_txid, "mine: confirming BMM...");
         if let Some((main_hash, header, body)) =
             miner_write.confirm_bmm().await?
         {
             tracing::debug!(
-                "mine: confirmed BMM, submitting block {}",
-                header.hash()
+                %main_hash, side_hash = %header.hash(), "mine: confirmed BMM, submitting block",
             );
             match self.node.submit_block(main_hash, &header, &body).await? {
                 true => {
                     tracing::debug!(
-                        "mine: BMM accepted as new tip: {}",
-                        main_hash
+                         %main_hash, "mine: BMM accepted as new tip",
                     );
                 }
                 false => {
                     tracing::warn!(
-                        "mine: BMM not accepted as new tip: {}",
-                        main_hash
+                        %main_hash, "mine: BMM not accepted as new tip",
                     );
                 }
             }
@@ -382,7 +381,12 @@ impl App {
 
         drop(miner_write);
         let () = self.update()?;
-        self.node.regenerate_proof(&mut self.transaction.write())?;
+
+        self.node
+            .regenerate_proof(&mut self.transaction.write())
+            .inspect_err(|err| {
+                tracing::error!("mine: unable to regenerate proof: {err:#}");
+            })?;
         Ok(())
     }
 

@@ -7,13 +7,12 @@ use jsonrpsee::{
     types::ErrorObject,
 };
 use thunder::{
-    node,
     types::{Address, PointedOutput, Txid, WithdrawalBundle},
-    wallet::{self, Balance},
+    wallet::Balance,
 };
 use thunder_app_rpc_api::RpcServer;
 
-use crate::app::{self, App};
+use crate::app::App;
 
 pub struct RpcServerImpl {
     app: App,
@@ -30,25 +29,10 @@ where
     let error = anyhow::Error::from(error);
     custom_err_msg(format!("{error:#}"))
 }
-
-fn convert_app_err(err: app::Error) -> ErrorObject<'static> {
-    let err = anyhow::anyhow!(err);
-    tracing::error!("{err:#}");
-    custom_err(err)
-}
-
-fn convert_node_err(err: node::Error) -> ErrorObject<'static> {
-    custom_err(err)
-}
-
-fn convert_wallet_err(err: wallet::Error) -> ErrorObject<'static> {
-    custom_err(err)
-}
-
 #[async_trait]
 impl RpcServer for RpcServerImpl {
     async fn balance(&self) -> RpcResult<Balance> {
-        self.app.wallet.get_balance().map_err(convert_wallet_err)
+        self.app.wallet.get_balance().map_err(custom_err)
     }
 
     async fn create_deposit(
@@ -64,14 +48,14 @@ impl RpcServer for RpcServerImpl {
                 bitcoin::Amount::from_sat(value_sats),
                 bitcoin::Amount::from_sat(fee_sats),
             )
-            .map_err(convert_app_err)
+            .map_err(custom_err)
         })
         .await
         .unwrap()
     }
 
     async fn connect_peer(&self, addr: SocketAddr) -> RpcResult<()> {
-        self.app.node.connect_peer(addr).map_err(convert_node_err)
+        self.app.node.connect_peer(addr).map_err(custom_err)
     }
 
     async fn format_deposit_address(
@@ -118,25 +102,18 @@ impl RpcServer for RpcServerImpl {
     }
 
     async fn get_new_address(&self) -> RpcResult<Address> {
-        self.app
-            .wallet
-            .get_new_address()
-            .map_err(convert_wallet_err)
+        self.app.wallet.get_new_address().map_err(custom_err)
     }
 
     async fn get_wallet_addresses(&self) -> RpcResult<Vec<Address>> {
-        let addrs = self
-            .app
-            .wallet
-            .get_addresses()
-            .map_err(convert_wallet_err)?;
+        let addrs = self.app.wallet.get_addresses().map_err(custom_err)?;
         let mut res: Vec<_> = addrs.into_iter().collect();
         res.sort_by_key(|addr| addr.as_base58());
         Ok(res)
     }
 
     async fn get_wallet_utxos(&self) -> RpcResult<Vec<PointedOutput>> {
-        let utxos = self.app.wallet.get_utxos().map_err(convert_wallet_err)?;
+        let utxos = self.app.wallet.get_utxos().map_err(custom_err)?;
         let utxos = utxos
             .into_iter()
             .map(|(outpoint, output)| PointedOutput { outpoint, output })
@@ -145,8 +122,7 @@ impl RpcServer for RpcServerImpl {
     }
 
     async fn getblockcount(&self) -> RpcResult<u32> {
-        let height =
-            self.app.node.try_get_height().map_err(convert_node_err)?;
+        let height = self.app.node.try_get_height().map_err(custom_err)?;
         let block_count = height.map_or(0, |height| height + 1);
         Ok(block_count)
     }
@@ -158,7 +134,7 @@ impl RpcServer for RpcServerImpl {
             .app
             .node
             .get_latest_failed_withdrawal_bundle_height()
-            .map_err(convert_node_err)?;
+            .map_err(custom_err)?;
         Ok(height)
     }
 
@@ -168,7 +144,7 @@ impl RpcServer for RpcServerImpl {
     }
 
     async fn list_utxos(&self) -> RpcResult<Vec<PointedOutput>> {
-        let utxos = self.app.node.get_all_utxos().map_err(convert_node_err)?;
+        let utxos = self.app.node.get_all_utxos().map_err(custom_err)?;
         let res = utxos
             .into_iter()
             .map(|(outpoint, output)| PointedOutput { outpoint, output })
@@ -178,10 +154,14 @@ impl RpcServer for RpcServerImpl {
 
     async fn mine(&self, fee: Option<u64>) -> RpcResult<()> {
         let fee = fee.map(bitcoin::Amount::from_sat);
-        self.app.local_pool.spawn_pinned({
-            let app = self.app.clone();
-            move || async move { app.mine(fee).await.map_err(convert_app_err) }
-        }).await.unwrap()
+        self.app
+            .local_pool
+            .spawn_pinned({
+                let app = self.app.clone();
+                move || async move { app.mine(fee).await.map_err(custom_err) }
+            })
+            .await
+            .unwrap()
     }
 
     async fn pending_withdrawal_bundle(
@@ -190,7 +170,7 @@ impl RpcServer for RpcServerImpl {
         self.app
             .node
             .get_pending_withdrawal_bundle()
-            .map_err(convert_node_err)
+            .map_err(custom_err)
     }
 
     async fn openapi_schema(&self) -> RpcResult<utoipa::openapi::OpenApi> {
@@ -199,10 +179,7 @@ impl RpcServer for RpcServerImpl {
     }
 
     async fn remove_from_mempool(&self, txid: Txid) -> RpcResult<()> {
-        self.app
-            .node
-            .remove_from_mempool(txid)
-            .map_err(convert_node_err)
+        self.app.node.remove_from_mempool(txid).map_err(custom_err)
     }
 
     async fn set_seed_from_mnemonic(&self, mnemonic: String) -> RpcResult<()> {
@@ -213,18 +190,12 @@ impl RpcServer for RpcServerImpl {
         let seed_bytes: [u8; 64] = seed.as_bytes().try_into().map_err(
             |err: <[u8; 64] as TryFrom<&[u8]>>::Error| custom_err(err),
         )?;
-        self.app
-            .wallet
-            .set_seed(&seed_bytes)
-            .map_err(convert_wallet_err)
+        self.app.wallet.set_seed(&seed_bytes).map_err(custom_err)
     }
 
     async fn sidechain_wealth_sats(&self) -> RpcResult<u64> {
-        let sidechain_wealth = self
-            .app
-            .node
-            .get_sidechain_wealth()
-            .map_err(convert_node_err)?;
+        let sidechain_wealth =
+            self.app.node.get_sidechain_wealth().map_err(custom_err)?;
         Ok(sidechain_wealth.to_sat())
     }
 
@@ -238,11 +209,8 @@ impl RpcServer for RpcServerImpl {
         value_sats: u64,
         fee_sats: u64,
     ) -> RpcResult<Txid> {
-        let accumulator = self
-            .app
-            .node
-            .get_tip_accumulator()
-            .map_err(convert_node_err)?;
+        let accumulator =
+            self.app.node.get_tip_accumulator().map_err(custom_err)?;
         let tx = self
             .app
             .wallet
@@ -252,9 +220,9 @@ impl RpcServer for RpcServerImpl {
                 Amount::from_sat(value_sats),
                 Amount::from_sat(fee_sats),
             )
-            .map_err(convert_wallet_err)?;
+            .map_err(custom_err)?;
         let txid = tx.txid();
-        self.app.sign_and_send(tx).map_err(convert_app_err)?;
+        self.app.sign_and_send(tx).map_err(custom_err)?;
         Ok(txid)
     }
 
@@ -265,11 +233,8 @@ impl RpcServer for RpcServerImpl {
         fee_sats: u64,
         mainchain_fee_sats: u64,
     ) -> RpcResult<Txid> {
-        let accumulator = self
-            .app
-            .node
-            .get_tip_accumulator()
-            .map_err(convert_node_err)?;
+        let accumulator =
+            self.app.node.get_tip_accumulator().map_err(custom_err)?;
         let tx = self
             .app
             .wallet
@@ -280,9 +245,9 @@ impl RpcServer for RpcServerImpl {
                 Amount::from_sat(mainchain_fee_sats),
                 Amount::from_sat(fee_sats),
             )
-            .map_err(convert_wallet_err)?;
+            .map_err(custom_err)?;
         let txid = tx.txid();
-        self.app.sign_and_send(tx).map_err(convert_app_err)?;
+        self.app.sign_and_send(tx).map_err(custom_err)?;
         Ok(txid)
     }
 }

@@ -1262,6 +1262,8 @@ pub fn handle(
     ctxt: ConnectionContext,
     connection: Connection,
 ) -> (ConnectionHandle, mpsc::UnboundedReceiver<Info>) {
+    let addr = connection.addr();
+
     let (internal_message_tx, internal_message_rx) = mpsc::unbounded();
     let (info_tx, info_rx) = mpsc::unbounded();
     let connection_task = {
@@ -1280,6 +1282,8 @@ pub fn handle(
     };
     let task = spawn(async move {
         if let Err(err) = connection_task().await {
+            tracing::error!(%addr, "connection task error, sending on info_tx: {err:#}");
+
             if let Err(send_error) = info_tx.unbounded_send(err.into())
                 && let Info::Error(err) = send_error.into_inner()
             {

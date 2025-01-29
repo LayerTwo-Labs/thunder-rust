@@ -42,8 +42,12 @@ pub enum Error {
     Bincode(#[from] bincode::Error),
     #[error("connect error")]
     Connect(#[from] quinn::ConnectError),
-    #[error("connection error")]
-    Connection(#[from] quinn::ConnectionError),
+    #[error("connection error (remote address: {remote_address})")]
+    Connection {
+        #[source]
+        error: quinn::ConnectionError,
+        remote_address: SocketAddr,
+    },
     #[error("heed error")]
     Heed(#[from] heed::Error),
     #[error("quinn error")]
@@ -327,13 +331,40 @@ impl Net {
             tracing::trace!(
                 "new net: connecting to already known peer at {peer_addr}"
             );
-            net.connect_peer(env.clone(), peer_addr)
+            match net.connect_peer(env.clone(), peer_addr) {
+                Err(Error::Connect(
+                    quinn::ConnectError::InvalidRemoteAddress(addr),
+                )) => {
+                    tracing::warn!(
+                        %addr, "new net: known peer with invalid remote address, removing"
+                    );
+                    let mut tx = env.write_txn()?;
+                    net.known_peers.delete(&mut tx, &peer_addr)?;
+                    tx.commit()?;
+
+                    tracing::info!(
+                        %addr,
+                        "new net: removed known peer with invalid remote address"
+                    );
+                    Ok(())
+                }
+                res => res,
+            }
+        })
+        // TODO: would be better to indicate this in the return error? tbh I want to scrap
+        // the typed error out of here, and just use anyhow
+        .inspect_err(|err| {
+            tracing::error!("unable to connect to known peers during net construction: {err:#}");
         })?;
         Ok((net, peer_info_rx))
     }
 
-    /// Accept the next incoming connection
-    pub async fn accept_incoming(&self, env: heed::Env) -> Result<(), Error> {
+    /// Accept the next incoming connection. Returns Some(addr) if a connection was accepted
+    /// and a new peer was added.
+    pub async fn accept_incoming(
+        &self,
+        env: heed::Env,
+    ) -> Result<Option<SocketAddr>, Error> {
         tracing::debug!(
             "accept incoming: listening for connections on `{}`",
             self.server
@@ -343,8 +374,15 @@ impl Net {
         );
         let connection = match self.server.accept().await {
             Some(conn) => {
-                tracing::trace!("accepted connection from {conn:?}");
-                Connection(conn.await.map_err(Error::Connection)?)
+                let remote_address = conn.remote_address();
+                tracing::trace!("accepting connection from {remote_address}",);
+
+                let raw_conn =
+                    conn.await.map_err(|error| Error::Connection {
+                        error,
+                        remote_address,
+                    })?;
+                Connection(raw_conn)
             }
             None => {
                 tracing::debug!("server endpoint closed");
@@ -352,21 +390,25 @@ impl Net {
             }
         };
         let addr = connection.addr();
+
+        tracing::trace!(%addr, "accepted incoming connection");
         if self.active_peers.read().contains_key(&addr) {
             tracing::info!(
-                "already connected to {addr}, refusing duplicate connection",
+                %addr, "incoming connection: already peered, refusing duplicate",
             );
             connection
                 .0
                 .close(quinn::VarInt::from_u32(1), b"already connected");
         }
         if connection.0.close_reason().is_some() {
-            return Ok(());
+            return Ok(None);
         }
-        tracing::info!("connected to peer at {addr}");
+        tracing::info!(%addr, "connected to new peer");
         let mut rwtxn = env.write_txn()?;
         self.known_peers.put(&mut rwtxn, &addr, &())?;
         rwtxn.commit()?;
+
+        tracing::trace!(%addr, "wrote peer to database");
         let connection_ctxt = PeerConnectionCtxt {
             env,
             archive: self.archive.clone(),
@@ -385,7 +427,7 @@ impl Net {
             }
         });
         self.add_active_peer(addr, connection_handle)?;
-        Ok(())
+        Ok(Some(addr))
     }
 
     // Push an internal message to the specified peer

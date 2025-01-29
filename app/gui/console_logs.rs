@@ -72,6 +72,7 @@ impl ConsoleLogs {
         };
         let cli = thunder_app_cli_lib::Cli {
             rpc_addr: self.rpc_addr,
+            timeout: None,
             command,
         };
         app.runtime.spawn({
