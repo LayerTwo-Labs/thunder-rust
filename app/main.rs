@@ -156,6 +156,7 @@ fn main() -> anyhow::Result<()> {
             // spawn rpc server
             app.runtime.spawn({
                 let app = app.clone();
+                let app_tx = app_tx.clone();
                 async move {
                     tracing::info!(
                         "RPC server listening on {}",
