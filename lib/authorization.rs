@@ -1,6 +1,7 @@
 use borsh::BorshSerialize;
 use rayon::iter::{IntoParallelRefIterator as _, ParallelIterator as _};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::types::{
     Address, AuthorizedTransaction, Body, GetAddress, Transaction, Verify,
@@ -47,12 +48,21 @@ where
 }
 
 #[derive(
-    BorshSerialize, Debug, Clone, Deserialize, Eq, PartialEq, Serialize,
+    BorshSerialize,
+    Debug,
+    Clone,
+    Deserialize,
+    Eq,
+    PartialEq,
+    Serialize,
+    ToSchema,
 )]
 pub struct Authorization {
     #[borsh(serialize_with = "borsh_serialize_verifying_key")]
+    #[schema(value_type = String)]
     pub verifying_key: VerifyingKey,
     #[borsh(serialize_with = "borsh_serialize_signature")]
+    #[schema(value_type = String)]
     pub signature: Signature,
 }
 

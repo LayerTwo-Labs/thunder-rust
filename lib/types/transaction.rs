@@ -353,11 +353,15 @@ impl From<&PointedOutput> for BitcoinNodeHash {
     }
 }
 
-#[derive(BorshSerialize, Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(
+    BorshSerialize, Clone, Debug, Default, Deserialize, Serialize, ToSchema,
+)]
 pub struct Transaction {
+    #[schema(value_type = Vec<(OutPoint, String)>)]
     pub inputs: Vec<(OutPoint, Hash)>,
     /// Utreexo proof for inputs
     #[borsh(skip)]
+    #[schema(value_type = crate::types::schema::UtreexoProof)]
     pub proof: Proof,
     pub outputs: Vec<Output>,
 }
@@ -421,7 +425,7 @@ pub struct AuthorizedTransaction {
     pub authorizations: Vec<Authorization>,
 }
 
-#[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize)]
+#[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct Body {
     pub coinbase: Vec<Output>,
     pub transactions: Vec<Transaction>,

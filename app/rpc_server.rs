@@ -90,6 +90,33 @@ impl RpcServer for RpcServerImpl {
         Ok(mnemonic.to_string())
     }
 
+    async fn get_block(
+        &self,
+        block_hash: thunder::types::BlockHash,
+    ) -> RpcResult<Option<thunder::types::Block>> {
+        let Some(header) = self
+            .app
+            .node
+            .try_get_header(block_hash)
+            .map_err(custom_err)?
+        else {
+            return Ok(None);
+        };
+        let body = self.app.node.get_body(block_hash).map_err(custom_err)?;
+        let block = thunder::types::Block { header, body };
+        Ok(Some(block))
+    }
+
+    async fn get_bmm_inclusions(
+        &self,
+        block_hash: thunder::types::BlockHash,
+    ) -> RpcResult<Vec<bitcoin::BlockHash>> {
+        self.app
+            .node
+            .get_bmm_inclusions(block_hash)
+            .map_err(custom_err)
+    }
+
     async fn get_new_address(&self) -> RpcResult<Address> {
         self.app
             .wallet

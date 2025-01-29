@@ -5451,6 +5451,9 @@ name = "semver"
 version = "1.0.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f79dfe2d285b0488816f30e700a7438c5a73d816b5b7d3ac72fbc48b0d185e03"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "send_wrapper"
@@ -5908,7 +5911,7 @@ dependencies = [
 
 [[package]]
 name = "thunder"
-version = "0.10.12"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "bincode",
@@ -5936,6 +5939,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "rustreexo",
+ "semver",
  "serde",
  "serde_json",
  "serde_with",
@@ -5952,7 +5956,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_app"
-version = "0.10.12"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "bincode",
@@ -5989,7 +5993,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_app_cli"
-version = "0.10.12"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "bitcoin",
@@ -6004,7 +6008,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_app_rpc_api"
-version = "0.10.12"
+version = "0.11.0"
 dependencies = [
  "bitcoin",
  "jsonrpsee",
@@ -6016,7 +6020,7 @@ dependencies = [
 
 [[package]]
 name = "thunder_integration_tests"
-version = "0.10.12"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "bip300301_enforcer_integration_tests",
