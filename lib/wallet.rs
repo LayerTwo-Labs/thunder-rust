@@ -140,10 +140,19 @@ impl Wallet {
 
     /// Set the seed, if it does not already exist
     pub fn set_seed(&self, seed: &[u8; 64]) -> Result<(), Error> {
-        if self.has_seed()? {
-            Err(Error::SeedAlreadyExists)
-        } else {
-            self.overwrite_seed(seed)
+        let rotxn = self.env.read_txn()?;
+        match self.seed.try_get(&rotxn, &0)? {
+            Some(current_seed) => {
+                if current_seed == seed {
+                    Ok(())
+                } else {
+                    Err(Error::SeedAlreadyExists)
+                }
+            }
+            None => {
+                drop(rotxn);
+                self.overwrite_seed(seed)
+            }
         }
     }
 
