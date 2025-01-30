@@ -141,6 +141,26 @@ fn set_tracing_subscriber(
     Ok((line_buffer, rolling_log_guard))
 }
 
+fn run_egui_app(
+    config: &crate::cli::Config,
+    line_buffer: LineBuffer,
+    app: Result<crate::app::App, crate::app::Error>,
+) -> Result<(), eframe::Error> {
+    let native_options = eframe::NativeOptions::default();
+    eframe::run_native(
+        "Thunder",
+        native_options,
+        Box::new(move |cc| {
+            Ok(Box::new(gui::EguiApp::new(
+                app.ok(),
+                cc,
+                line_buffer,
+                config.rpc_addr,
+            )))
+        }),
+    )
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = cli::Cli::parse();
     let config = cli.get_config()?;
@@ -190,24 +210,4 @@ fn main() -> anyhow::Result<()> {
             }
         }
     })
-}
-
-fn run_egui_app(
-    config: &crate::cli::Config,
-    line_buffer: LineBuffer,
-    app: Result<crate::app::App, crate::app::Error>,
-) -> Result<(), eframe::Error> {
-    let native_options = eframe::NativeOptions::default();
-    eframe::run_native(
-        "Thunder",
-        native_options,
-        Box::new(move |cc| {
-            Ok(Box::new(gui::EguiApp::new(
-                app.ok(),
-                cc,
-                line_buffer,
-                config.rpc_addr,
-            )))
-        }),
-    )
 }
