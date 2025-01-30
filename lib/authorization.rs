@@ -105,9 +105,11 @@ pub fn verify_authorized_transaction(
     transaction: &AuthorizedTransaction,
 ) -> Result<(), Error> {
     let tx_bytes_canonical = borsh::to_vec(&transaction.transaction)?;
-    let messages: Vec<_> = std::iter::repeat(tx_bytes_canonical.as_slice())
-        .take(transaction.authorizations.len())
-        .collect();
+    let messages: Vec<_> = std::iter::repeat_n(
+        tx_bytes_canonical.as_slice(),
+        transaction.authorizations.len(),
+    )
+    .collect();
     let (verifying_keys, signatures): (Vec<VerifyingKey>, Vec<Signature>) =
         transaction
             .authorizations
@@ -137,7 +139,7 @@ pub fn verify_authorizations(body: &Body) -> Result<(), Error> {
         serialized_transactions.iter().map(Vec::as_slice);
     let messages = input_numbers.zip(serialized_transactions).flat_map(
         |(input_number, serialized_transaction)| {
-            std::iter::repeat(serialized_transaction).take(input_number)
+            std::iter::repeat_n(serialized_transaction, input_number)
         },
     );
 
