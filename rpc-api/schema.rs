@@ -1,5 +1,6 @@
 //! Schemas for OpenAPI
 
+use serde::{Deserialize, Serialize};
 use utoipa::{
     openapi::{self, RefOr, Schema},
     PartialSchema, ToSchema,
@@ -18,6 +19,15 @@ impl ToSchema for BitcoinTxid {
     fn name() -> std::borrow::Cow<'static, str> {
         std::borrow::Cow::Borrowed("bitcoin.Txid")
     }
+}
+
+// RPC output representation for peer + state
+// TODO: use better types here. Struggling with how to satisfy utoipa
+
+#[derive(Clone, Deserialize, Serialize, ToSchema)]
+pub struct Peer {
+    pub address: String,
+    pub state: String,
 }
 
 pub struct OpenApi;

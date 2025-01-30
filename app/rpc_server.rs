@@ -10,7 +10,7 @@ use thunder::{
     types::{Address, PointedOutput, Txid, WithdrawalBundle},
     wallet::Balance,
 };
-use thunder_app_rpc_api::RpcServer;
+use thunder_app_rpc_api::{schema::Peer as RpcPeer, RpcServer};
 
 use crate::app::App;
 
@@ -138,9 +138,16 @@ impl RpcServer for RpcServerImpl {
         Ok(height)
     }
 
-    async fn list_peers(&self) -> RpcResult<Vec<SocketAddr>> {
+    async fn list_peers(&self) -> RpcResult<Vec<RpcPeer>> {
         let peers = self.app.node.get_active_peers();
-        Ok(peers)
+        let res: Vec<_> = peers
+            .into_iter()
+            .map(|(address, state)| RpcPeer {
+                address: address.to_string(),
+                state: state.to_string(),
+            })
+            .collect();
+        Ok(res)
     }
 
     async fn list_utxos(&self) -> RpcResult<Vec<PointedOutput>> {
