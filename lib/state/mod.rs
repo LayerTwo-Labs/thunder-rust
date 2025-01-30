@@ -1,8 +1,9 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use futures::Stream;
 use heed::{types::SerdeBincode, Database, RoTxn, RwTxn};
 use rustreexo::accumulator::{node_hash::BitcoinNodeHash, proof::Proof};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     authorization::Authorization,
@@ -26,6 +27,29 @@ use rollback::RollBack;
 
 pub const WITHDRAWAL_BUNDLE_FAILURE_GAP: u32 = 4;
 
+/// Information we have regarding a withdrawal bundle
+#[derive(Debug, Deserialize, Serialize)]
+enum WithdrawalBundleInfo {
+    /// Withdrawal bundle is known
+    Known(WithdrawalBundle),
+    /// Withdrawal bundle is unknown but unconfirmed / failed
+    Unknown,
+    /// If an unknown withdrawal bundle is confirmed, ALL UTXOs are
+    /// considered spent.
+    UnknownConfirmed {
+        spend_utxos: BTreeMap<OutPoint, Output>,
+    },
+}
+
+impl WithdrawalBundleInfo {
+    fn is_known(&self) -> bool {
+        match self {
+            Self::Known(_) => true,
+            Self::Unknown | Self::UnknownConfirmed { .. } => false,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct State {
     /// Current tip
@@ -45,10 +69,7 @@ pub struct State {
     /// in which case they are `None`.
     withdrawal_bundles: Database<
         SerdeBincode<M6id>,
-        SerdeBincode<(
-            Option<WithdrawalBundle>,
-            RollBack<WithdrawalBundleStatus>,
-        )>,
+        SerdeBincode<(WithdrawalBundleInfo, RollBack<WithdrawalBundleStatus>)>,
     >,
     /// deposit blocks and the height at which they were applied, keyed sequentially
     pub deposit_blocks:
