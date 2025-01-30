@@ -78,8 +78,15 @@ async fn check_peer_connection(
     thunder_setup: &PostSetup,
     expected_peer: SocketAddr,
 ) -> anyhow::Result<()> {
-    let peers = thunder_setup.rpc_client.list_peers().await?;
-    if peers.contains(&expected_peer) {
+    let peers = thunder_setup
+        .rpc_client
+        .list_peers()
+        .await?
+        .iter()
+        .map(|p| p.address.to_string())
+        .collect::<Vec<_>>();
+
+    if peers.contains(&expected_peer.to_string()) {
         Ok(())
     } else {
         Err(anyhow::anyhow!(

@@ -6014,6 +6014,7 @@ dependencies = [
  "bitcoin",
  "jsonrpsee",
  "l2l-openapi",
+ "serde",
  "serde_json",
  "thunder",
  "utoipa",

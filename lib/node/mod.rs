@@ -485,7 +485,7 @@ where
             .map_err(Error::from)
     }
 
-    pub fn get_active_peers(&self) -> Vec<SocketAddr> {
+    pub fn get_active_peers(&self) -> Vec<(SocketAddr, net::PeerState)> {
         self.net.get_active_peers()
     }
 

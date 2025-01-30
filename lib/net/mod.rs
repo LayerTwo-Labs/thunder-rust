@@ -1,5 +1,6 @@
 use std::{
     collections::{hash_map, HashMap, HashSet},
+    fmt::Display,
     net::SocketAddr,
     sync::Arc,
 };
@@ -54,6 +55,8 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("peer connection not found for {0}")]
     MissingPeerConnection(SocketAddr),
+    #[error("peer connection is not fully connected for {0}")]
+    PeerNotConnected(SocketAddr),
     #[error(transparent)]
     NoInitialCipherSuite(#[from] quinn::crypto::rustls::NoInitialCipherSuite),
     #[error("peer connection")]
@@ -169,11 +172,16 @@ fn configure_server() -> Result<(ServerConfig, Vec<u8>), Error> {
 ///
 /// - a stream of incoming QUIC connections
 /// - server certificate serialized into DER format
-#[allow(unused)]
 pub fn make_server_endpoint(
     bind_addr: SocketAddr,
 ) -> Result<(Endpoint, Vec<u8>), Error> {
     let (server_config, server_cert) = configure_server()?;
+
+    tracing::info!(
+        "creating server endpoint: binding to {bind_addr} ({})",
+        if bind_addr.is_ipv6() { "ipv6" } else { "ipv4" }
+    );
+
     let mut endpoint = Endpoint::server(server_config, bind_addr)?;
     let client_cfg = configure_client()?;
     endpoint.set_default_client_config(client_cfg);
@@ -202,20 +210,52 @@ pub struct Net {
     pub server: Endpoint,
     archive: Archive,
     state: State,
-    active_peers: Arc<RwLock<HashMap<SocketAddr, PeerConnectionHandle>>>,
+    active_peers:
+        Arc<RwLock<HashMap<SocketAddr, (PeerConnectionHandle, PeerState)>>>,
     // None indicates that the stream has ended
     peer_info_tx:
         mpsc::UnboundedSender<(SocketAddr, Option<PeerConnectionInfo>)>,
     known_peers: Database<SerdeBincode<SocketAddr>, Unit>,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PeerState {
+    /// We're still in the process of initializing the peer connection
+    Connecting,
+
+    /// The connection is successfully established
+    Connected,
+}
+
+impl Display for PeerState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PeerState::Connecting => write!(f, "connecting"),
+            PeerState::Connected => write!(f, "connected"),
+        }
+    }
+}
+
 impl Net {
     pub const NUM_DBS: u32 = 1;
+
+    fn update_active_peer_state(
+        &self,
+        addr: SocketAddr,
+        new_state: PeerState,
+    ) -> Result<(), Error> {
+        let mut active_peers_write = self.active_peers.write();
+        active_peers_write
+            .entry(addr)
+            .and_modify(|(_, state)| *state = new_state);
+        Ok(())
+    }
 
     fn add_active_peer(
         &self,
         addr: SocketAddr,
         peer_connection_handle: PeerConnectionHandle,
+        state: PeerState,
     ) -> Result<(), Error> {
         tracing::trace!(%addr, "add active peer: starting");
 
@@ -226,7 +266,7 @@ impl Net {
                 Err(Error::AlreadyConnected(addr))
             }
             hash_map::Entry::Vacant(active_peer_entry) => {
-                active_peer_entry.insert(peer_connection_handle);
+                active_peer_entry.insert((peer_connection_handle, state));
                 Ok(())
             }
         }
@@ -242,8 +282,12 @@ impl Net {
     }
 
     // TODO: This should have more context. Last received message, connection state, etc.
-    pub fn get_active_peers(&self) -> Vec<SocketAddr> {
-        self.active_peers.read().keys().copied().collect()
+    pub fn get_active_peers(&self) -> Vec<(SocketAddr, PeerState)> {
+        self.active_peers
+            .read()
+            .iter()
+            .map(|(addr, (_, state))| (*addr, state.to_owned()))
+            .collect()
     }
 
     pub fn connect_peer(
@@ -277,8 +321,9 @@ impl Net {
                 }
             }
         });
-        tracing::trace!(%addr, "connect peer: adding to active peers");
-        self.add_active_peer(addr, connection_handle)?;
+
+        tracing::trace!("connect peer: adding to active peers");
+        self.add_active_peer(addr, connection_handle, PeerState::Connecting)?;
         Ok(())
     }
 
@@ -426,7 +471,8 @@ impl Net {
                 }
             }
         });
-        self.add_active_peer(addr, connection_handle)?;
+        // TODO: is this the right state?
+        self.add_active_peer(addr, connection_handle, PeerState::Connected)?;
         Ok(Some(addr))
     }
 
@@ -437,9 +483,16 @@ impl Net {
         addr: SocketAddr,
     ) -> Result<(), Error> {
         let active_peers_read = self.active_peers.read();
-        let Some(peer_connection_handle) = active_peers_read.get(&addr) else {
+        let Some((peer_connection_handle, state)) =
+            active_peers_read.get(&addr)
+        else {
             return Err(Error::MissingPeerConnection(addr));
         };
+
+        if *state == PeerState::Connecting {
+            return Err(Error::PeerNotConnected(addr));
+        }
+
         if let Err(send_err) = peer_connection_handle
             .internal_message_tx
             .unbounded_send(message)
@@ -458,7 +511,8 @@ impl Net {
     ) {
         let active_peers_read = self.active_peers.read();
         for addr in peers {
-            let Some(peer_connection_handle) = active_peers_read.get(addr)
+            let Some((peer_connection_handle, PeerState::Connected)) =
+                active_peers_read.get(addr)
             else {
                 continue;
             };
@@ -483,7 +537,11 @@ impl Net {
             .read()
             .iter()
             .filter(|(addr, _)| !exclude.contains(addr))
-            .for_each(|(addr, peer_connection_handle)| {
+            .for_each(|(addr, (peer_connection_handle, state))| {
+                if *state != PeerState::Connected {
+                    tracing::trace!(%addr, "skipping peer at {addr} because it is not fully connected");
+                    return;
+                }
                 let request = PeerRequest::PushTransaction {
                     transaction: tx.clone(),
                 };

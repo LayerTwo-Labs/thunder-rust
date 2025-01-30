@@ -12,7 +12,7 @@ use thunder::{
     wallet::Balance,
 };
 
-mod schema;
+pub mod schema;
 
 #[open_api(ref_schemas[
     Address, MerkleRoot, OutPoint, Output, OutputContent, Txid,
@@ -96,9 +96,9 @@ pub trait Rpc {
     ) -> RpcResult<Option<u32>>;
 
     /// List peers
-    #[open_api_method(output_schema(PartialSchema = "schema::SocketAddr"))]
+    #[open_api_method(output_schema(PartialSchema = "schema::Peer"))]
     #[method(name = "list_peers")]
-    async fn list_peers(&self) -> RpcResult<Vec<SocketAddr>>;
+    async fn list_peers(&self) -> RpcResult<Vec<schema::Peer>>;
 
     /// List all UTXOs
     #[method(name = "list_utxos")]
