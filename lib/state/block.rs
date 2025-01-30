@@ -8,8 +8,9 @@ use rustreexo::accumulator::node_hash::BitcoinNodeHash;
 use crate::{
     state::{error, Error, State},
     types::{
-        AmountOverflowError, Body, GetAddress as _, GetValue as _, Header,
-        InPoint, OutPoint, PointedOutput, SpentOutput, Verify as _,
+        AccumulatorDiff, AmountOverflowError, Body, GetAddress as _,
+        GetValue as _, Header, InPoint, OutPoint, PointedOutput, SpentOutput,
+        Verify as _,
     },
     util::UnitKey,
     wallet::Authorization,
@@ -42,10 +43,7 @@ pub fn validate(
         .utreexo_accumulator
         .get(rotxn, &UnitKey)?
         .unwrap_or_default();
-    // New leaves for the accumulator
-    let mut accumulator_add = Vec::<BitcoinNodeHash>::new();
-    // Accumulator leaves to delete
-    let mut accumulator_del = Vec::<BitcoinNodeHash>::new();
+    let mut accumulator_diff = AccumulatorDiff::default();
     let mut coinbase_value = bitcoin::Amount::ZERO;
     let merkle_root = body.compute_merkle_root();
     if merkle_root != header.merkle_root {
@@ -67,7 +65,7 @@ pub fn validate(
             outpoint,
             output: output.clone(),
         };
-        accumulator_add.push((&pointed_output).into());
+        accumulator_diff.insert((&pointed_output).into());
     }
     let mut total_fees = bitcoin::Amount::ZERO;
     let mut spent_utxos = HashSet::new();
@@ -86,7 +84,7 @@ pub fn validate(
             }
             spent_utxos.insert(*outpoint);
             spent_utxo_hashes.push(utxo_hash.into());
-            accumulator_del.push(utxo_hash.into());
+            accumulator_diff.remove(utxo_hash.into());
         }
         for (vout, output) in
             filled_transaction.transaction.outputs.iter().enumerate()
@@ -99,16 +97,14 @@ pub fn validate(
                 outpoint,
                 output: output.clone(),
             };
-            accumulator_add.push((&pointed_output).into());
+            accumulator_diff.insert((&pointed_output).into());
         }
         total_fees = total_fees
             .checked_add(state.validate_filled_transaction(filled_transaction)?)
             .ok_or(AmountOverflowError)?;
         // verify utreexo proof
         if !accumulator
-            .0
-            .verify(&filled_transaction.transaction.proof, &spent_utxo_hashes)
-            .map_err(Error::Utreexo)?
+            .verify(&filled_transaction.transaction.proof, &spent_utxo_hashes)?
         {
             return Err(Error::UtreexoProofFailed { txid });
         }
@@ -129,16 +125,8 @@ pub fn validate(
     if Authorization::verify_body(body).is_err() {
         return Err(Error::AuthorizationError);
     }
-    accumulator
-        .0
-        .modify(&accumulator_add, &accumulator_del)
-        .map_err(Error::Utreexo)?;
-    let roots: Vec<BitcoinNodeHash> = accumulator
-        .0
-        .get_roots()
-        .iter()
-        .map(|node| node.get_data())
-        .collect();
+    let () = accumulator.apply_diff(accumulator_diff)?;
+    let roots: Vec<BitcoinNodeHash> = accumulator.get_roots();
     if roots != header.roots {
         return Err(Error::UtreexoRootsMismatch);
     }
@@ -171,10 +159,7 @@ pub fn connect(
         .utreexo_accumulator
         .get(rwtxn, &UnitKey)?
         .unwrap_or_default();
-    // New leaves for the accumulator
-    let mut accumulator_add = Vec::<BitcoinNodeHash>::new();
-    // Accumulator leaves to delete
-    let mut accumulator_del = Vec::<BitcoinNodeHash>::new();
+    let mut accumulator_diff = AccumulatorDiff::default();
     for (vout, output) in body.coinbase.iter().enumerate() {
         let outpoint = OutPoint::Coinbase {
             merkle_root,
@@ -184,7 +169,7 @@ pub fn connect(
             outpoint,
             output: output.clone(),
         };
-        accumulator_add.push((&pointed_output).into());
+        accumulator_diff.insert((&pointed_output).into());
         state.utxos.put(rwtxn, &outpoint, output)?;
     }
     for transaction in &body.transactions {
@@ -196,7 +181,7 @@ pub fn connect(
                 state.utxos.get(rwtxn, outpoint)?.ok_or(Error::NoUtxo {
                     outpoint: *outpoint,
                 })?;
-            accumulator_del.push(utxo_hash.into());
+            accumulator_diff.remove(utxo_hash.into());
             state.utxos.delete(rwtxn, outpoint)?;
             let spent_output = SpentOutput {
                 output: spent_output,
@@ -216,7 +201,7 @@ pub fn connect(
                 outpoint,
                 output: output.clone(),
             };
-            accumulator_add.push((&pointed_output).into());
+            accumulator_diff.insert((&pointed_output).into());
             state.utxos.put(rwtxn, &outpoint, output)?;
         }
     }
@@ -224,10 +209,7 @@ pub fn connect(
     let height = state.try_get_height(rwtxn)?.map_or(0, |height| height + 1);
     state.tip.put(rwtxn, &UnitKey, &block_hash)?;
     state.height.put(rwtxn, &UnitKey, &height)?;
-    accumulator
-        .0
-        .modify(&accumulator_add, &accumulator_del)
-        .map_err(Error::Utreexo)?;
+    let () = accumulator.apply_diff(accumulator_diff)?;
     state
         .utreexo_accumulator
         .put(rwtxn, &UnitKey, &accumulator)?;
@@ -261,10 +243,7 @@ pub fn disconnect_tip(
         .get(rwtxn, &UnitKey)?
         .unwrap_or_default();
     tracing::debug!("Got acc");
-    // New leaves for the accumulator
-    let mut accumulator_add = Vec::<BitcoinNodeHash>::new();
-    // Accumulator leaves to delete
-    let mut accumulator_del = Vec::<BitcoinNodeHash>::new();
+    let mut accumulator_diff = AccumulatorDiff::default();
     // revert txs, last-to-first
     body.transactions.iter().rev().try_for_each(|tx| {
         let txid = tx.txid();
@@ -279,7 +258,7 @@ pub fn disconnect_tip(
                     outpoint,
                     output: output.clone(),
                 };
-                accumulator_del.push((&pointed_output).into());
+                accumulator_diff.remove((&pointed_output).into());
                 if state.utxos.delete(rwtxn, &outpoint)? {
                     Ok(())
                 } else {
@@ -293,7 +272,7 @@ pub fn disconnect_tip(
             .rev()
             .try_for_each(|(outpoint, utxo_hash)| {
                 if let Some(spent_output) = state.stxos.get(rwtxn, outpoint)? {
-                    accumulator_add.push(utxo_hash.into());
+                    accumulator_diff.insert(utxo_hash.into());
                     state.stxos.delete(rwtxn, outpoint)?;
                     state.utxos.put(rwtxn, outpoint, &spent_output.output)?;
                     Ok(())
@@ -318,7 +297,7 @@ pub fn disconnect_tip(
                 outpoint,
                 output: output.clone(),
             };
-            accumulator_del.push((&pointed_output).into());
+            accumulator_diff.remove((&pointed_output).into());
             if state.utxos.delete(rwtxn, &outpoint)? {
                 Ok(())
             } else {
@@ -339,10 +318,7 @@ pub fn disconnect_tip(
             state.height.put(rwtxn, &UnitKey, &(height - 1))?;
         }
     }
-    accumulator
-        .0
-        .modify(&accumulator_add, &accumulator_del)
-        .map_err(Error::Utreexo)?;
+    let () = accumulator.apply_diff(accumulator_diff)?;
     state
         .utreexo_accumulator
         .put(rwtxn, &UnitKey, &accumulator)?;

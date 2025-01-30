@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use crate::types::{
     AmountOverflowError, AmountUnderflowError, BlockHash, M6id, MerkleRoot,
-    OutPoint, Txid, WithdrawalBundleError,
+    OutPoint, Txid, UtreexoError, WithdrawalBundleError,
 };
 
 #[derive(Debug, Error)]
@@ -54,8 +54,8 @@ pub enum Error {
     NoUtxo { outpoint: OutPoint },
     #[error("Withdrawal bundle event block doesn't exist")]
     NoWithdrawalBundleEventBlock,
-    #[error("utreexo error: {0}")]
-    Utreexo(String),
+    #[error(transparent)]
+    Utreexo(#[from] UtreexoError),
     #[error("Utreexo proof verification failed for tx {txid}")]
     UtreexoProofFailed { txid: Txid },
     #[error("Computed Utreexo roots do not match the header roots")]

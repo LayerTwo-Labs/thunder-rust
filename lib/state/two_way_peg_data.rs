@@ -2,9 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use hashlink::LinkedHashSet;
 use heed::{RoTxn, RwTxn};
-use rustreexo::accumulator::node_hash::BitcoinNodeHash;
 
 use crate::{
     state::{
@@ -14,9 +12,9 @@ use crate::{
     types::{
         hash,
         proto::mainchain::{BlockEvent, TwoWayPegData},
-        AggregatedWithdrawal, AmountOverflowError, InPoint, M6id, OutPoint,
-        Output, OutputContent, PointedOutput, SpentOutput, WithdrawalBundle,
-        WithdrawalBundleEvent, WithdrawalBundleStatus,
+        AccumulatorDiff, AggregatedWithdrawal, AmountOverflowError, InPoint,
+        M6id, OutPoint, Output, OutputContent, PointedOutput, SpentOutput,
+        WithdrawalBundle, WithdrawalBundleEvent, WithdrawalBundleStatus,
     },
     util::UnitKey,
 };
@@ -102,7 +100,7 @@ fn connect_withdrawal_bundle_submitted(
     state: &State,
     rwtxn: &mut RwTxn,
     block_height: u32,
-    accumulator_del: &mut LinkedHashSet<BitcoinNodeHash>,
+    accumulator_diff: &mut AccumulatorDiff,
     event_block_hash: &bitcoin::BlockHash,
     m6id: M6id,
 ) -> Result<(), Error> {
@@ -121,7 +119,7 @@ fn connect_withdrawal_bundle_submitted(
                 outpoint: *outpoint,
                 output: spend_output.clone(),
             });
-            accumulator_del.replace(utxo_hash.into());
+            accumulator_diff.remove(utxo_hash.into());
             state.utxos.delete(rwtxn, outpoint)?;
             let spent_output = SpentOutput {
                 output: spend_output.clone(),
@@ -168,7 +166,7 @@ fn connect_withdrawal_bundle_confirmed(
     state: &State,
     rwtxn: &mut RwTxn,
     block_height: u32,
-    accumulator_del: &mut LinkedHashSet<BitcoinNodeHash>,
+    accumulator_diff: &mut AccumulatorDiff,
     event_block_hash: &bitcoin::BlockHash,
     m6id: M6id,
 ) -> Result<(), Error> {
@@ -208,7 +206,7 @@ fn connect_withdrawal_bundle_confirmed(
                     outpoint: *outpoint,
                     output: spent_output.output,
                 });
-                accumulator_del.replace(utxo_hash.into());
+                accumulator_diff.remove(utxo_hash.into());
             }
             state.utxos.clear(rwtxn)?;
             bundle =
@@ -233,7 +231,7 @@ fn connect_withdrawal_bundle_failed(
     state: &State,
     rwtxn: &mut RwTxn,
     block_height: u32,
-    accumulator_add: &mut Vec<BitcoinNodeHash>,
+    accumulator_diff: &mut AccumulatorDiff,
     m6id: M6id,
 ) -> Result<(), Error> {
     tracing::debug!(
@@ -266,7 +264,7 @@ fn connect_withdrawal_bundle_failed(
                     outpoint: *outpoint,
                     output: output.clone(),
                 });
-                accumulator_add.push(utxo_hash.into());
+                accumulator_diff.insert(utxo_hash.into());
             }
             let latest_failed_m6id = if let Some(mut latest_failed_m6id) =
                 state.latest_failed_withdrawal_bundle.get(rwtxn, &UnitKey)?
@@ -295,8 +293,7 @@ fn connect_withdrawal_bundle_event(
     state: &State,
     rwtxn: &mut RwTxn,
     block_height: u32,
-    accumulator_add: &mut Vec<BitcoinNodeHash>,
-    accumulator_del: &mut LinkedHashSet<BitcoinNodeHash>,
+    accumulator_diff: &mut AccumulatorDiff,
     event_block_hash: &bitcoin::BlockHash,
     event: &WithdrawalBundleEvent,
 ) -> Result<(), Error> {
@@ -306,7 +303,7 @@ fn connect_withdrawal_bundle_event(
                 state,
                 rwtxn,
                 block_height,
-                accumulator_del,
+                accumulator_diff,
                 event_block_hash,
                 event.m6id,
             )
@@ -316,7 +313,7 @@ fn connect_withdrawal_bundle_event(
                 state,
                 rwtxn,
                 block_height,
-                accumulator_del,
+                accumulator_diff,
                 event_block_hash,
                 event.m6id,
             )
@@ -325,7 +322,7 @@ fn connect_withdrawal_bundle_event(
             state,
             rwtxn,
             block_height,
-            accumulator_add,
+            accumulator_diff,
             event.m6id,
         ),
     }
@@ -336,8 +333,7 @@ fn connect_event(
     state: &State,
     rwtxn: &mut RwTxn,
     block_height: u32,
-    accumulator_add: &mut Vec<BitcoinNodeHash>,
-    accumulator_del: &mut LinkedHashSet<BitcoinNodeHash>,
+    accumulator_diff: &mut AccumulatorDiff,
     latest_deposit_block_hash: &mut Option<bitcoin::BlockHash>,
     latest_withdrawal_bundle_event_block_hash: &mut Option<bitcoin::BlockHash>,
     event_block_hash: bitcoin::BlockHash,
@@ -349,7 +345,7 @@ fn connect_event(
             let output = deposit.output.clone();
             state.utxos.put(rwtxn, &outpoint, &output)?;
             let utxo_hash = hash(&PointedOutput { outpoint, output });
-            accumulator_add.push(utxo_hash.into());
+            accumulator_diff.insert(utxo_hash.into());
             *latest_deposit_block_hash = Some(event_block_hash);
         }
         BlockEvent::WithdrawalBundle(withdrawal_bundle_event) => {
@@ -357,8 +353,7 @@ fn connect_event(
                 state,
                 rwtxn,
                 block_height,
-                accumulator_add,
-                accumulator_del,
+                accumulator_diff,
                 &event_block_hash,
                 withdrawal_bundle_event,
             )?;
@@ -379,10 +374,7 @@ pub fn connect(
         .utreexo_accumulator
         .get(rwtxn, &UnitKey)?
         .unwrap_or_default();
-    // New leaves for the accumulator
-    let mut accumulator_add = Vec::<BitcoinNodeHash>::new();
-    // Accumulator leaves to delete
-    let mut accumulator_del = hashlink::LinkedHashSet::<BitcoinNodeHash>::new();
+    let mut accumulator_diff = AccumulatorDiff::default();
     let mut latest_deposit_block_hash = None;
     let mut latest_withdrawal_bundle_event_block_hash = None;
     for (event_block_hash, event_block_info) in &two_way_peg_data.block_info {
@@ -391,8 +383,7 @@ pub fn connect(
                 state,
                 rwtxn,
                 block_height,
-                &mut accumulator_add,
-                &mut accumulator_del,
+                &mut accumulator_diff,
                 &mut latest_deposit_block_hash,
                 &mut latest_withdrawal_bundle_event_block_hash,
                 *event_block_hash,
@@ -453,17 +444,7 @@ pub fn connect(
             );
         }
     }
-    let accumulator_del: Vec<_> = accumulator_del.into_iter().collect();
-    tracing::debug!(
-        accumulator = %accumulator.0,
-        accumulator_add = ?accumulator_add,
-        accumulator_del = ?accumulator_del,
-        "Updating accumulator");
-    accumulator
-        .0
-        .modify(&accumulator_add, &accumulator_del)
-        .map_err(Error::Utreexo)?;
-    tracing::debug!(accumulator = %accumulator.0, "Updated accumulator");
+    let () = accumulator.apply_diff(accumulator_diff)?;
     state
         .utreexo_accumulator
         .put(rwtxn, &UnitKey, &accumulator)?;
@@ -474,7 +455,7 @@ fn disconnect_withdrawal_bundle_submitted(
     state: &State,
     rwtxn: &mut RwTxn,
     block_height: u32,
-    accumulator_add: &mut Vec<BitcoinNodeHash>,
+    accumulator_diff: &mut AccumulatorDiff,
     m6id: M6id,
 ) -> Result<(), Error> {
     let Some((bundle, bundle_status)) =
@@ -508,7 +489,7 @@ fn disconnect_withdrawal_bundle_submitted(
                     outpoint: *outpoint,
                     output: output.clone(),
                 });
-                accumulator_add.push(utxo_hash.into());
+                accumulator_diff.insert(utxo_hash.into());
             }
             state.pending_withdrawal_bundle.put(
                 rwtxn,
@@ -525,7 +506,7 @@ fn disconnect_withdrawal_bundle_confirmed(
     state: &State,
     rwtxn: &mut RwTxn,
     block_height: u32,
-    accumulator_add: &mut Vec<BitcoinNodeHash>,
+    accumulator_diff: &mut AccumulatorDiff,
     m6id: M6id,
 ) -> Result<(), Error> {
     let (mut bundle, bundle_status) = state
@@ -557,7 +538,7 @@ fn disconnect_withdrawal_bundle_confirmed(
                     return Err(Error::NoStxo { outpoint });
                 };
                 let utxo_hash = hash(&PointedOutput { outpoint, output });
-                accumulator_add.push(utxo_hash.into());
+                accumulator_diff.insert(utxo_hash.into());
             }
             bundle = WithdrawalBundleInfo::Unknown;
         }
@@ -574,7 +555,7 @@ fn disconnect_withdrawal_bundle_failed(
     state: &State,
     rwtxn: &mut RwTxn,
     block_height: u32,
-    accumulator_del: &mut LinkedHashSet<BitcoinNodeHash>,
+    accumulator_diff: &mut AccumulatorDiff,
     m6id: M6id,
 ) -> Result<(), Error> {
     let (bundle, bundle_status) =
@@ -615,7 +596,7 @@ fn disconnect_withdrawal_bundle_failed(
                     outpoint: *outpoint,
                     output: output.clone(),
                 });
-                accumulator_del.replace(utxo_hash.into());
+                accumulator_diff.remove(utxo_hash.into());
             }
             let (prev_latest_failed_m6id, latest_failed_m6id) = state
                 .latest_failed_withdrawal_bundle
@@ -649,8 +630,7 @@ fn disconnect_withdrawal_bundle_event(
     state: &State,
     rwtxn: &mut RwTxn,
     block_height: u32,
-    accumulator_add: &mut Vec<BitcoinNodeHash>,
-    accumulator_del: &mut LinkedHashSet<BitcoinNodeHash>,
+    accumulator_diff: &mut AccumulatorDiff,
     event: &WithdrawalBundleEvent,
 ) -> Result<(), Error> {
     match event.status {
@@ -659,7 +639,7 @@ fn disconnect_withdrawal_bundle_event(
                 state,
                 rwtxn,
                 block_height,
-                accumulator_add,
+                accumulator_diff,
                 event.m6id,
             )
         }
@@ -668,7 +648,7 @@ fn disconnect_withdrawal_bundle_event(
                 state,
                 rwtxn,
                 block_height,
-                accumulator_add,
+                accumulator_diff,
                 event.m6id,
             )
         }
@@ -676,7 +656,7 @@ fn disconnect_withdrawal_bundle_event(
             state,
             rwtxn,
             block_height,
-            accumulator_del,
+            accumulator_diff,
             event.m6id,
         ),
     }
@@ -687,8 +667,7 @@ fn disconnect_event(
     state: &State,
     rwtxn: &mut RwTxn,
     block_height: u32,
-    accumulator_add: &mut Vec<BitcoinNodeHash>,
-    accumulator_del: &mut LinkedHashSet<BitcoinNodeHash>,
+    accumulator_diff: &mut AccumulatorDiff,
     latest_deposit_block_hash: &mut Option<bitcoin::BlockHash>,
     latest_withdrawal_bundle_event_block_hash: &mut Option<bitcoin::BlockHash>,
     event_block_hash: bitcoin::BlockHash,
@@ -702,7 +681,7 @@ fn disconnect_event(
                 return Err(Error::NoUtxo { outpoint });
             }
             let utxo_hash = hash(&PointedOutput { outpoint, output });
-            accumulator_del.insert(utxo_hash.into());
+            accumulator_diff.remove(utxo_hash.into());
             *latest_deposit_block_hash = Some(event_block_hash);
         }
         BlockEvent::WithdrawalBundle(withdrawal_bundle_event) => {
@@ -710,8 +689,7 @@ fn disconnect_event(
                 state,
                 rwtxn,
                 block_height,
-                accumulator_add,
-                accumulator_del,
+                accumulator_diff,
                 withdrawal_bundle_event,
             )?;
             *latest_withdrawal_bundle_event_block_hash = Some(event_block_hash);
@@ -732,10 +710,7 @@ pub fn disconnect(
         .utreexo_accumulator
         .get(rwtxn, &UnitKey)?
         .unwrap_or_default();
-    // New leaves for the accumulator
-    let mut accumulator_add = Vec::<BitcoinNodeHash>::new();
-    // Accumulator leaves to delete
-    let mut accumulator_del = hashlink::LinkedHashSet::<BitcoinNodeHash>::new();
+    let mut accumulator_diff = AccumulatorDiff::default();
     let mut latest_deposit_block_hash = None;
     let mut latest_withdrawal_bundle_event_block_hash = None;
     // Restore pending withdrawal bundle
@@ -747,8 +722,7 @@ pub fn disconnect(
                 state,
                 rwtxn,
                 block_height,
-                &mut accumulator_add,
-                &mut accumulator_del,
+                &mut accumulator_diff,
                 &mut latest_deposit_block_hash,
                 &mut latest_withdrawal_bundle_event_block_hash,
                 *event_block_hash,
@@ -812,11 +786,7 @@ pub fn disconnect(
             return Err(Error::NoDepositBlock);
         };
     }
-    let accumulator_del: Vec<_> = accumulator_del.into_iter().collect();
-    accumulator
-        .0
-        .modify(&accumulator_add, &accumulator_del)
-        .map_err(Error::Utreexo)?;
+    let () = accumulator.apply_diff(accumulator_diff)?;
     state
         .utreexo_accumulator
         .put(rwtxn, &UnitKey, &accumulator)?;

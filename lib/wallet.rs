@@ -26,7 +26,7 @@ pub use crate::{
 use crate::{
     types::{
         hash, Accumulator, AmountOverflowError, AmountUnderflowError,
-        PointedOutput,
+        PointedOutput, UtreexoError,
     },
     util::{EnvExt, Watchable, WatchableDb},
 };
@@ -72,8 +72,8 @@ pub enum Error {
     ParseMnemonic(#[source] bip39::ErrorKind),
     #[error("seed has already been set")]
     SeedAlreadyExists,
-    #[error("utreexo error: {0}")]
-    Utreexo(String),
+    #[error(transparent)]
+    Utreexo(#[from] UtreexoError),
 }
 
 #[derive(Clone)]
@@ -201,10 +201,7 @@ impl Wallet {
             .collect();
         let input_utxo_hashes: Vec<BitcoinNodeHash> =
             inputs.iter().map(|(_, hash)| hash.into()).collect();
-        let proof = accumulator
-            .0
-            .prove(&input_utxo_hashes)
-            .map_err(Error::Utreexo)?;
+        let proof = accumulator.prove(&input_utxo_hashes)?;
         let outputs = vec![
             Output {
                 address: self.get_new_address()?,
@@ -245,10 +242,7 @@ impl Wallet {
             .collect();
         let input_utxo_hashes: Vec<BitcoinNodeHash> =
             inputs.iter().map(|(_, hash)| hash.into()).collect();
-        let proof = accumulator
-            .0
-            .prove(&input_utxo_hashes)
-            .map_err(Error::Utreexo)?;
+        let proof = accumulator.prove(&input_utxo_hashes)?;
         let outputs = vec![
             Output {
                 address,

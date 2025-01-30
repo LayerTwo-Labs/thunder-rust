@@ -1,6 +1,7 @@
 use borsh::BorshSerialize;
+use hashlink::{linked_hash_map, LinkedHashMap};
 use rustreexo::accumulator::{
-    mem_forest::MemForest, node_hash::BitcoinNodeHash,
+    mem_forest::MemForest, node_hash::BitcoinNodeHash, proof::Proof,
 };
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -304,9 +305,106 @@ impl PartialOrd for AggregatedWithdrawal {
     }
 }
 
+/// Manage accumulator diffs.
+/// Insertions and removals 'cancel out' exactly once.
+/// Inserting twice will cause one insertion.
+/// Removing twice will cause one deletion.
+/// Inserting and then removing will have no overall effect,
+/// but a second removal will still cause a deletion.
+#[derive(Debug, Default)]
+#[repr(transparent)]
+pub struct AccumulatorDiff(
+    /// `true` indicates insertion, `false` indicates removal.
+    LinkedHashMap<BitcoinNodeHash, bool>,
+);
+
+impl AccumulatorDiff {
+    pub fn insert(&mut self, utxo_hash: BitcoinNodeHash) {
+        match self.0.entry(utxo_hash) {
+            linked_hash_map::Entry::Occupied(entry) => {
+                if !entry.get() {
+                    entry.remove();
+                }
+            }
+            linked_hash_map::Entry::Vacant(entry) => {
+                entry.insert(true);
+            }
+        }
+    }
+
+    pub fn remove(&mut self, utxo_hash: BitcoinNodeHash) {
+        match self.0.entry(utxo_hash) {
+            linked_hash_map::Entry::Occupied(entry) => {
+                if *entry.get() {
+                    entry.remove();
+                }
+            }
+            linked_hash_map::Entry::Vacant(entry) => {
+                entry.insert(false);
+            }
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+#[error("utreexo error: {0}")]
+#[repr(transparent)]
+pub struct UtreexoError(String);
+
 #[derive(Debug, Default)]
 #[repr(transparent)]
 pub struct Accumulator(pub MemForest<BitcoinNodeHash>);
+
+impl Accumulator {
+    pub fn apply_diff(
+        &mut self,
+        diff: AccumulatorDiff,
+    ) -> Result<(), UtreexoError> {
+        let (mut insertions, mut deletions) = (Vec::new(), Vec::new());
+        for (utxo_hash, insert) in diff.0 {
+            if insert {
+                insertions.push(utxo_hash);
+            } else {
+                deletions.push(utxo_hash);
+            }
+        }
+        tracing::trace!(
+            accumulator = %self.0,
+            insertions = ?insertions,
+            deletions = ?deletions,
+            "Applying diff"
+        );
+        let () = self
+            .0
+            .modify(&insertions, &deletions)
+            .map_err(UtreexoError)?;
+        tracing::debug!(accumulator = %self.0, "Applied diff");
+        Ok(())
+    }
+
+    pub fn get_roots(&self) -> Vec<BitcoinNodeHash> {
+        self.0
+            .get_roots()
+            .iter()
+            .map(|node| node.get_data())
+            .collect()
+    }
+
+    pub fn prove(
+        &self,
+        targets: &[BitcoinNodeHash],
+    ) -> Result<Proof<BitcoinNodeHash>, UtreexoError> {
+        self.0.prove(targets).map_err(UtreexoError)
+    }
+
+    pub fn verify(
+        &self,
+        proof: &Proof<BitcoinNodeHash>,
+        del_hashes: &[BitcoinNodeHash],
+    ) -> Result<bool, UtreexoError> {
+        self.0.verify(proof, del_hashes).map_err(UtreexoError)
+    }
+}
 
 impl<'de> Deserialize<'de> for Accumulator {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>

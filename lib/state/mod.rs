@@ -200,7 +200,7 @@ impl State {
             .iter()
             .map(|(_, utxo_hash)| utxo_hash.into())
             .collect();
-        tx.proof = accumulator.0.prove(&targets).map_err(Error::Utreexo)?;
+        tx.proof = accumulator.prove(&targets)?;
         Ok(())
     }
 
@@ -216,7 +216,7 @@ impl State {
         let accumulator = self.get_accumulator(rotxn)?;
         let targets: Vec<BitcoinNodeHash> =
             utxos.into_iter().map(BitcoinNodeHash::from).collect();
-        let proof = accumulator.0.prove(&targets).map_err(Error::Utreexo)?;
+        let proof = accumulator.prove(&targets)?;
         Ok(proof)
     }
 

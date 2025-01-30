@@ -14,6 +14,7 @@ use bip300301_enforcer_integration_tests::{
 use futures::{
     channel::mpsc, future::BoxFuture, FutureExt as _, StreamExt as _,
 };
+use thunder::types::OutPoint;
 use thunder_app_rpc_api::RpcClient as _;
 use tokio::time::sleep;
 use tracing::Instrument as _;
@@ -118,18 +119,25 @@ async fn unknown_withdrawal_task(
     tracing::info!("Deposited to sidechain successfully");
     tracing::debug!("Checking that withdrawer sidechain recognizes deposit");
     {
-        let withdrawer_utxos_count =
-            sidechain_withdrawer.rpc_client.list_utxos().await?.len();
-        sidechain_withdrawer
-            .bmm_single(&mut enforcer_post_setup)
-            .await?;
-        let utxos_count_delta = sidechain_withdrawer
+        let withdrawer_deposit_utxos_count = sidechain_withdrawer
             .rpc_client
             .list_utxos()
             .await?
-            .len()
-            .checked_sub(withdrawer_utxos_count);
-        anyhow::ensure!(utxos_count_delta == Some(1));
+            .into_iter()
+            .filter(|utxo| matches!(utxo.outpoint, OutPoint::Deposit(_)))
+            .count();
+        sidechain_withdrawer
+            .bmm_single(&mut enforcer_post_setup)
+            .await?;
+        let deposit_utxos_count_delta = sidechain_withdrawer
+            .rpc_client
+            .list_utxos()
+            .await?
+            .into_iter()
+            .filter(|utxo| matches!(utxo.outpoint, OutPoint::Deposit(_)))
+            .count()
+            .checked_sub(withdrawer_deposit_utxos_count);
+        anyhow::ensure!(deposit_utxos_count_delta == Some(1));
     }
     drop(sidechain_successor);
     drop(sidechain_withdrawer);
