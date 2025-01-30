@@ -20,10 +20,11 @@ use tokio_stream::wrappers::IntervalStream;
 
 use crate::{
     archive::{self, Archive},
+    net::PeerConnectionState,
     state::{self, State},
     types::{
-        hash, proto::mainchain, AuthorizedTransaction, BlockHash, BmmResult,
-        Body, Hash, Header, Tip, Txid, Version, VERSION,
+        hash, proto::mainchain, schema, AuthorizedTransaction, BlockHash,
+        BmmResult, Body, Hash, Header, Tip, Txid, Version, VERSION,
     },
 };
 
@@ -1338,4 +1339,16 @@ pub fn connect(
         internal_message_tx,
     };
     (connection_handle, info_rx)
+}
+
+// RPC output representation for peer + state
+// TODO: use better types here. Struggling with how to satisfy utoipa
+
+#[derive(Clone, serde::Deserialize, serde::Serialize, utoipa:: ToSchema)]
+pub struct Peer {
+    #[schema(value_type = schema::SocketAddr)]
+    pub address: SocketAddr,
+
+    #[schema(value_type = schema::PeerConnectionState)]
+    pub state: PeerConnectionState,
 }

@@ -5945,6 +5945,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "strum",
  "thiserror 2.0.11",
  "tiny-bip39",
  "tokio",
