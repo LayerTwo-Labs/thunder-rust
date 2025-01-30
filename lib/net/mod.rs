@@ -14,6 +14,7 @@ use heed::{
 use parking_lot::RwLock;
 use quinn::{ClientConfig, Endpoint, ServerConfig};
 use tokio_stream::StreamNotifyClose;
+use tracing::instrument;
 
 use crate::{
     archive::Archive,
@@ -57,6 +58,10 @@ pub enum Error {
     MissingPeerConnection(SocketAddr),
     #[error("peer connection is not fully connected for {0}")]
     PeerNotConnected(SocketAddr),
+    /// Unspecified peer IP addresses cannot be connected to.
+    /// `0.0.0.0` is one example of an "unspecified" IP.
+    #[error("unspecified peer ip address (cannot connect to '0.0.0.0')")]
+    UnspecfiedPeerIP,
     #[error(transparent)]
     NoInitialCipherSuite(#[from] quinn::crypto::rustls::NoInitialCipherSuite),
     #[error("peer connection")]
@@ -290,14 +295,23 @@ impl Net {
             .collect()
     }
 
+    #[instrument(skip(self, env), err(Debug))]
     pub fn connect_peer(
         &self,
         env: heed::Env,
         addr: SocketAddr,
     ) -> Result<(), Error> {
         if self.active_peers.read().contains_key(&addr) {
-            tracing::error!(%addr, "connect peer: already connected");
+            tracing::error!("connect peer: already connected");
             return Err(Error::AlreadyConnected(addr));
+        }
+
+        // This check happens within Quinn with a
+        // generic "invalid remote address". We run the
+        // same check, and provide a friendlier error
+        // message.
+        if addr.ip().is_unspecified() {
+            return Err(Error::UnspecfiedPeerIP);
         }
         let connecting = self.server.connect(addr, "localhost")?;
         let mut rwtxn = env.write_txn()?;
