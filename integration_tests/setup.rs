@@ -33,6 +33,12 @@ impl ReservedPorts {
     }
 }
 
+#[derive(Debug)]
+pub struct Init {
+    pub thunder_app: PathBuf,
+    pub data_dir_suffix: Option<String>,
+}
+
 #[derive(Debug, Error)]
 pub enum BmmError {
     #[error(transparent)]
@@ -131,26 +137,25 @@ impl Sidechain for PostSetup {
     const SIDECHAIN_NUMBER: SidechainNumber =
         SidechainNumber(thunder::types::THIS_SIDECHAIN);
 
-    /// Path to thunder_app
-    type Init = PathBuf;
+    type Init = Init;
 
     type SetupError = SetupError;
 
     async fn setup(
-        thunder_app_path: Self::Init,
+        init: Self::Init,
         post_setup: &EnforcerPostSetup,
         res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
     ) -> Result<Self, Self::SetupError> {
         let reserved_ports = ReservedPorts::new()?;
-        let thunder_dir = post_setup.out_dir.path().join(format!(
-            "thunder-{}-{}",
-            reserved_ports.net.port(),
-            reserved_ports.rpc.port()
-        ));
+        let thunder_dir = if let Some(suffix) = init.data_dir_suffix {
+            post_setup.out_dir.path().join(format!("thunder-{suffix}"))
+        } else {
+            post_setup.out_dir.path().join("thunder")
+        };
         std::fs::create_dir(&thunder_dir)
             .map_err(Self::SetupError::CreateThunderDir)?;
         let thunder_app = ThunderApp {
-            path: thunder_app_path,
+            path: init.thunder_app,
             data_dir: thunder_dir,
             log_level: Some(tracing::Level::TRACE),
             mainchain_grpc_port: post_setup
