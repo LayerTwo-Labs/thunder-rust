@@ -1301,6 +1301,7 @@ pub fn handle(
 pub fn connect(
     connecting: quinn::Connecting,
     ctxt: ConnectionContext,
+    on_connected: mpsc::UnboundedSender<()>,
 ) -> (ConnectionHandle, mpsc::UnboundedReceiver<Info>) {
     let (internal_message_tx, internal_message_rx) = mpsc::unbounded();
     let (info_tx, info_rx) = mpsc::unbounded();
@@ -1309,6 +1310,10 @@ pub fn connect(
         let internal_message_tx = internal_message_tx.clone();
         move || async move {
             let connection = Connection::new(connecting).await?;
+            if let Err(send_error) = on_connected.unbounded_send(()) {
+                tracing::error!("Failed to send on_connected: {send_error:#}");
+            }
+
             let connection_task = ConnectionTask {
                 connection,
                 ctxt,

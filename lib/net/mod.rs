@@ -322,17 +322,37 @@ impl Net {
             archive: self.archive.clone(),
             state: self.state.clone(),
         };
+
+        let (connected_tx, mut connected_rx) = mpsc::unbounded();
         let (connection_handle, info_rx) =
-            peer::connect(connecting, connection_ctxt);
-        tracing::trace!(%addr, "connect peer: spawning info rx");
+            peer::connect(connecting, connection_ctxt, connected_tx);
+        tracing::trace!("connect peer: spawning info rx");
         tokio::spawn({
             let info_rx = StreamNotifyClose::new(info_rx)
                 .map(move |info| Ok((addr, info)));
             let peer_info_tx = self.peer_info_tx.clone();
             async move {
                 if let Err(_send_err) = info_rx.forward(peer_info_tx).await {
-                    tracing::error!(%addr, "Failed to send peer connection info");
+                    tracing::error!("Failed to send peer connection info");
                 }
+            }
+        });
+
+        tokio::spawn({
+            let net = self.clone();
+            async move {
+                connected_rx.next().await.inspect(|_| {
+                    let _res = net
+                        .update_active_peer_state(addr, PeerState::Connected)
+                        .inspect(|_| {
+                            tracing::info!(%addr, "connect peer: updated state to connected");
+                        })
+                        .inspect_err(|err| {
+                            tracing::error!(
+                                "failed to update active peer state: {err:#}"
+                            );
+                        });
+                });
             }
         });
 
