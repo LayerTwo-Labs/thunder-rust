@@ -29,6 +29,7 @@ parking_lot = "0.12.1"
 prost = "0.13.3"
 serde = "1.0.179"
 serde_json = "1.0.113"
+strum = { version = "0.26.3", features = ["derive"] }
 thiserror = "2.0.11"
 tiny-bip39 = "2.0.0"
 tokio = { version = "1.29.1", default-features = false, features = ["signal"] }

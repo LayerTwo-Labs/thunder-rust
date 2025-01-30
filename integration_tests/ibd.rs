@@ -71,10 +71,10 @@ async fn check_peer_connection(
         .list_peers()
         .await?
         .iter()
-        .map(|p| p.address.to_string())
+        .map(|p| p.address)
         .collect::<Vec<_>>();
 
-    if peers.contains(&expected_peer.to_string()) {
+    if peers.contains(&expected_peer) {
         Ok(())
     } else {
         Err(anyhow::anyhow!(

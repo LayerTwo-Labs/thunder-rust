@@ -17,7 +17,7 @@ use tonic::transport::Channel;
 use crate::{
     archive::{self, Archive},
     mempool::{self, MemPool},
-    net::{self, Net},
+    net::{self, Net, PeerConnectionState},
     state::{self, State},
     types::{
         proto::{self, mainchain},
@@ -485,7 +485,7 @@ where
             .map_err(Error::from)
     }
 
-    pub fn get_active_peers(&self) -> Vec<(SocketAddr, net::PeerState)> {
+    pub fn get_active_peers(&self) -> Vec<(SocketAddr, PeerConnectionState)> {
         self.net.get_active_peers()
     }
 

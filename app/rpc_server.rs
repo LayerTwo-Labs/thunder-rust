@@ -7,10 +7,11 @@ use jsonrpsee::{
     types::ErrorObject,
 };
 use thunder::{
+    net::peer::Peer,
     types::{Address, PointedOutput, Txid, WithdrawalBundle},
     wallet::Balance,
 };
-use thunder_app_rpc_api::{schema::Peer as RpcPeer, RpcServer};
+use thunder_app_rpc_api::RpcServer;
 
 use crate::app::App;
 
@@ -138,14 +139,11 @@ impl RpcServer for RpcServerImpl {
         Ok(height)
     }
 
-    async fn list_peers(&self) -> RpcResult<Vec<RpcPeer>> {
+    async fn list_peers(&self) -> RpcResult<Vec<Peer>> {
         let peers = self.app.node.get_active_peers();
         let res: Vec<_> = peers
             .into_iter()
-            .map(|(address, state)| RpcPeer {
-                address: address.to_string(),
-                state: state.to_string(),
-            })
+            .map(|(address, state)| Peer { address, state })
             .collect();
         Ok(res)
     }
