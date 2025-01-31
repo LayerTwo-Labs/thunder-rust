@@ -55,8 +55,6 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("peer connection not found for {0}")]
     MissingPeerConnection(SocketAddr),
-    #[error("peer connection is not fully connected for {0}")]
-    PeerNotConnected(SocketAddr),
     /// Unspecified peer IP addresses cannot be connected to.
     /// `0.0.0.0` is one example of an "unspecified" IP.
     #[error("unspecified peer ip address (cannot connect to '{0}')")]
@@ -468,13 +466,6 @@ impl Net {
         let peer_connection_handle = active_peers_read
             .get(&addr)
             .ok_or_else(|| Error::MissingPeerConnection(addr))?;
-
-        match peer_connection_handle.connection_status() {
-            PeerConnectionStatus::Connecting => {
-                return Err(Error::PeerNotConnected(addr));
-            }
-            PeerConnectionStatus::Connected => {}
-        }
 
         if let Err(send_err) = peer_connection_handle
             .internal_message_tx
