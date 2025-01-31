@@ -339,17 +339,17 @@ impl Net {
             async move {
                 let update_peer_state = async move {
                     connected_rx.next().await.inspect(|_| {
-                    let _res = net
-                        .update_active_peer_state(addr, PeerConnectionState::Connected)
-                        .inspect(|_| {
-                            tracing::info!(%addr, "connect peer: updated state to connected");
-                        })
-                        .inspect_err(|err| {
-                            tracing::error!(
-                                "failed to update active peer state: {err:#}"
-                            );
-                        });
-                })
+                        match net.update_active_peer_state(addr, PeerConnectionState::Connected) {
+                            Ok(_) => {
+                                tracing::info!(%addr, "connect peer: updated state to connected");
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    "failed to update active peer state: {err:#}"
+                                );
+                            }
+                        }
+                    })
                 };
 
                 let forward_peer_info = async move {
