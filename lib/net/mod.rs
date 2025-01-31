@@ -486,29 +486,6 @@ impl Net {
         Ok(())
     }
 
-    // Push a request to the specified peers
-    pub fn push_request(
-        &self,
-        request: PeerRequest,
-        peers: &HashSet<SocketAddr>,
-    ) {
-        let active_peers_read = self.active_peers.read();
-        for addr in peers {
-            let Some(peer_connection_handle) = active_peers_read.get(addr)
-            else {
-                continue;
-            };
-            if let Err(_send_err) = peer_connection_handle
-                .internal_message_tx
-                .unbounded_send(request.clone().into())
-            {
-                tracing::warn!(
-                    "Failed to push request to peer at {addr}: {request:?}"
-                )
-            }
-        }
-    }
-
     /// Push a tx to all active peers, except those in the provided set
     pub fn push_tx(
         &self,
