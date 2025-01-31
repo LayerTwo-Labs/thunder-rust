@@ -538,8 +538,11 @@ impl Net {
             return Err(Error::MissingPeerConnection(addr));
         };
 
-        if *state == PeerConnectionState::Connecting {
-            return Err(Error::PeerNotConnected(addr));
+        match state {
+            PeerConnectionState::Connecting => {
+                return Err(Error::PeerNotConnected(addr));
+            }
+            PeerConnectionState::Connected => {}
         }
 
         if let Err(send_err) = peer_connection_handle
@@ -587,9 +590,12 @@ impl Net {
             .iter()
             .filter(|(addr, _)| !exclude.contains(addr))
             .for_each(|(addr, (peer_connection_handle, state))| {
-                if *state != PeerConnectionState::Connected {
-                    tracing::trace!(%addr, "skipping peer at {addr} because it is not fully connected");
-                    return;
+                match state {
+                    PeerConnectionState::Connecting => {
+                        tracing::trace!(%addr, "skipping peer at {addr} because it is not fully connected");
+                        return;
+                    }
+                    PeerConnectionState::Connected => {}
                 }
                 let request = PeerRequest::PushTransaction {
                     transaction: tx.clone(),
