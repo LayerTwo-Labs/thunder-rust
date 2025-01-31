@@ -298,7 +298,7 @@ impl Net {
             .collect()
     }
 
-    #[instrument(skip(self, env), err(Debug))]
+    #[instrument(skip_all, fields(addr), err(Debug))]
     pub fn connect_peer(
         &self,
         env: heed::Env,
