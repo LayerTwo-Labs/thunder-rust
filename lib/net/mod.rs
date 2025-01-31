@@ -179,10 +179,7 @@ pub fn make_server_endpoint(
 ) -> Result<(Endpoint, Vec<u8>), Error> {
     let (server_config, server_cert) = configure_server()?;
 
-    tracing::info!(
-        "creating server endpoint: binding to {bind_addr} ({})",
-        if bind_addr.is_ipv6() { "ipv6" } else { "ipv4" }
-    );
+    tracing::info!("creating server endpoint: binding to {bind_addr}",);
 
     let mut endpoint = Endpoint::server(server_config, bind_addr)?;
     let client_cfg = configure_client()?;
