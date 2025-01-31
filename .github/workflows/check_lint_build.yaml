@@ -59,6 +59,7 @@ jobs:
           wget https://releases.drivechain.info/bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip
           unzip bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip
           rm bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip
+          ls -l bip300301-enforcer-latest-x86_64-unknown-linux-gnu
           mv bip300301-enforcer-latest-x86_64-unknown-linux-gnu/bip300301_enforcer-*-x86_64-unknown-linux-gnu bip300301-enforcer
           rm -r bip300301-enforcer-latest-x86_64-unknown-linux-gnu
           chmod +x bip300301-enforcer
