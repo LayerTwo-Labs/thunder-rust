@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use l2l_openapi::open_api;
 use thunder::{
-    net::peer::Peer,
+    net::Peer,
     types::{
         schema as thunder_schema, Address, MerkleRoot, OutPoint, Output,
         OutputContent, PointedOutput, Txid, WithdrawalBundle,

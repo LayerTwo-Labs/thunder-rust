@@ -7,7 +7,7 @@ use jsonrpsee::{
     types::ErrorObject,
 };
 use thunder::{
-    net::peer::Peer,
+    net::Peer,
     types::{Address, PointedOutput, Txid, WithdrawalBundle},
     wallet::Balance,
 };
@@ -141,11 +141,7 @@ impl RpcServer for RpcServerImpl {
 
     async fn list_peers(&self) -> RpcResult<Vec<Peer>> {
         let peers = self.app.node.get_active_peers();
-        let res: Vec<_> = peers
-            .into_iter()
-            .map(|(address, state)| Peer { address, state })
-            .collect();
-        Ok(res)
+        Ok(peers)
     }
 
     async fn list_utxos(&self) -> RpcResult<Vec<PointedOutput>> {
