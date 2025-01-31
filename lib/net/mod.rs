@@ -334,17 +334,11 @@ impl Net {
             let info_rx = StreamNotifyClose::new(info_rx)
                 .map(move |info| Ok((addr, info)));
             let peer_info_tx = self.peer_info_tx.clone();
-            async move {
-                if let Err(_send_err) = info_rx.forward(peer_info_tx).await {
-                    tracing::error!("Failed to send peer connection info");
-                }
-            }
-        });
-
-        tokio::spawn({
             let net = self.clone();
+
             async move {
-                connected_rx.next().await.inspect(|_| {
+                let update_peer_state = async move {
+                    connected_rx.next().await.inspect(|_| {
                     let _res = net
                         .update_active_peer_state(addr, PeerConnectionState::Connected)
                         .inspect(|_| {
@@ -355,7 +349,17 @@ impl Net {
                                 "failed to update active peer state: {err:#}"
                             );
                         });
-                });
+                })
+                };
+
+                let forward_peer_info = async move {
+                    if let Err(_send_err) = info_rx.forward(peer_info_tx).await
+                    {
+                        tracing::error!("Failed to send peer connection info");
+                    };
+                };
+
+                tokio::join!(forward_peer_info, update_peer_state)
             }
         });
 
