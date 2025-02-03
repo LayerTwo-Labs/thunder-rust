@@ -2,8 +2,11 @@
 on:
   pull_request:
   push:
-    branches: 
+    branches:
       - master
+    tags:
+      - '*'
+  workflow_dispatch:
 
 name: Check, Lint, Build
 
