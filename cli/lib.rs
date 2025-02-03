@@ -1,10 +1,11 @@
 use std::{
+    fmt::Debug,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     time::Duration,
 };
 
 use clap::{Parser, Subcommand};
-use jsonrpsee::http_client::{HttpClient, HttpClientBuilder};
+use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder};
 use thunder::types::{Address, Txid, THIS_SIDECHAIN};
 use thunder_app_rpc_api::RpcClient;
 use tower::{self};
@@ -89,6 +90,133 @@ pub enum Command {
     },
 }
 
+/// Handle a command, returning CLI output
+async fn handle_command<RpcClient>(
+    rpc_client: &RpcClient,
+    command: Command,
+) -> anyhow::Result<String>
+where
+    RpcClient: ClientT + Sync,
+{
+    let res = match command {
+        Command::Balance => {
+            let balance = rpc_client.balance().await?;
+            serde_json::to_string_pretty(&balance)?
+        }
+        Command::ConnectPeer { addr } => {
+            let () = rpc_client.connect_peer(addr).await?;
+            String::default()
+        }
+        Command::CreateDeposit {
+            address,
+            value_sats,
+            fee_sats,
+        } => {
+            let txid = rpc_client
+                .create_deposit(address, value_sats, fee_sats)
+                .await?;
+            format!("{txid}")
+        }
+        Command::FormatDepositAddress { address } => {
+            rpc_client.format_deposit_address(address).await?
+        }
+        Command::GetBlock { block_hash } => {
+            let block = rpc_client.get_block(block_hash).await?;
+            serde_json::to_string_pretty(&block)?
+        }
+        Command::GetBmmInclusions { block_hash } => {
+            let bmm_inclusions =
+                rpc_client.get_bmm_inclusions(block_hash).await?;
+            serde_json::to_string_pretty(&bmm_inclusions)?
+        }
+        Command::GenerateMnemonic => rpc_client.generate_mnemonic().await?,
+        Command::GetNewAddress => {
+            let address = rpc_client.get_new_address().await?;
+            format!("{address}")
+        }
+        Command::GetWalletAddresses => {
+            let addresses = rpc_client.get_wallet_addresses().await?;
+            serde_json::to_string_pretty(&addresses)?
+        }
+        Command::GetWalletUtxos => {
+            let utxos = rpc_client.get_wallet_utxos().await?;
+            serde_json::to_string_pretty(&utxos)?
+        }
+        Command::GetBlockcount => {
+            let blockcount = rpc_client.getblockcount().await?;
+            format!("{blockcount}")
+        }
+        Command::LatestFailedWithdrawalBundleHeight => {
+            let height =
+                rpc_client.latest_failed_withdrawal_bundle_height().await?;
+            serde_json::to_string_pretty(&height)?
+        }
+        Command::ListPeers => {
+            let peers = rpc_client.list_peers().await?;
+            serde_json::to_string_pretty(&peers)?
+        }
+        Command::ListUtxos => {
+            let utxos = rpc_client.list_utxos().await?;
+            serde_json::to_string_pretty(&utxos)?
+        }
+        Command::Mine { fee_sats } => {
+            let () = rpc_client.mine(fee_sats).await?;
+            String::default()
+        }
+        Command::PendingWithdrawalBundle => {
+            let withdrawal_bundle =
+                rpc_client.pending_withdrawal_bundle().await?;
+            serde_json::to_string_pretty(&withdrawal_bundle)?
+        }
+        Command::OpenApiSchema => {
+            let openapi =
+                <thunder_app_rpc_api::RpcDoc as utoipa::OpenApi>::openapi();
+            openapi.to_pretty_json()?
+        }
+        Command::RemoveFromMempool { txid } => {
+            let () = rpc_client.remove_from_mempool(txid).await?;
+            String::default()
+        }
+        Command::SetSeedFromMnemonic { mnemonic } => {
+            let () = rpc_client.set_seed_from_mnemonic(mnemonic).await?;
+            String::default()
+        }
+        Command::SidechainWealth => {
+            let sidechain_wealth = rpc_client.sidechain_wealth_sats().await?;
+            format!("{sidechain_wealth}")
+        }
+        Command::Stop => {
+            let () = rpc_client.stop().await?;
+            String::default()
+        }
+        Command::Transfer {
+            dest,
+            value_sats,
+            fee_sats,
+        } => {
+            let txid = rpc_client.transfer(dest, value_sats, fee_sats).await?;
+            format!("{txid}")
+        }
+        Command::Withdraw {
+            mainchain_address,
+            amount_sats,
+            fee_sats,
+            mainchain_fee_sats,
+        } => {
+            let txid = rpc_client
+                .withdraw(
+                    mainchain_address,
+                    amount_sats,
+                    fee_sats,
+                    mainchain_fee_sats,
+                )
+                .await?;
+            format!("{txid}")
+        }
+    };
+    Ok(res)
+}
+
 const DEFAULT_RPC_ADDR: SocketAddr = SocketAddr::new(
     IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
     6000 + THIS_SIDECHAIN as u16,
@@ -114,11 +242,9 @@ pub struct Cli {
 impl Cli {
     pub async fn run(self) -> anyhow::Result<String> {
         const DEFAULT_TIMEOUT: u64 = 60;
-        let mut rpc_client_builder = HttpClientBuilder::default()
-            .request_timeout(Duration::from_secs(
-                self.timeout.unwrap_or(DEFAULT_TIMEOUT),
-            ));
-
+        let rpc_client_builder = HttpClientBuilder::default().request_timeout(
+            Duration::from_secs(self.timeout.unwrap_or(DEFAULT_TIMEOUT)),
+        );
         if self.verbose {
             // Note: TraceLayer::new_for_http() is not what I actually want here.
             // I tried using this to get a simple thing going with interceptors,
@@ -126,135 +252,14 @@ impl Cli {
             // headers).
             let middleware =
                 tower::ServiceBuilder::new().layer(TraceLayer::new_for_http());
-
-            // mismatched types
-            // expected struct `ServiceBuilder<Identity>`
-            //   found struct `ServiceBuilder<Stack<TraceLayer<SharedClassifier<ServerErrorsAsFailures>>, Identity>>`
-            rpc_client_builder =
-                rpc_client_builder.set_http_middleware(middleware);
+            let rpc_client = rpc_client_builder
+                .set_http_middleware(middleware)
+                .build(format!("http://{}", self.rpc_addr))?;
+            handle_command(&rpc_client, self.command).await
+        } else {
+            let rpc_client = rpc_client_builder
+                .build(format!("http://{}", self.rpc_addr))?;
+            handle_command(&rpc_client, self.command).await
         }
-
-        let rpc_client: HttpClient =
-            rpc_client_builder.build(format!("http://{}", self.rpc_addr))?;
-
-        let res = match self.command {
-            Command::Balance => {
-                let balance = rpc_client.balance().await?;
-                serde_json::to_string_pretty(&balance)?
-            }
-            Command::ConnectPeer { addr } => {
-                let () = rpc_client.connect_peer(addr).await?;
-                String::default()
-            }
-            Command::CreateDeposit {
-                address,
-                value_sats,
-                fee_sats,
-            } => {
-                let txid = rpc_client
-                    .create_deposit(address, value_sats, fee_sats)
-                    .await?;
-                format!("{txid}")
-            }
-            Command::FormatDepositAddress { address } => {
-                rpc_client.format_deposit_address(address).await?
-            }
-            Command::GetBlock { block_hash } => {
-                let block = rpc_client.get_block(block_hash).await?;
-                serde_json::to_string_pretty(&block)?
-            }
-            Command::GetBmmInclusions { block_hash } => {
-                let bmm_inclusions =
-                    rpc_client.get_bmm_inclusions(block_hash).await?;
-                serde_json::to_string_pretty(&bmm_inclusions)?
-            }
-            Command::GenerateMnemonic => rpc_client.generate_mnemonic().await?,
-            Command::GetNewAddress => {
-                let address = rpc_client.get_new_address().await?;
-                format!("{address}")
-            }
-            Command::GetWalletAddresses => {
-                let addresses = rpc_client.get_wallet_addresses().await?;
-                serde_json::to_string_pretty(&addresses)?
-            }
-            Command::GetWalletUtxos => {
-                let utxos = rpc_client.get_wallet_utxos().await?;
-                serde_json::to_string_pretty(&utxos)?
-            }
-            Command::GetBlockcount => {
-                let blockcount = rpc_client.getblockcount().await?;
-                format!("{blockcount}")
-            }
-            Command::LatestFailedWithdrawalBundleHeight => {
-                let height =
-                    rpc_client.latest_failed_withdrawal_bundle_height().await?;
-                serde_json::to_string_pretty(&height)?
-            }
-            Command::ListPeers => {
-                let peers = rpc_client.list_peers().await?;
-                serde_json::to_string_pretty(&peers)?
-            }
-            Command::ListUtxos => {
-                let utxos = rpc_client.list_utxos().await?;
-                serde_json::to_string_pretty(&utxos)?
-            }
-            Command::Mine { fee_sats } => {
-                let () = rpc_client.mine(fee_sats).await?;
-                String::default()
-            }
-            Command::PendingWithdrawalBundle => {
-                let withdrawal_bundle =
-                    rpc_client.pending_withdrawal_bundle().await?;
-                serde_json::to_string_pretty(&withdrawal_bundle)?
-            }
-            Command::OpenApiSchema => {
-                let openapi =
-                    <thunder_app_rpc_api::RpcDoc as utoipa::OpenApi>::openapi();
-                openapi.to_pretty_json()?
-            }
-            Command::RemoveFromMempool { txid } => {
-                let () = rpc_client.remove_from_mempool(txid).await?;
-                String::default()
-            }
-            Command::SetSeedFromMnemonic { mnemonic } => {
-                let () = rpc_client.set_seed_from_mnemonic(mnemonic).await?;
-                String::default()
-            }
-            Command::SidechainWealth => {
-                let sidechain_wealth =
-                    rpc_client.sidechain_wealth_sats().await?;
-                format!("{sidechain_wealth}")
-            }
-            Command::Stop => {
-                let () = rpc_client.stop().await?;
-                String::default()
-            }
-            Command::Transfer {
-                dest,
-                value_sats,
-                fee_sats,
-            } => {
-                let txid =
-                    rpc_client.transfer(dest, value_sats, fee_sats).await?;
-                format!("{txid}")
-            }
-            Command::Withdraw {
-                mainchain_address,
-                amount_sats,
-                fee_sats,
-                mainchain_fee_sats,
-            } => {
-                let txid = rpc_client
-                    .withdraw(
-                        mainchain_address,
-                        amount_sats,
-                        fee_sats,
-                        mainchain_fee_sats,
-                    )
-                    .await?;
-                format!("{txid}")
-            }
-        };
-        Ok(res)
     }
 }
