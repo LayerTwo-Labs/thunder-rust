@@ -2,6 +2,10 @@ use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},
     net::SocketAddr,
+    sync::{
+        atomic::{self, AtomicBool},
+        Arc,
+    },
 };
 
 use bitcoin::Work;
@@ -22,8 +26,8 @@ use crate::{
     archive::{self, Archive},
     state::{self, State},
     types::{
-        hash, proto::mainchain, AuthorizedTransaction, BlockHash, BmmResult,
-        Body, Hash, Header, Tip, Txid, Version, VERSION,
+        hash, proto::mainchain, schema, AuthorizedTransaction, BlockHash,
+        BmmResult, Body, Hash, Header, Tip, Txid, Version, VERSION,
     },
 };
 
@@ -1244,11 +1248,58 @@ impl ConnectionTask {
     }
 }
 
+#[derive(
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::Display,
+    utoipa::ToSchema,
+)]
+pub enum PeerConnectionStatus {
+    /// We're still in the process of initializing the peer connection
+    Connecting,
+    /// The connection is successfully established
+    Connected,
+}
+
+impl PeerConnectionStatus {
+    /// Convert from boolean representation
+    // Should remain private to this module
+    fn from_repr(repr: bool) -> Self {
+        match repr {
+            false => Self::Connecting,
+            true => Self::Connected,
+        }
+    }
+
+    /// Convert to boolean representation
+    // Should remain private to this module
+    fn as_repr(self) -> bool {
+        match self {
+            Self::Connecting => false,
+            Self::Connected => true,
+        }
+    }
+}
+
 /// Connection killed on drop
 pub struct ConnectionHandle {
     task: JoinHandle<()>,
+    /// Representation of [`PeerConnectionStatus`]
+    pub(in crate::net) status_repr: Arc<AtomicBool>,
     /// Push messages from connection task / net task / node
     pub internal_message_tx: mpsc::UnboundedSender<InternalMessage>,
+}
+
+impl ConnectionHandle {
+    pub fn connection_status(&self) -> PeerConnectionStatus {
+        PeerConnectionStatus::from_repr(
+            self.status_repr.load(atomic::Ordering::SeqCst),
+        )
+    }
 }
 
 impl Drop for ConnectionHandle {
@@ -1291,8 +1342,10 @@ pub fn handle(
             }
         }
     });
+    let status = PeerConnectionStatus::Connected;
     let connection_handle = ConnectionHandle {
         task,
+        status_repr: Arc::new(AtomicBool::new(status.as_repr())),
         internal_message_tx,
     };
     (connection_handle, info_rx)
@@ -1302,13 +1355,21 @@ pub fn connect(
     connecting: quinn::Connecting,
     ctxt: ConnectionContext,
 ) -> (ConnectionHandle, mpsc::UnboundedReceiver<Info>) {
+    let connection_status = PeerConnectionStatus::Connecting;
+    let status_repr = Arc::new(AtomicBool::new(connection_status.as_repr()));
     let (internal_message_tx, internal_message_rx) = mpsc::unbounded();
     let (info_tx, info_rx) = mpsc::unbounded();
     let connection_task = {
+        let status_repr = status_repr.clone();
         let info_tx = info_tx.clone();
         let internal_message_tx = internal_message_tx.clone();
         move || async move {
             let connection = Connection::new(connecting).await?;
+            status_repr.store(
+                PeerConnectionStatus::Connected.as_repr(),
+                atomic::Ordering::SeqCst,
+            );
+
             let connection_task = ConnectionTask {
                 connection,
                 ctxt,
@@ -1330,7 +1391,16 @@ pub fn connect(
     });
     let connection_handle = ConnectionHandle {
         task,
+        status_repr,
         internal_message_tx,
     };
     (connection_handle, info_rx)
+}
+
+// RPC output representation for peer + state
+#[derive(Clone, serde::Deserialize, serde::Serialize, utoipa::ToSchema)]
+pub struct Peer {
+    #[schema(value_type = schema::SocketAddr)]
+    pub address: SocketAddr,
+    pub status: PeerConnectionStatus,
 }

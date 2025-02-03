@@ -94,3 +94,33 @@ impl ToSchema for UtreexoProof {
         std::borrow::Cow::Borrowed("utreexo.Proof")
     }
 }
+
+pub struct SocketAddr;
+
+impl PartialSchema for SocketAddr {
+    fn schema() -> RefOr<Schema> {
+        let obj = utoipa::openapi::Object::with_type(openapi::Type::String);
+        RefOr::T(Schema::Object(obj))
+    }
+}
+
+impl ToSchema for SocketAddr {
+    fn name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("net.SocketAddr")
+    }
+}
+
+pub struct PeerConnectionState;
+
+impl PartialSchema for PeerConnectionState {
+    fn schema() -> RefOr<Schema> {
+        let obj = utoipa::openapi::Object::with_type(openapi::Type::String);
+        RefOr::T(Schema::Object(obj))
+    }
+}
+
+impl ToSchema for PeerConnectionState {
+    fn name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("net.PeerConnectionState")
+    }
+}

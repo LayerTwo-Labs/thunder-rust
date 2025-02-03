@@ -13,6 +13,7 @@ l2l-openapi = { workspace = true }
 thunder = { path = "../lib" }
 serde_json = { workspace = true }
 utoipa = { workspace = true }
+serde.workspace = true
 
 [lints]
 workspace = true
