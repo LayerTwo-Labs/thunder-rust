@@ -74,6 +74,7 @@ impl ConsoleLogs {
             rpc_addr: self.rpc_addr,
             timeout: None,
             command,
+            verbose: false,
         };
         app.runtime.spawn({
             let running_command = self.running_command.clone();

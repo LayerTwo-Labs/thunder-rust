@@ -7,6 +7,8 @@ use clap::{Parser, Subcommand};
 use jsonrpsee::http_client::{HttpClient, HttpClientBuilder};
 use thunder::types::{Address, Txid, THIS_SIDECHAIN};
 use thunder_app_rpc_api::RpcClient;
+use tower::{self};
+use tower_http::trace::TraceLayer;
 
 #[derive(Clone, Debug, Subcommand)]
 #[command(arg_required_else_help(true))]
@@ -102,6 +104,9 @@ pub struct Cli {
     #[arg(long, help = "Timeout for RPC requests in seconds (default: 60)")]
     pub timeout: Option<u64>,
 
+    #[arg(short, long, help = "Enable verbose HTTP output")]
+    pub verbose: bool,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -109,11 +114,29 @@ pub struct Cli {
 impl Cli {
     pub async fn run(self) -> anyhow::Result<String> {
         const DEFAULT_TIMEOUT: u64 = 60;
-        let rpc_client: HttpClient = HttpClientBuilder::default()
+        let mut rpc_client_builder = HttpClientBuilder::default()
             .request_timeout(Duration::from_secs(
                 self.timeout.unwrap_or(DEFAULT_TIMEOUT),
-            ))
-            .build(format!("http://{}", self.rpc_addr))?;
+            ));
+
+        if self.verbose {
+            // Note: TraceLayer::new_for_http() is not what I actually want here.
+            // I tried using this to get a simple thing going with interceptors,
+            // before moving on to what's actually my goal (dumping request/response
+            // headers).
+            let middleware =
+                tower::ServiceBuilder::new().layer(TraceLayer::new_for_http());
+
+            // mismatched types
+            // expected struct `ServiceBuilder<Identity>`
+            //   found struct `ServiceBuilder<Stack<TraceLayer<SharedClassifier<ServerErrorsAsFailures>>, Identity>>`
+            rpc_client_builder =
+                rpc_client_builder.set_http_middleware(middleware);
+        }
+
+        let rpc_client: HttpClient =
+            rpc_client_builder.build(format!("http://{}", self.rpc_addr))?;
+
         let res = match self.command {
             Command::Balance => {
                 let balance = rpc_client.balance().await?;

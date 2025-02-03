@@ -10,11 +10,15 @@ version.workspace = true
 anyhow = { workspace = true }
 bitcoin = { workspace = true, features = ["serde"] }
 clap = { version = "4.5.4", features = ["derive"] }
+http = "1.2.0"
+hyper = "1.6.0"
 jsonrpsee = { workspace = true, features = ["http-client"] }
 serde_json = { workspace = true }
 thunder = { path = "../lib" }
 thunder_app_rpc_api = { path = "../rpc-api" }
 tokio = { workspace = true }
+tower = "0.4.13"                                             # same as in jsonrpsee
+tower-http = { version = "0.6.2", features = ["trace"] }
 utoipa = { workspace = true }
 
 [lints]
