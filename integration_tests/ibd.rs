@@ -15,7 +15,10 @@ use thunder_app_rpc_api::RpcClient as _;
 use tokio::time::sleep;
 use tracing::Instrument as _;
 
-use crate::{setup::PostSetup, util::BinPaths};
+use crate::{
+    setup::{Init, PostSetup},
+    util::BinPaths,
+};
 
 #[derive(Debug)]
 struct ThunderNodes {
@@ -38,15 +41,24 @@ async fn setup(
     )
     .await?;
     let sidechain_sender = PostSetup::setup(
-        bin_paths.thunder.clone(),
+        Init {
+            thunder_app: bin_paths.thunder.clone(),
+            data_dir_suffix: Some("sender".to_owned()),
+        },
         &enforcer_post_setup,
         res_tx.clone(),
     )
     .await?;
     tracing::info!("Setup thunder send node successfully");
-    let sidechain_syncer =
-        PostSetup::setup(bin_paths.thunder, &enforcer_post_setup, res_tx)
-            .await?;
+    let sidechain_syncer = PostSetup::setup(
+        Init {
+            thunder_app: bin_paths.thunder.clone(),
+            data_dir_suffix: Some("syncer".to_owned()),
+        },
+        &enforcer_post_setup,
+        res_tx,
+    )
+    .await?;
     tracing::info!("Setup thunder sync node successfully");
     let thunder_nodes = ThunderNodes {
         sender: sidechain_sender,

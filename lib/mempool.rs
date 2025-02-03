@@ -2,14 +2,16 @@ use std::collections::VecDeque;
 
 use heed::{types::SerdeBincode, Database, RoTxn, RwTxn};
 
-use crate::types::{Accumulator, AuthorizedTransaction, OutPoint, Txid};
+use crate::types::{
+    Accumulator, AuthorizedTransaction, OutPoint, Txid, UtreexoError,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("heed error")]
     Heed(#[from] heed::Error),
-    #[error("Utreexo error: {0}")]
-    Utreexo(String),
+    #[error(transparent)]
+    Utreexo(#[from] UtreexoError),
     #[error("can't add transaction, utxo double spent")]
     UtxoDoubleSpent,
 }
@@ -118,8 +120,7 @@ impl MemPool {
                 .iter()
                 .map(|(_, utxo_hash)| utxo_hash.into())
                 .collect();
-            tx.transaction.proof =
-                accumulator.0.prove(&targets).map_err(Error::Utreexo)?;
+            tx.transaction.proof = accumulator.prove(&targets)?;
             unsafe { iter.put_current(&txid, &tx) }?;
         }
         Ok(())
