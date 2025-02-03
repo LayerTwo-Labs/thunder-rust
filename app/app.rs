@@ -33,6 +33,8 @@ pub enum Error {
         "Unable to verify existence of CUSF mainchain service(s) at {0}: {1}"
     )]
     VerifyMainchainServices(url::Url, tonic::Status),
+    #[error("failed to connect to CUSF mainchain enforcer at {0}")]
+    ConnectMainchain(url::Url, #[source] tonic::Status),
     #[error("io error")]
     Io(#[from] std::io::Error),
     #[error("miner error")]
@@ -210,11 +212,21 @@ impl App {
         .connect_lazy();
         let (cusf_mainchain, cusf_mainchain_wallet) = if runtime
             .block_on(Self::check_proto_support(transport.clone()))
-            .map_err(|err| {
-                Error::VerifyMainchainServices(
+            .map_err(|err| match err {
+                status
+                // Kind of crude, but I'm unable to match this on a std::io::Error...
+                    if status.code() == tonic::Code::Unavailable
+                        && status.message().contains("tcp connect error") =>
+                {
+                    Error::ConnectMainchain(
+                        config.mainchain_grpc_address.clone(),
+                        status,
+                    )
+                }
+                _ => Error::VerifyMainchainServices(
                     config.mainchain_grpc_address.clone(),
                     err,
-                )
+                ),
             })? {
             (
                 mainchain::ValidatorClient::new(transport.clone()),
