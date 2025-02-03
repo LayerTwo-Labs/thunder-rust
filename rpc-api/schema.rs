@@ -20,21 +20,6 @@ impl ToSchema for BitcoinTxid {
     }
 }
 
-pub struct Peer;
-
-impl PartialSchema for Peer {
-    fn schema() -> RefOr<Schema> {
-        let obj = utoipa::openapi::Object::with_type(openapi::Type::String);
-        RefOr::T(Schema::Object(obj))
-    }
-}
-
-impl ToSchema for Peer {
-    fn name() -> std::borrow::Cow<'static, str> {
-        std::borrow::Cow::Borrowed("net.Peer")
-    }
-}
-
 pub struct OpenApi;
 
 impl PartialSchema for OpenApi {

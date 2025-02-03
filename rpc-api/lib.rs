@@ -13,7 +13,7 @@ use thunder::{
     wallet::Balance,
 };
 
-pub mod schema;
+mod schema;
 
 #[open_api(ref_schemas[
     Address, MerkleRoot, OutPoint, Output, OutputContent, Txid,
@@ -97,7 +97,6 @@ pub trait Rpc {
     ) -> RpcResult<Option<u32>>;
 
     /// List peers
-    #[open_api_method(output_schema(PartialSchema = "schema::Peer"))]
     #[method(name = "list_peers")]
     async fn list_peers(&self) -> RpcResult<Vec<Peer>>;
 
