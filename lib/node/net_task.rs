@@ -434,7 +434,7 @@ where
                 if header.hash() != block_hash {
                     // Invalid response
                     tracing::warn!(%addr, ?req, ?resp,"Invalid response from peer; unexpected block hash");
-                    let () = ctxt.net.remove_active_peer(addr);
+                    let () = ctxt.net.remove_active_peer(&ctxt.env, addr)?;
                     return Ok(());
                 }
                 {
@@ -567,13 +567,13 @@ where
                 // check that the end header is as requested
                 let Some(end_header) = headers.last() else {
                     tracing::warn!(%addr, ?req, "Invalid response from peer; missing end header");
-                    let () = ctxt.net.remove_active_peer(addr);
+                    let () = ctxt.net.remove_active_peer(&ctxt.env, addr)?;
                     return Ok(());
                 };
                 let end_header_hash = end_header.hash();
                 if end_header_hash != end {
                     tracing::warn!(%addr, ?req, ?end_header,"Invalid response from peer; unexpected end header");
-                    let () = ctxt.net.remove_active_peer(addr);
+                    let () = ctxt.net.remove_active_peer(&ctxt.env, addr)?;
                     return Ok(());
                 }
                 // Must be at least one header due to previous check
@@ -583,7 +583,7 @@ where
                     && !start.contains(&start_hash)
                 {
                     tracing::warn!(%addr, ?req, %start_hash, "Invalid response from peer; invalid start hash");
-                    let () = ctxt.net.remove_active_peer(addr);
+                    let () = ctxt.net.remove_active_peer(&ctxt.env, addr)?;
                     return Ok(());
                 }
                 // check that the end header height is as expected
@@ -602,7 +602,8 @@ where
                     };
                     if end_height != height {
                         tracing::warn!(%addr, ?req, ?start_hash, "Invalid response from peer; invalid end height");
-                        let () = ctxt.net.remove_active_peer(addr);
+                        let () =
+                            ctxt.net.remove_active_peer(&ctxt.env, addr)?;
                         return Ok(());
                     }
                 }
@@ -611,7 +612,8 @@ where
                 for header in &headers {
                     if header.prev_side_hash != prev_side_hash {
                         tracing::warn!(%addr, ?req, ?headers,"Invalid response from peer; non-sequential headers");
-                        let () = ctxt.net.remove_active_peer(addr);
+                        let () =
+                            ctxt.net.remove_active_peer(&ctxt.env, addr)?;
                         return Ok(());
                     }
                     prev_side_hash = Some(header.hash());
@@ -669,7 +671,7 @@ where
             ) => {
                 // Invalid response
                 tracing::warn!(%addr, ?req, ?resp,"Invalid response from peer");
-                let () = ctxt.net.remove_active_peer(addr);
+                let () = ctxt.net.remove_active_peer(&ctxt.env, addr)?;
                 Ok(())
             }
         }
@@ -856,7 +858,10 @@ where
                 MailboxItem::PeerInfo(Some((addr, None))) => {
                     // peer connection is closed, remove it
                     tracing::warn!(%addr, "Connection to peer closed");
-                    let () = self.ctxt.net.remove_active_peer(addr);
+                    let () = self
+                        .ctxt
+                        .net
+                        .remove_active_peer(&self.ctxt.env, addr)?;
                     continue;
                 }
                 MailboxItem::PeerInfo(Some((addr, Some(peer_info)))) => {
@@ -865,7 +870,10 @@ where
                         PeerConnectionInfo::Error(err) => {
                             let err = anyhow::anyhow!(err);
                             tracing::error!(%addr, err = format!("{err:#}"), "Peer connection error");
-                            let () = self.ctxt.net.remove_active_peer(addr);
+                            let () = self
+                                .ctxt
+                                .net
+                                .remove_active_peer(&self.ctxt.env, addr)?;
                         }
                         PeerConnectionInfo::NeedBmmVerification {
                             main_hash,
