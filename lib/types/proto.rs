@@ -896,9 +896,12 @@ pub mod mainchain {
         T: super::Transport,
     {
         pub fn new(inner: T) -> Self {
+            // 1GB
+            const MAX_DECODE_MESSAGE_SIZE: usize = 1024 * 1024 * 1024;
             Self(generated::validator_service_client::ValidatorServiceClient::<T>::new(
                 inner,
-            ))
+            ).max_decoding_message_size(MAX_DECODE_MESSAGE_SIZE)
+            )
         }
 
         pub async fn get_block_header_info(
