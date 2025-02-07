@@ -42,12 +42,12 @@ utoipa = { version = "5.2.0", default-features = false }
 [workspace.dependencies.bip300301_enforcer_lib]
 default-features = false
 git = "https://github.com/Ash-L2L/bip300301_enforcer"
-rev = "135d408213ee7309b59f49dfdc2608e6fa53db42"
+rev = "42cfbe73a894186a73cadc36cc398b879fe5bee6"
 
 [workspace.dependencies.bip300301_enforcer_integration_tests]
 default-features = false
 git = "https://github.com/Ash-L2L/bip300301_enforcer"
-rev = "135d408213ee7309b59f49dfdc2608e6fa53db42"
+rev = "42cfbe73a894186a73cadc36cc398b879fe5bee6"
 
 [workspace.dependencies.l2l-openapi]
 git = "https://github.com/Ash-L2L/l2l-openapi"
