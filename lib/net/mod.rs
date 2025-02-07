@@ -235,13 +235,25 @@ impl Net {
         }
     }
 
-    pub fn remove_active_peer(&self, addr: SocketAddr) {
-        tracing::trace!(%addr, "remove active peer: starting");
+    /// Removes a peer from the active peers list.
+    #[instrument(skip_all, fields(addr))]
+    pub fn remove_active_peer(
+        &self,
+        env: &heed::Env,
+        addr: SocketAddr,
+    ) -> Result<(), Error> {
         let mut active_peers_write = self.active_peers.write();
         if let Some(peer_connection) = active_peers_write.remove(&addr) {
             drop(peer_connection);
             tracing::info!(%addr, "remove active peer: disconnected");
         }
+
+        let mut rwtxn = env.write_txn()?;
+        self.known_peers.delete(&mut rwtxn, &addr)?;
+        rwtxn.commit()?;
+        tracing::info!(%addr, "remove active peer: removed from known peers");
+
+        Ok(())
     }
 
     // TODO: This should have more context.
@@ -317,16 +329,8 @@ impl Net {
             match env.open_database(&rwtxn, Some("known_peers"))? {
                 Some(known_peers) => known_peers,
                 None => {
-                    let known_peers =
-                        env.create_database(&mut rwtxn, Some("known_peers"))?;
-                    const SEED_NODE_ADDR: SocketAddr = SocketAddr::new(
-                        std::net::IpAddr::V4(std::net::Ipv4Addr::new(
-                            172, 105, 148, 135,
-                        )),
-                        4000 + THIS_SIDECHAIN as u16,
-                    );
-                    known_peers.put(&mut rwtxn, &SEED_NODE_ADDR, &())?;
-                    known_peers
+                    tracing::info!("creating known peers database");
+                    env.create_database(&mut rwtxn, Some("known_peers"))?
                 }
             };
         rwtxn.commit()?;
@@ -339,16 +343,33 @@ impl Net {
             peer_info_tx,
             known_peers,
         };
-        #[allow(clippy::let_and_return)]
         let known_peers: Vec<_> = {
-            let rotxn = env.read_txn()?;
+            let mut txn = env.write_txn()?;
+
+            // important: we need to always have at least one peer. we
+            // might end up with this peer misbehaving, causing us to
+            // disconnect and delete it from the database. always try
+            // and stick it back in, if it's missing!
+            if net.known_peers.is_empty(&txn)? {
+                const SEED_NODE_ADDR: SocketAddr = SocketAddr::new(
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::new(
+                        172, 105, 148, 135,
+                    )),
+                    4000 + THIS_SIDECHAIN as u16,
+                );
+
+                tracing::info!("empty list of known peers, adding seed node {SEED_NODE_ADDR}");
+                net.known_peers.put(&mut txn, &SEED_NODE_ADDR, &())?;
+            }
+
             let known_peers = net
                 .known_peers
-                .iter(&rotxn)?
+                .iter(&txn)?
                 .transpose_into_fallible()
                 .collect()?;
             known_peers
         };
+
         let () = known_peers.into_iter().try_for_each(|(peer_addr, _)| {
             tracing::trace!(
                 "new net: connecting to already known peer at {peer_addr}"
@@ -360,9 +381,7 @@ impl Net {
                     tracing::warn!(
                         %addr, "new net: known peer with invalid remote address, removing"
                     );
-                    let mut tx = env.write_txn()?;
-                    net.known_peers.delete(&mut tx, &peer_addr)?;
-                    tx.commit()?;
+                    net.remove_active_peer(env, peer_addr)?;
 
                     tracing::info!(
                         %addr,
