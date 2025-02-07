@@ -199,11 +199,11 @@ impl App {
 
         tracing::info!(
             "Connecting to mainchain at {}",
-            config.mainchain_grpc_address
+            config.mainchain_grpc_url
         );
         let rt_guard = runtime.enter();
         let transport = tonic::transport::channel::Channel::from_shared(
-            format!("{}", config.mainchain_grpc_address),
+            format!("{}", config.mainchain_grpc_url),
         )
         .unwrap()
         .concurrency_limit(256)
@@ -212,7 +212,7 @@ impl App {
             .block_on(Self::check_proto_support(transport.clone()))
             .map_err(|err| {
                 Error::VerifyMainchainServices(
-                    config.mainchain_grpc_address.clone(),
+                    config.mainchain_grpc_url.clone(),
                     err,
                 )
             })? {
