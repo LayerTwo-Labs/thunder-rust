@@ -118,9 +118,9 @@ pub(super) struct Cli {
     #[arg(default_value_t = tracing::Level::DEBUG, long)]
     log_level: tracing::Level,
 
-    /// Address (protocol + host + port) to connect to mainchain node gRPC server
+    /// Connect to mainchain node gRPC server running at this URL
     #[arg(default_value = "http://localhost:50051", long)]
-    mainchain_grpc_address: url::Url,
+    mainchain_grpc_url: url::Url,
 
     /// Path to a mnemonic seed phrase
     #[arg(long)]
@@ -141,7 +141,7 @@ pub struct Config {
     pub log_dir: Option<PathBuf>,
     pub log_level: tracing::Level,
     pub log_level_file: tracing::Level, // Level for logs that get written to file
-    pub mainchain_grpc_address: url::Url,
+    pub mainchain_grpc_url: url::Url,
     pub mnemonic_seed_phrase_path: Option<PathBuf>,
     pub net_addr: SocketAddr,
     pub rpc_addr: SocketAddr,
@@ -171,7 +171,7 @@ impl Cli {
             log_dir,
             log_level: self.log_level,
             log_level_file: self.log_level_file,
-            mainchain_grpc_address: self.mainchain_grpc_address,
+            mainchain_grpc_url: self.mainchain_grpc_url,
             mnemonic_seed_phrase_path: self.mnemonic_seed_phrase_path,
             net_addr: self.net_addr,
             rpc_addr: self.rpc_addr,

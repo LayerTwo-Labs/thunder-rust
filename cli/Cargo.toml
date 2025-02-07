@@ -15,6 +15,7 @@ serde_json = { workspace = true }
 thunder = { path = "../lib" }
 thunder_app_rpc_api = { path = "../rpc-api" }
 tokio = { workspace = true }
+url = "2.5.4"
 utoipa = { workspace = true }
 
 [lints]

@@ -1,9 +1,6 @@
-use std::{
-    net::SocketAddr,
-    sync::{
-        atomic::{self, AtomicBool},
-        Arc,
-    },
+use std::sync::{
+    atomic::{self, AtomicBool},
+    Arc,
 };
 
 use clap::Parser;
@@ -32,12 +29,12 @@ pub struct ConsoleCommand {
 pub struct ConsoleLogs {
     line_buffer: LineBuffer,
     command_input: String,
-    rpc_addr: SocketAddr,
+    rpc_addr: url::Url,
     running_command: Arc<AtomicBool>,
 }
 
 impl ConsoleLogs {
-    pub fn new(line_buffer: LineBuffer, rpc_addr: SocketAddr) -> Self {
+    pub fn new(line_buffer: LineBuffer, rpc_addr: url::Url) -> Self {
         Self {
             line_buffer,
             command_input: String::new(),
@@ -71,7 +68,7 @@ impl ConsoleLogs {
             }
         };
         let cli = thunder_app_cli_lib::Cli {
-            rpc_addr: self.rpc_addr,
+            rpc_url: self.rpc_addr.clone(),
             timeout: None,
             command,
         };

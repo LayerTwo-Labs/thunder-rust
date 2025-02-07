@@ -61,7 +61,7 @@ impl ThunderApp {
             "--datadir".to_owned(),
             self.data_dir.display().to_string(),
             "--headless".to_owned(),
-            "--mainchain-grpc-address".to_owned(),
+            "--mainchain-grpc-url".to_owned(),
             format!("http://127.0.0.1:{}", self.mainchain_grpc_port),
             "--net-addr".to_owned(),
             format!("127.0.0.1:{}", self.net_port),

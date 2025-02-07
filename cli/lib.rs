@@ -1,11 +1,8 @@
-use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr},
-    time::Duration,
-};
+use std::{net::SocketAddr, time::Duration};
 
 use clap::{Parser, Subcommand};
 use jsonrpsee::http_client::{HttpClient, HttpClientBuilder};
-use thunder::types::{Address, Txid, THIS_SIDECHAIN};
+use thunder::types::{Address, Txid};
 use thunder_app_rpc_api::RpcClient;
 
 #[derive(Clone, Debug, Subcommand)]
@@ -87,17 +84,12 @@ pub enum Command {
     },
 }
 
-const DEFAULT_RPC_ADDR: SocketAddr = SocketAddr::new(
-    IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-    6000 + THIS_SIDECHAIN as u16,
-);
-
 #[derive(Clone, Debug, Parser)]
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
-    /// address for use by the RPC server
-    #[arg(default_value_t = DEFAULT_RPC_ADDR, long)]
-    pub rpc_addr: SocketAddr,
+    /// Base URL used for requests to the RPC server.
+    #[arg(default_value = "http://localhost:6009", long)]
+    pub rpc_url: url::Url,
 
     #[arg(long, help = "Timeout for RPC requests in seconds (default: 60)")]
     pub timeout: Option<u64>,
@@ -113,7 +105,7 @@ impl Cli {
             .request_timeout(Duration::from_secs(
                 self.timeout.unwrap_or(DEFAULT_TIMEOUT),
             ))
-            .build(format!("http://{}", self.rpc_addr))?;
+            .build(self.rpc_url.clone())?;
         let res = match self.command {
             Command::Balance => {
                 let balance = rpc_client.balance().await?;
