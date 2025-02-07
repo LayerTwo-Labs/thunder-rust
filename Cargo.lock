@@ -6005,6 +6005,7 @@ dependencies = [
  "thunder",
  "thunder_app_rpc_api",
  "tokio",
+ "url",
  "utoipa",
 ]
 

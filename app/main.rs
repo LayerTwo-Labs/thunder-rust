@@ -147,6 +147,8 @@ fn run_egui_app(
     app: Result<crate::app::App, crate::app::Error>,
 ) -> Result<(), eframe::Error> {
     let native_options = eframe::NativeOptions::default();
+    let rpc_addr = url::Url::parse(&format!("http://{}", config.rpc_addr))
+        .expect("failed to parse rpc addr");
     eframe::run_native(
         "Thunder",
         native_options,
@@ -155,7 +157,7 @@ fn run_egui_app(
                 app.ok(),
                 cc,
                 line_buffer,
-                config.rpc_addr,
+                rpc_addr,
             )))
         }),
     )
