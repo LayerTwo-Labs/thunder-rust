@@ -14,6 +14,7 @@ clap = { workspace = true, features = ["derive"] }
 dirs = "5.0.1"
 eframe = "0.30.0"
 futures = { workspace = true }
+http = { workspace = true }
 human-size = "0.4.3"
 include_path = "0.1.1"
 jsonrpsee = { workspace = true, features = ["server"] }
@@ -32,11 +33,15 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-util = { workspace = true, features = ["rt"] }
 tonic = { workspace = true }
 tonic-health = "0.12.3"
+# needs to line up with jsonrpsee tower version...
+tower = "0.4.13"
+tower-http = { version = "0.6.2", features = ["request-id", "trace"] }
 tracing = { workspace = true }
 tracing-appender = "0.2.3"
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
-utoipa = { workspace = true }
 url = "2.5.4"
+utoipa = { workspace = true }
+uuid = { workspace = true }
 
 [lints]
 workspace = true
