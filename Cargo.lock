@@ -5977,6 +5977,7 @@ dependencies = [
  "dirs",
  "eframe",
  "futures",
+ "http",
  "human-size",
  "include_path",
  "jsonrpsee",
@@ -5995,11 +5996,14 @@ dependencies = [
  "tokio-util",
  "tonic",
  "tonic-health",
+ "tower 0.4.13",
+ "tower-http",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
  "url",
  "utoipa",
+ "uuid",
 ]
 
 [[package]]
@@ -6009,13 +6013,17 @@ dependencies = [
  "anyhow",
  "bitcoin",
  "clap",
+ "http",
  "jsonrpsee",
  "serde_json",
  "thunder",
  "thunder_app_rpc_api",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "url",
  "utoipa",
+ "uuid",
 ]
 
 [[package]]
@@ -6328,6 +6336,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "tower-http"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "403fa3b783d4b626a8ad51d766ab03cb6d2dbfc46b1c5d4448395e6628dc9697"
+dependencies = [
+ "bitflags 2.8.0",
+ "bytes",
+ "http",
+ "http-body",
+ "pin-project-lite",
+ "tower-layer",
+ "tower-service",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "tower-layer"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6600,11 +6625,11 @@ dependencies = [
 
 [[package]]
 name = "uuid"
-version = "1.12.1"
+version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3758f5e68192bb96cc8f9b7e2c2cfdabb435499a28499a42f8f984092adad4b"
+checksum = "ced87ca4be083373936a67f8de945faa23b6b42384bd5b64434850802c6dccd0"
 dependencies = [
- "getrandom 0.2.15",
+ "getrandom 0.3.1",
 ]
 
 [[package]]

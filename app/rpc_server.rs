@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use bitcoin::Amount;
 use jsonrpsee::{
     core::{async_trait, RpcResult},
-    server::Server,
+    server::{RpcServiceBuilder, Server},
     types::ErrorObject,
 };
 use thunder::{
@@ -12,6 +12,12 @@ use thunder::{
     wallet::Balance,
 };
 use thunder_app_rpc_api::RpcServer;
+use tower_http::{
+    request_id::{
+        MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer,
+    },
+    trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer},
+};
 
 use crate::app::App;
 
@@ -253,11 +259,81 @@ impl RpcServer for RpcServerImpl {
     }
 }
 
+#[derive(Clone, Debug)]
+struct RequestIdMaker;
+
+impl MakeRequestId for RequestIdMaker {
+    fn make_request_id<B>(
+        &mut self,
+        _: &http::Request<B>,
+    ) -> Option<RequestId> {
+        use uuid::Uuid;
+        // the 'simple' format renders the UUID with no dashes, which
+        // makes for easier copy/pasting.
+        let id = Uuid::new_v4();
+        let id = id.as_simple();
+        let id = format!("req_{id}"); // prefix all IDs with "req_", to make them easier to identify
+
+        let Ok(header_value) = http::HeaderValue::from_str(&id) else {
+            return None;
+        };
+
+        Some(RequestId::new(header_value))
+    }
+}
+
 pub async fn run_server(
     app: App,
     rpc_addr: SocketAddr,
 ) -> anyhow::Result<SocketAddr> {
-    let server = Server::builder().build(rpc_addr).await?;
+    const REQUEST_ID_HEADER: &str = "x-request-id";
+
+    // Ordering here matters! Order here is from official docs on request IDs tracings
+    // https://docs.rs/tower-http/latest/tower_http/request_id/index.html#using-trace
+    let tracer = tower::ServiceBuilder::new()
+        .layer(SetRequestIdLayer::new(
+            http::HeaderName::from_static(REQUEST_ID_HEADER),
+            RequestIdMaker,
+        ))
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(move |request: &http::Request<_>| {
+                    let request_id = request
+                        .headers()
+                        .get(http::HeaderName::from_static(REQUEST_ID_HEADER))
+                        .and_then(|h| h.to_str().ok())
+                        .filter(|s| !s.is_empty());
+
+                    tracing::span!(
+                        tracing::Level::DEBUG,
+                        "request",
+                        method = %request.method(),
+                        uri = %request.uri(),
+                        request_id , // this is needed for the record call below to work
+                    )
+                })
+                .on_request(())
+                .on_eos(())
+                .on_response(
+                    DefaultOnResponse::new().level(tracing::Level::INFO),
+                )
+                .on_failure(
+                    DefaultOnFailure::new().level(tracing::Level::ERROR),
+                ),
+        )
+        .layer(PropagateRequestIdLayer::new(http::HeaderName::from_static(
+            REQUEST_ID_HEADER,
+        )))
+        .into_inner();
+
+    let http_middleware = tower::ServiceBuilder::new().layer(tracer);
+    let rpc_middleware = RpcServiceBuilder::new().rpc_logger(1024);
+
+    let server = Server::builder()
+        .set_http_middleware(http_middleware)
+        .set_rpc_middleware(rpc_middleware)
+        .build(rpc_addr)
+        .await?;
 
     let addr = server.local_addr()?;
 
