@@ -1,6 +1,10 @@
 use std::collections::VecDeque;
 
-use heed::{types::SerdeBincode, Database, RoTxn, RwTxn};
+use fallible_iterator::FallibleIterator as _;
+use heed::{types::SerdeBincode, RoTxn};
+use sneed::{
+    db::error::Error as DbError, DatabaseUnique, EnvError, RwTxn, RwTxnError,
+};
 
 use crate::types::{
     Accumulator, AuthorizedTransaction, OutPoint, Txid, UtreexoError,
@@ -8,8 +12,12 @@ use crate::types::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("heed error")]
-    Heed(#[from] heed::Error),
+    #[error(transparent)]
+    Db(#[from] DbError),
+    #[error("Database env error")]
+    DbEnv(#[from] EnvError),
+    #[error("Database write error")]
+    DbWrite(#[from] RwTxnError),
     #[error(transparent)]
     Utreexo(#[from] UtreexoError),
     #[error("can't add transaction, utxo double spent")]
@@ -19,20 +27,22 @@ pub enum Error {
 #[derive(Clone)]
 pub struct MemPool {
     pub transactions:
-        Database<SerdeBincode<Txid>, SerdeBincode<AuthorizedTransaction>>,
-    pub spent_utxos: Database<SerdeBincode<OutPoint>, SerdeBincode<Txid>>,
+        DatabaseUnique<SerdeBincode<Txid>, SerdeBincode<AuthorizedTransaction>>,
+    pub spent_utxos: DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<Txid>>,
 }
 
 impl MemPool {
     pub const NUM_DBS: u32 = 2;
 
-    pub fn new(env: &heed::Env) -> Result<Self, Error> {
-        let mut rwtxn = env.write_txn()?;
+    pub fn new(env: &sneed::Env) -> Result<Self, Error> {
+        let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
         let transactions =
-            env.create_database(&mut rwtxn, Some("transactions"))?;
+            DatabaseUnique::create(env, &mut rwtxn, "transactions")
+                .map_err(EnvError::from)?;
         let spent_utxos =
-            env.create_database(&mut rwtxn, Some("spent_utxos"))?;
-        rwtxn.commit()?;
+            DatabaseUnique::create(env, &mut rwtxn, "spent_utxos")
+                .map_err(EnvError::from)?;
+        rwtxn.commit().map_err(RwTxnError::from)?;
         Ok(Self {
             transactions,
             spent_utxos,
@@ -47,30 +57,49 @@ impl MemPool {
         let txid = transaction.transaction.txid();
         tracing::debug!("adding transaction {txid} to mempool");
         for (outpoint, _) in &transaction.transaction.inputs {
-            if self.spent_utxos.get(txn, outpoint)?.is_some() {
+            if self
+                .spent_utxos
+                .try_get(txn, outpoint)
+                .map_err(DbError::from)?
+                .is_some()
+            {
                 return Err(Error::UtxoDoubleSpent);
             }
-            self.spent_utxos.put(txn, outpoint, &txid)?;
+            self.spent_utxos
+                .put(txn, outpoint, &txid)
+                .map_err(DbError::from)?;
         }
-        self.transactions.put(txn, &txid, transaction)?;
+        self.transactions
+            .put(txn, &txid, transaction)
+            .map_err(DbError::from)?;
         Ok(())
     }
 
     pub fn delete(&self, rwtxn: &mut RwTxn, txid: Txid) -> Result<(), Error> {
         let mut pending_deletes = VecDeque::from([txid]);
         while let Some(txid) = pending_deletes.pop_front() {
-            if let Some(tx) = self.transactions.get(rwtxn, &txid)? {
+            if let Some(tx) = self
+                .transactions
+                .try_get(rwtxn, &txid)
+                .map_err(DbError::from)?
+            {
                 for (outpoint, _) in &tx.transaction.inputs {
-                    self.spent_utxos.delete(rwtxn, outpoint)?;
+                    self.spent_utxos
+                        .delete(rwtxn, outpoint)
+                        .map_err(DbError::from)?;
                 }
-                self.transactions.delete(rwtxn, &txid)?;
+                self.transactions
+                    .delete(rwtxn, &txid)
+                    .map_err(DbError::from)?;
                 for vout in 0..tx.transaction.outputs.len() {
                     let outpoint = OutPoint::Regular {
                         txid,
                         vout: vout as u32,
                     };
-                    if let Some(child_txid) =
-                        self.spent_utxos.get(rwtxn, &outpoint)?
+                    if let Some(child_txid) = self
+                        .spent_utxos
+                        .try_get(rwtxn, &outpoint)
+                        .map_err(DbError::from)?
                     {
                         pending_deletes.push_back(child_txid);
                     }
@@ -82,27 +111,28 @@ impl MemPool {
 
     pub fn take(
         &self,
-        txn: &RoTxn,
+        rotxn: &RoTxn,
         number: usize,
     ) -> Result<Vec<AuthorizedTransaction>, Error> {
-        let mut transactions = vec![];
-        for item in self.transactions.iter(txn)?.take(number) {
-            let (_, transaction) = item?;
-            transactions.push(transaction);
-        }
-        Ok(transactions)
+        self.transactions
+            .iter(rotxn)
+            .map_err(DbError::from)?
+            .take(number)
+            .map(|(_, transaction)| Ok(transaction))
+            .collect()
+            .map_err(|err| DbError::from(err).into())
     }
 
     pub fn take_all(
         &self,
-        txn: &RoTxn,
+        rotxn: &RoTxn,
     ) -> Result<Vec<AuthorizedTransaction>, Error> {
-        let mut transactions = vec![];
-        for item in self.transactions.iter(txn)? {
-            let (_, transaction) = item?;
-            transactions.push(transaction);
-        }
-        Ok(transactions)
+        self.transactions
+            .iter(rotxn)
+            .map_err(DbError::from)?
+            .map(|(_, transaction)| Ok(transaction))
+            .collect()
+            .map_err(|err| DbError::from(err).into())
     }
 
     /// regenerate utreexo proofs for all txs in the mempool
@@ -111,9 +141,15 @@ impl MemPool {
         rwtxn: &mut RwTxn,
         accumulator: &Accumulator,
     ) -> Result<(), Error> {
-        let mut iter = self.transactions.iter_mut(rwtxn)?;
-        while let Some(tx) = iter.next() {
-            let (txid, mut tx) = tx?;
+        let txids: Vec<_> = self
+            .transactions
+            .iter_keys(rwtxn)
+            .map_err(DbError::from)?
+            .collect()
+            .map_err(DbError::from)?;
+        for txid in txids {
+            let mut tx =
+                self.transactions.get(rwtxn, &txid).map_err(DbError::from)?;
             let targets: Vec<_> = tx
                 .transaction
                 .inputs
@@ -121,7 +157,9 @@ impl MemPool {
                 .map(|(_, utxo_hash)| utxo_hash.into())
                 .collect();
             tx.transaction.proof = accumulator.prove(&targets)?;
-            unsafe { iter.put_current(&txid, &tx) }?;
+            self.transactions
+                .put(rwtxn, &txid, &tx)
+                .map_err(DbError::from)?;
         }
         Ok(())
     }

@@ -4,14 +4,14 @@ use std::{
     sync::Arc,
 };
 
-use fallible_iterator::{FallibleIterator, IteratorExt};
+use fallible_iterator::FallibleIterator;
 use futures::{channel::mpsc, StreamExt};
-use heed::{
-    types::{SerdeBincode, Unit},
-    Database,
-};
+use heed::types::{SerdeBincode, Unit};
 use parking_lot::RwLock;
 use quinn::{ClientConfig, Endpoint, ServerConfig};
+use sneed::{
+    db::error::Error as DbError, DatabaseUnique, EnvError, RwTxnError,
+};
 use tokio_stream::StreamNotifyClose;
 use tracing::instrument;
 
@@ -49,8 +49,12 @@ pub enum Error {
         error: quinn::ConnectionError,
         remote_address: SocketAddr,
     },
-    #[error("heed error")]
-    Heed(#[from] heed::Error),
+    #[error(transparent)]
+    Db(#[from] DbError),
+    #[error("Database env error")]
+    DbEnv(#[from] sneed::env::Error),
+    #[error("Database write error")]
+    DbWrite(#[from] sneed::rwtxn::Error),
     #[error("quinn error")]
     Io(#[from] std::io::Error),
     #[error("peer connection not found for {0}")]
@@ -210,7 +214,7 @@ pub struct Net {
     // None indicates that the stream has ended
     peer_info_tx:
         mpsc::UnboundedSender<(SocketAddr, Option<PeerConnectionInfo>)>,
-    known_peers: Database<SerdeBincode<SocketAddr>, Unit>,
+    known_peers: DatabaseUnique<SerdeBincode<SocketAddr>, Unit>,
 }
 
 impl Net {
@@ -260,7 +264,7 @@ impl Net {
     #[instrument(skip_all, fields(addr), err(Debug))]
     pub fn connect_peer(
         &self,
-        env: heed::Env,
+        env: sneed::Env,
         addr: SocketAddr,
     ) -> Result<(), Error> {
         if self.active_peers.read().contains_key(&addr) {
@@ -276,9 +280,11 @@ impl Net {
             return Err(Error::UnspecfiedPeerIP(addr.ip()));
         }
         let connecting = self.server.connect(addr, "localhost")?;
-        let mut rwtxn = env.write_txn()?;
-        self.known_peers.put(&mut rwtxn, &addr, &())?;
-        rwtxn.commit()?;
+        let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
+        self.known_peers
+            .put(&mut rwtxn, &addr, &())
+            .map_err(DbError::from)?;
+        rwtxn.commit().map_err(RwTxnError::from)?;
         let connection_ctxt = PeerConnectionCtxt {
             env,
             archive: self.archive.clone(),
@@ -305,31 +311,35 @@ impl Net {
     }
 
     pub fn new(
-        env: &heed::Env,
+        env: &sneed::Env,
         archive: Archive,
         state: State,
         bind_addr: SocketAddr,
     ) -> Result<(Self, PeerInfoRx), Error> {
         let (server, _) = make_server_endpoint(bind_addr)?;
         let active_peers = Arc::new(RwLock::new(HashMap::new()));
-        let mut rwtxn = env.write_txn()?;
-        let known_peers =
-            match env.open_database(&rwtxn, Some("known_peers"))? {
-                Some(known_peers) => known_peers,
-                None => {
-                    let known_peers =
-                        env.create_database(&mut rwtxn, Some("known_peers"))?;
-                    const SEED_NODE_ADDR: SocketAddr = SocketAddr::new(
-                        std::net::IpAddr::V4(std::net::Ipv4Addr::new(
-                            172, 105, 148, 135,
-                        )),
-                        4000 + THIS_SIDECHAIN as u16,
-                    );
-                    known_peers.put(&mut rwtxn, &SEED_NODE_ADDR, &())?;
-                    known_peers
-                }
-            };
-        rwtxn.commit()?;
+        let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
+        let known_peers = match DatabaseUnique::open(env, &rwtxn, "known_peers")
+            .map_err(EnvError::from)?
+        {
+            Some(known_peers) => known_peers,
+            None => {
+                let known_peers =
+                    DatabaseUnique::create(env, &mut rwtxn, "known_peers")
+                        .map_err(EnvError::from)?;
+                const SEED_NODE_ADDR: SocketAddr = SocketAddr::new(
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::new(
+                        172, 105, 148, 135,
+                    )),
+                    4000 + THIS_SIDECHAIN as u16,
+                );
+                known_peers
+                    .put(&mut rwtxn, &SEED_NODE_ADDR, &())
+                    .map_err(DbError::from)?;
+                known_peers
+            }
+        };
+        rwtxn.commit().map_err(RwTxnError::from)?;
         let (peer_info_tx, peer_info_rx) = mpsc::unbounded();
         let net = Net {
             server,
@@ -341,12 +351,13 @@ impl Net {
         };
         #[allow(clippy::let_and_return)]
         let known_peers: Vec<_> = {
-            let rotxn = env.read_txn()?;
+            let rotxn = env.read_txn().map_err(EnvError::from)?;
             let known_peers = net
                 .known_peers
-                .iter(&rotxn)?
-                .transpose_into_fallible()
-                .collect()?;
+                .iter(&rotxn)
+                .map_err(DbError::from)?
+                .collect()
+                .map_err(DbError::from)?;
             known_peers
         };
         let () = known_peers.into_iter().try_for_each(|(peer_addr, _)| {
@@ -360,9 +371,9 @@ impl Net {
                     tracing::warn!(
                         %addr, "new net: known peer with invalid remote address, removing"
                     );
-                    let mut tx = env.write_txn()?;
-                    net.known_peers.delete(&mut tx, &peer_addr)?;
-                    tx.commit()?;
+                    let mut tx = env.write_txn().map_err(EnvError::from)?;
+                    net.known_peers.delete(&mut tx, &peer_addr).map_err(DbError::from)?;
+                    tx.commit().map_err(RwTxnError::from)?;
 
                     tracing::info!(
                         %addr,
@@ -385,7 +396,7 @@ impl Net {
     /// and a new peer was added.
     pub async fn accept_incoming(
         &self,
-        env: heed::Env,
+        env: sneed::Env,
     ) -> Result<Option<SocketAddr>, Error> {
         tracing::debug!(
             "accept incoming: listening for connections on `{}`",
@@ -426,9 +437,11 @@ impl Net {
             return Ok(None);
         }
         tracing::info!(%addr, "connected to new peer");
-        let mut rwtxn = env.write_txn()?;
-        self.known_peers.put(&mut rwtxn, &addr, &())?;
-        rwtxn.commit()?;
+        let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
+        self.known_peers
+            .put(&mut rwtxn, &addr, &())
+            .map_err(DbError::from)?;
+        rwtxn.commit().map_err(RwTxnError::from)?;
 
         tracing::trace!(%addr, "wrote peer to database");
         let connection_ctxt = PeerConnectionCtxt {

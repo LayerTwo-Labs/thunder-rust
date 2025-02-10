@@ -1,9 +1,16 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use fallible_iterator::FallibleIterator;
 use futures::Stream;
-use heed::{types::SerdeBincode, Database, RoTxn, RwTxn};
+use heed::{types::SerdeBincode, RoTxn};
 use rustreexo::accumulator::{node_hash::BitcoinNodeHash, proof::Proof};
 use serde::{Deserialize, Serialize};
+use sneed::{
+    db::error::{self as db_error, Error as DbError},
+    env::Error as EnvError,
+    rwtxn::Error as RwTxnError,
+    DatabaseUnique, RwTxn, UnitKey,
+};
 
 use crate::{
     authorization::Authorization,
@@ -14,7 +21,7 @@ use crate::{
         InPoint, M6id, OutPoint, Output, PointedOutput, SpentOutput,
         Transaction, Verify, WithdrawalBundle, WithdrawalBundleStatus,
     },
-    util::{EnvExt, UnitKey, Watchable, WatchableDb},
+    util::Watchable,
 };
 
 mod block;
@@ -53,60 +60,79 @@ impl WithdrawalBundleInfo {
 #[derive(Clone)]
 pub struct State {
     /// Current tip
-    tip: WatchableDb<SerdeBincode<UnitKey>, SerdeBincode<BlockHash>>,
+    tip: DatabaseUnique<UnitKey, SerdeBincode<BlockHash>>,
     /// Current height
-    height: Database<SerdeBincode<UnitKey>, SerdeBincode<u32>>,
-    pub utxos: Database<SerdeBincode<OutPoint>, SerdeBincode<Output>>,
-    pub stxos: Database<SerdeBincode<OutPoint>, SerdeBincode<SpentOutput>>,
+    height: DatabaseUnique<UnitKey, SerdeBincode<u32>>,
+    pub utxos: DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<Output>>,
+    pub stxos:
+        DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<SpentOutput>>,
     /// Pending withdrawal bundle and block height
     pub pending_withdrawal_bundle:
-        Database<SerdeBincode<UnitKey>, SerdeBincode<(WithdrawalBundle, u32)>>,
+        DatabaseUnique<UnitKey, SerdeBincode<(WithdrawalBundle, u32)>>,
     /// Latest failed (known) withdrawal bundle
     latest_failed_withdrawal_bundle:
-        Database<SerdeBincode<UnitKey>, SerdeBincode<RollBack<M6id>>>,
+        DatabaseUnique<UnitKey, SerdeBincode<RollBack<M6id>>>,
     /// Withdrawal bundles and their status.
     /// Some withdrawal bundles may be unknown.
     /// in which case they are `None`.
-    withdrawal_bundles: Database<
+    withdrawal_bundles: DatabaseUnique<
         SerdeBincode<M6id>,
         SerdeBincode<(WithdrawalBundleInfo, RollBack<WithdrawalBundleStatus>)>,
     >,
     /// deposit blocks and the height at which they were applied, keyed sequentially
-    pub deposit_blocks:
-        Database<SerdeBincode<u32>, SerdeBincode<(bitcoin::BlockHash, u32)>>,
+    pub deposit_blocks: DatabaseUnique<
+        SerdeBincode<u32>,
+        SerdeBincode<(bitcoin::BlockHash, u32)>,
+    >,
     /// withdrawal bundle event blocks and the height at which they were applied, keyed sequentially
-    pub withdrawal_bundle_event_blocks:
-        Database<SerdeBincode<u32>, SerdeBincode<(bitcoin::BlockHash, u32)>>,
-    pub utreexo_accumulator:
-        Database<SerdeBincode<UnitKey>, SerdeBincode<Accumulator>>,
+    pub withdrawal_bundle_event_blocks: DatabaseUnique<
+        SerdeBincode<u32>,
+        SerdeBincode<(bitcoin::BlockHash, u32)>,
+    >,
+    pub utreexo_accumulator: DatabaseUnique<UnitKey, SerdeBincode<Accumulator>>,
 }
 
 impl State {
     pub const NUM_DBS: u32 = 10;
 
-    pub fn new(env: &heed::Env) -> Result<Self, Error> {
-        let mut rwtxn = env.write_txn()?;
-        let tip = env.create_watchable_db(&mut rwtxn, "tip")?;
-        let height = env.create_database(&mut rwtxn, Some("height"))?;
-        let utxos = env.create_database(&mut rwtxn, Some("utxos"))?;
-        let stxos = env.create_database(&mut rwtxn, Some("stxos"))?;
-        let pending_withdrawal_bundle =
-            env.create_database(&mut rwtxn, Some("pending_withdrawal_bundle"))?;
-        let latest_failed_withdrawal_bundle = env.create_database(
+    pub fn new(env: &sneed::Env) -> Result<Self, Error> {
+        let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
+        let tip = DatabaseUnique::create(env, &mut rwtxn, "tip")
+            .map_err(EnvError::from)?;
+        let height = DatabaseUnique::create(env, &mut rwtxn, "height")
+            .map_err(EnvError::from)?;
+        let utxos = DatabaseUnique::create(env, &mut rwtxn, "utxos")
+            .map_err(EnvError::from)?;
+        let stxos = DatabaseUnique::create(env, &mut rwtxn, "stxos")
+            .map_err(EnvError::from)?;
+        let pending_withdrawal_bundle = DatabaseUnique::create(
+            env,
             &mut rwtxn,
-            Some("latest_failed_withdrawal_bundle"),
-        )?;
+            "pending_withdrawal_bundle",
+        )
+        .map_err(EnvError::from)?;
+        let latest_failed_withdrawal_bundle = DatabaseUnique::create(
+            env,
+            &mut rwtxn,
+            "latest_failed_withdrawal_bundle",
+        )
+        .map_err(EnvError::from)?;
         let withdrawal_bundles =
-            env.create_database(&mut rwtxn, Some("withdrawal_bundles"))?;
+            DatabaseUnique::create(env, &mut rwtxn, "withdrawal_bundles")
+                .map_err(EnvError::from)?;
         let deposit_blocks =
-            env.create_database(&mut rwtxn, Some("deposit_blocks"))?;
-        let withdrawal_bundle_event_blocks = env.create_database(
+            DatabaseUnique::create(env, &mut rwtxn, "deposit_blocks")
+                .map_err(EnvError::from)?;
+        let withdrawal_bundle_event_blocks = DatabaseUnique::create(
+            env,
             &mut rwtxn,
-            Some("withdrawal_bundle_event_blocks"),
-        )?;
+            "withdrawal_bundle_event_blocks",
+        )
+        .map_err(EnvError::from)?;
         let utreexo_accumulator =
-            env.create_database(&mut rwtxn, Some("utreexo_accumulator"))?;
-        rwtxn.commit()?;
+            DatabaseUnique::create(env, &mut rwtxn, "utreexo_accumulator")
+                .map_err(EnvError::from)?;
+        rwtxn.commit().map_err(RwTxnError::from)?;
         Ok(Self {
             tip,
             height,
@@ -124,40 +150,37 @@ impl State {
     pub fn try_get_tip(
         &self,
         rotxn: &RoTxn,
-    ) -> Result<Option<BlockHash>, Error> {
-        let tip = self.tip.try_get(rotxn, &UnitKey)?;
+    ) -> Result<Option<BlockHash>, db_error::TryGet> {
+        let tip = self.tip.try_get(rotxn, &())?;
         Ok(tip)
     }
 
-    pub fn try_get_height(&self, rotxn: &RoTxn) -> Result<Option<u32>, Error> {
-        let height = self.height.get(rotxn, &UnitKey)?;
+    pub fn try_get_height(
+        &self,
+        rotxn: &RoTxn,
+    ) -> Result<Option<u32>, db_error::TryGet> {
+        let height = self.height.try_get(rotxn, &())?;
         Ok(height)
     }
 
     pub fn get_utxos(
         &self,
-        txn: &RoTxn,
-    ) -> Result<HashMap<OutPoint, Output>, Error> {
-        let mut utxos = HashMap::new();
-        for item in self.utxos.iter(txn)? {
-            let (outpoint, output) = item?;
-            utxos.insert(outpoint, output);
-        }
+        rotxn: &RoTxn,
+    ) -> Result<HashMap<OutPoint, Output>, db_error::Iter> {
+        let utxos = self.utxos.iter(rotxn)?.collect()?;
         Ok(utxos)
     }
 
     pub fn get_utxos_by_addresses(
         &self,
-        txn: &RoTxn,
+        rotxn: &RoTxn,
         addresses: &HashSet<Address>,
-    ) -> Result<HashMap<OutPoint, Output>, Error> {
-        let mut utxos = HashMap::new();
-        for item in self.utxos.iter(txn)? {
-            let (outpoint, output) = item?;
-            if addresses.contains(&output.address) {
-                utxos.insert(outpoint, output);
-            }
-        }
+    ) -> Result<HashMap<OutPoint, Output>, db_error::Iter> {
+        let utxos = self
+            .utxos
+            .iter(rotxn)?
+            .filter(|(_, output)| Ok(addresses.contains(&output.address)))
+            .collect()?;
         Ok(utxos)
     }
 
@@ -165,14 +188,14 @@ impl State {
     pub fn get_latest_failed_withdrawal_bundle(
         &self,
         rotxn: &RoTxn,
-    ) -> Result<Option<(u32, M6id)>, Error> {
+    ) -> Result<Option<(u32, M6id)>, db_error::TryGet> {
         let Some(latest_failed_m6id) =
-            self.latest_failed_withdrawal_bundle.get(rotxn, &UnitKey)?
+            self.latest_failed_withdrawal_bundle.try_get(rotxn, &())?
         else {
             return Ok(None);
         };
         let latest_failed_m6id = latest_failed_m6id.latest().value;
-        let (_bundle, bundle_status) = self.withdrawal_bundles.get(rotxn, &latest_failed_m6id)?
+        let (_bundle, bundle_status) = self.withdrawal_bundles.try_get(rotxn, &latest_failed_m6id)?
             .expect("Inconsistent DBs: latest failed m6id should exist in withdrawal_bundles");
         let bundle_status = bundle_status.latest();
         assert_eq!(bundle_status.value, WithdrawalBundleStatus::Failed);
@@ -183,7 +206,8 @@ impl State {
     pub fn get_accumulator(&self, rotxn: &RoTxn) -> Result<Accumulator, Error> {
         let accumulator = self
             .utreexo_accumulator
-            .get(rotxn, &UnitKey)?
+            .try_get(rotxn, &())
+            .map_err(DbError::from)?
             .unwrap_or_default();
         Ok(accumulator)
     }
@@ -227,9 +251,13 @@ impl State {
     ) -> Result<FilledTransaction, Error> {
         let mut spent_utxos = vec![];
         for (outpoint, _) in &transaction.inputs {
-            let utxo = self.utxos.get(txn, outpoint)?.ok_or(Error::NoUtxo {
-                outpoint: *outpoint,
-            })?;
+            let utxo = self
+                .utxos
+                .try_get(txn, outpoint)
+                .map_err(DbError::from)?
+                .ok_or(Error::NoUtxo {
+                    outpoint: *outpoint,
+                })?;
             spent_utxos.push(utxo);
         }
         Ok(FilledTransaction {
@@ -243,7 +271,10 @@ impl State {
         &self,
         txn: &RoTxn,
     ) -> Result<Option<(WithdrawalBundle, u32)>, Error> {
-        Ok(self.pending_withdrawal_bundle.get(txn, &UnitKey)?)
+        Ok(self
+            .pending_withdrawal_bundle
+            .try_get(txn, &())
+            .map_err(DbError::from)?)
     }
 
     pub fn validate_filled_transaction(
@@ -332,7 +363,8 @@ impl State {
     ) -> Result<Option<bitcoin::BlockHash>, Error> {
         let block_hash = self
             .deposit_blocks
-            .last(rotxn)?
+            .last(rotxn)
+            .map_err(DbError::from)?
             .map(|(_, (block_hash, _))| block_hash);
         Ok(block_hash)
     }
@@ -343,7 +375,8 @@ impl State {
     ) -> Result<Option<bitcoin::BlockHash>, Error> {
         let block_hash = self
             .withdrawal_bundle_event_blocks
-            .last(rotxn)?
+            .last(rotxn)
+            .map_err(DbError::from)?
             .map(|(_, (block_hash, _))| block_hash);
         Ok(block_hash)
     }
@@ -354,31 +387,37 @@ impl State {
         rotxn: &RoTxn,
     ) -> Result<bitcoin::Amount, Error> {
         let mut total_deposit_utxo_value = bitcoin::Amount::ZERO;
-        self.utxos.iter(rotxn)?.try_for_each(|utxo| {
-            let (outpoint, output) = utxo?;
-            if let OutPoint::Deposit(_) = outpoint {
-                total_deposit_utxo_value = total_deposit_utxo_value
-                    .checked_add(output.get_value())
-                    .ok_or(AmountOverflowError)?;
-            }
-            Ok::<_, Error>(())
-        })?;
+        self.utxos
+            .iter(rotxn)
+            .map_err(DbError::from)?
+            .map_err(|err| DbError::from(err).into())
+            .for_each(|(outpoint, output)| {
+                if let OutPoint::Deposit(_) = outpoint {
+                    total_deposit_utxo_value = total_deposit_utxo_value
+                        .checked_add(output.get_value())
+                        .ok_or(AmountOverflowError)?;
+                }
+                Ok::<_, Error>(())
+            })?;
         let mut total_deposit_stxo_value = bitcoin::Amount::ZERO;
         let mut total_withdrawal_stxo_value = bitcoin::Amount::ZERO;
-        self.stxos.iter(rotxn)?.try_for_each(|stxo| {
-            let (outpoint, spent_output) = stxo?;
-            if let OutPoint::Deposit(_) = outpoint {
-                total_deposit_stxo_value = total_deposit_stxo_value
-                    .checked_add(spent_output.output.get_value())
-                    .ok_or(AmountOverflowError)?;
-            }
-            if let InPoint::Withdrawal { .. } = spent_output.inpoint {
-                total_withdrawal_stxo_value = total_deposit_stxo_value
-                    .checked_add(spent_output.output.get_value())
-                    .ok_or(AmountOverflowError)?;
-            }
-            Ok::<_, Error>(())
-        })?;
+        self.stxos
+            .iter(rotxn)
+            .map_err(DbError::from)?
+            .map_err(|err| DbError::from(err).into())
+            .for_each(|(outpoint, spent_output)| {
+                if let OutPoint::Deposit(_) = outpoint {
+                    total_deposit_stxo_value = total_deposit_stxo_value
+                        .checked_add(spent_output.output.get_value())
+                        .ok_or(AmountOverflowError)?;
+                }
+                if let InPoint::Withdrawal { .. } = spent_output.inpoint {
+                    total_withdrawal_stxo_value = total_deposit_stxo_value
+                        .checked_add(spent_output.output.get_value())
+                        .ok_or(AmountOverflowError)?;
+                }
+                Ok::<_, Error>(())
+            })?;
 
         let total_wealth: bitcoin::Amount = total_deposit_utxo_value
             .checked_add(total_deposit_stxo_value)
@@ -437,6 +476,6 @@ impl Watchable<()> for State {
 
     /// Get a signal that notifies whenever the tip changes
     fn watch(&self) -> Self::WatchStream {
-        tokio_stream::wrappers::WatchStream::new(self.tip.watch())
+        tokio_stream::wrappers::WatchStream::new(self.tip.watch().clone())
     }
 }
