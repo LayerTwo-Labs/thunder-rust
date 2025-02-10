@@ -19,7 +19,8 @@ use crate::{
         AmountOverflowError, AmountUnderflowError, AuthorizedTransaction,
         BlockHash, Body, FilledTransaction, GetAddress, GetValue, Header,
         InPoint, M6id, OutPoint, Output, PointedOutput, SpentOutput,
-        Transaction, Verify, WithdrawalBundle, WithdrawalBundleStatus,
+        Transaction, Verify, Version, WithdrawalBundle, WithdrawalBundleStatus,
+        VERSION,
     },
     util::Watchable,
 };
@@ -90,10 +91,11 @@ pub struct State {
         SerdeBincode<(bitcoin::BlockHash, u32)>,
     >,
     pub utreexo_accumulator: DatabaseUnique<UnitKey, SerdeBincode<Accumulator>>,
+    _version: DatabaseUnique<UnitKey, SerdeBincode<Version>>,
 }
 
 impl State {
-    pub const NUM_DBS: u32 = 10;
+    pub const NUM_DBS: u32 = 11;
 
     pub fn new(env: &sneed::Env) -> Result<Self, Error> {
         let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
@@ -132,6 +134,17 @@ impl State {
         let utreexo_accumulator =
             DatabaseUnique::create(env, &mut rwtxn, "utreexo_accumulator")
                 .map_err(EnvError::from)?;
+        let version = DatabaseUnique::create(env, &mut rwtxn, "state_version")
+            .map_err(EnvError::from)?;
+        if version
+            .try_get(&rwtxn, &())
+            .map_err(DbError::from)?
+            .is_none()
+        {
+            version
+                .put(&mut rwtxn, &(), &*VERSION)
+                .map_err(DbError::from)?;
+        }
         rwtxn.commit().map_err(RwTxnError::from)?;
         Ok(Self {
             tip,
@@ -144,6 +157,7 @@ impl State {
             deposit_blocks,
             withdrawal_bundle_event_blocks,
             utreexo_accumulator,
+            _version: version,
         })
     }
 
