@@ -8,12 +8,12 @@ use fallible_iterator::{FallibleIterator, IteratorExt};
 use heed::{types::SerdeBincode, RoTxn};
 use sneed::{
     db::error::Error as DbError, rwtxn::Error as RwTxnError, DatabaseUnique,
-    EnvError, RwTxn,
+    EnvError, RwTxn, UnitKey,
 };
 
 use crate::types::{
     proto::mainchain::{self, Deposit},
-    Accumulator, BlockHash, BmmResult, Body, Header, Tip,
+    Accumulator, BlockHash, BmmResult, Body, Header, Tip, Version, VERSION,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -136,10 +136,11 @@ pub struct Archive {
         SerdeBincode<bitcoin::BlockHash>,
         SerdeBincode<bitcoin::Work>,
     >,
+    _version: DatabaseUnique<UnitKey, SerdeBincode<Version>>,
 }
 
 impl Archive {
-    pub const NUM_DBS: u32 = 14;
+    pub const NUM_DBS: u32 = 15;
 
     pub fn new(env: &sneed::Env) -> Result<Self, Error> {
         let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
@@ -205,6 +206,18 @@ impl Archive {
         }
         let total_work = DatabaseUnique::create(env, &mut rwtxn, "total_work")
             .map_err(EnvError::from)?;
+        let version =
+            DatabaseUnique::create(env, &mut rwtxn, "archive_version")
+                .map_err(EnvError::from)?;
+        if version
+            .try_get(&rwtxn, &())
+            .map_err(DbError::from)?
+            .is_none()
+        {
+            version
+                .put(&mut rwtxn, &(), &*VERSION)
+                .map_err(DbError::from)?;
+        }
         rwtxn.commit().map_err(RwTxnError::from)?;
         Ok(Self {
             accumulators,
@@ -221,6 +234,7 @@ impl Archive {
             main_successors,
             successors,
             total_work,
+            _version: version,
         })
     }
 

@@ -16,6 +16,7 @@ use rustreexo::accumulator::node_hash::BitcoinNodeHash;
 use serde::{Deserialize, Serialize};
 use sneed::{
     db::error::Error as DbError, DatabaseUnique, Env, EnvError, RwTxnError,
+    UnitKey,
 };
 use tokio_stream::{wrappers::WatchStream, StreamMap};
 
@@ -29,7 +30,7 @@ pub use crate::{
 use crate::{
     types::{
         hash, Accumulator, AmountOverflowError, AmountUnderflowError,
-        PointedOutput, UtreexoError,
+        PointedOutput, UtreexoError, Version, VERSION,
     },
     util::Watchable,
 };
@@ -98,10 +99,11 @@ pub struct Wallet {
         DatabaseUnique<SerdeBincode<[u8; 4]>, SerdeBincode<Address>>,
     utxos: DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<Output>>,
     stxos: DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<SpentOutput>>,
+    _version: DatabaseUnique<UnitKey, SerdeBincode<Version>>,
 }
 
 impl Wallet {
-    pub const NUM_DBS: u32 = 5;
+    pub const NUM_DBS: u32 = 6;
 
     pub fn new(path: &Path) -> Result<Self, Error> {
         std::fs::create_dir_all(path)?;
@@ -126,6 +128,17 @@ impl Wallet {
             .map_err(EnvError::from)?;
         let stxos = DatabaseUnique::create(&env, &mut rwtxn, "stxos")
             .map_err(EnvError::from)?;
+        let version = DatabaseUnique::create(&env, &mut rwtxn, "version")
+            .map_err(EnvError::from)?;
+        if version
+            .try_get(&rwtxn, &())
+            .map_err(DbError::from)?
+            .is_none()
+        {
+            version
+                .put(&mut rwtxn, &(), &*VERSION)
+                .map_err(DbError::from)?;
+        }
         rwtxn.commit().map_err(RwTxnError::from)?;
         Ok(Self {
             env,
@@ -134,6 +147,7 @@ impl Wallet {
             index_to_address,
             utxos,
             stxos,
+            _version: version,
         })
     }
 
@@ -516,6 +530,7 @@ impl Watchable<()> for Wallet {
             index_to_address,
             utxos,
             stxos,
+            _version: _,
         } = self;
         let watchables = [
             seed.watch().clone(),

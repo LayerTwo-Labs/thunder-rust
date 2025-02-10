@@ -4,10 +4,12 @@ use fallible_iterator::FallibleIterator as _;
 use heed::{types::SerdeBincode, RoTxn};
 use sneed::{
     db::error::Error as DbError, DatabaseUnique, EnvError, RwTxn, RwTxnError,
+    UnitKey,
 };
 
 use crate::types::{
-    Accumulator, AuthorizedTransaction, OutPoint, Txid, UtreexoError,
+    Accumulator, AuthorizedTransaction, OutPoint, Txid, UtreexoError, Version,
+    VERSION,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -29,10 +31,11 @@ pub struct MemPool {
     pub transactions:
         DatabaseUnique<SerdeBincode<Txid>, SerdeBincode<AuthorizedTransaction>>,
     pub spent_utxos: DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<Txid>>,
+    _version: DatabaseUnique<UnitKey, SerdeBincode<Version>>,
 }
 
 impl MemPool {
-    pub const NUM_DBS: u32 = 2;
+    pub const NUM_DBS: u32 = 3;
 
     pub fn new(env: &sneed::Env) -> Result<Self, Error> {
         let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
@@ -42,10 +45,23 @@ impl MemPool {
         let spent_utxos =
             DatabaseUnique::create(env, &mut rwtxn, "spent_utxos")
                 .map_err(EnvError::from)?;
+        let version =
+            DatabaseUnique::create(env, &mut rwtxn, "mempool_version")
+                .map_err(EnvError::from)?;
+        if version
+            .try_get(&rwtxn, &())
+            .map_err(DbError::from)?
+            .is_none()
+        {
+            version
+                .put(&mut rwtxn, &(), &*VERSION)
+                .map_err(DbError::from)?;
+        }
         rwtxn.commit().map_err(RwTxnError::from)?;
         Ok(Self {
             transactions,
             spent_utxos,
+            _version: version,
         })
     }
 
