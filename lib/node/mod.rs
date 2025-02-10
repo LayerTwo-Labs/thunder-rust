@@ -10,6 +10,7 @@ use bitcoin::amount::CheckedSum;
 use fallible_iterator::FallibleIterator;
 use futures::{future::BoxFuture, Stream};
 use hashlink::{linked_hash_map, LinkedHashMap};
+use sneed::{db::error::Error as DbError, Env, EnvError, RwTxnError};
 use tokio::sync::Mutex;
 use tokio_util::task::LocalPoolHandle;
 use tonic::transport::Channel;
@@ -48,8 +49,12 @@ pub enum Error {
     Archive(#[from] archive::Error),
     #[error("CUSF mainchain proto error")]
     CusfMainchain(#[from] proto::Error),
-    #[error("heed error")]
-    Heed(#[from] heed::Error),
+    #[error(transparent)]
+    Db(#[from] DbError),
+    #[error("Database env error")]
+    DbEnv(#[from] EnvError),
+    #[error("Database write error")]
+    DbWrite(#[from] RwTxnError),
     #[error("I/O error")]
     Io(#[from] std::io::Error),
     #[error("error requesting mainchain ancestors")]
@@ -81,7 +86,7 @@ pub enum Error {
 // TODO: deposits only for now
 #[allow(dead_code)]
 async fn request_two_way_peg_data<Transport>(
-    env: &heed::Env,
+    env: &sneed::Env,
     archive: &Archive,
     mainchain: &mut mainchain::ValidatorClient<Transport>,
     block_hash: bitcoin::BlockHash,
@@ -91,7 +96,7 @@ where
 {
     // last block for which deposit info is known
     let last_known_deposit_info = {
-        let rotxn = env.read_txn()?;
+        let rotxn = env.read_txn().map_err(EnvError::from)?;
         #[allow(clippy::let_and_return)]
         let last_known_deposit_info = archive
             .main_ancestors(&rotxn, block_hash)
@@ -109,7 +114,7 @@ where
         .await?;
     let mut block_deposits =
         LinkedHashMap::<_, _>::from_iter(two_way_peg_data.into_deposits());
-    let mut rwtxn = env.write_txn()?;
+    let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
     let () = archive
         .main_ancestors(&rwtxn, block_hash)
         .take_while(|block_hash| {
@@ -129,7 +134,7 @@ where
         .try_for_each(|(block_hash, deposits)| {
             archive.put_deposits(&mut rwtxn, block_hash, deposits)
         })?;
-    rwtxn.commit()?;
+    rwtxn.commit().map_err(RwTxnError::from)?;
     Ok(())
 }
 
@@ -139,7 +144,7 @@ pub struct Node<MainchainTransport = Channel> {
     cusf_mainchain: Arc<Mutex<mainchain::ValidatorClient<MainchainTransport>>>,
     cusf_mainchain_wallet:
         Option<Arc<Mutex<mainchain::WalletClient<MainchainTransport>>>>,
-    env: heed::Env,
+    env: sneed::Env,
     _local_pool: LocalPoolHandle,
     mainchain_task: MainchainTaskHandle,
     mempool: MemPool,
@@ -171,16 +176,18 @@ where
         let env_path = datadir.join("data.mdb");
         // let _ = std::fs::remove_dir_all(&env_path);
         std::fs::create_dir_all(&env_path)?;
-        let env = unsafe {
-            heed::EnvOpenOptions::new()
+        let env = {
+            let mut env_open_opts = heed::EnvOpenOptions::new();
+            env_open_opts
                 .map_size(1024 * 1024 * 1024) // 1GB
                 .max_dbs(
                     State::NUM_DBS
                         + Archive::NUM_DBS
                         + MemPool::NUM_DBS
                         + Net::NUM_DBS,
-                )
-                .open(env_path)?
+                );
+            unsafe { Env::open(&env_open_opts, &env_path) }
+                .map_err(EnvError::from)?
         };
         let state = State::new(&env)?;
         let archive = Archive::new(&env)?;
@@ -238,13 +245,13 @@ where
     }
 
     pub fn try_get_height(&self) -> Result<Option<u32>, Error> {
-        let rotxn = self.env.read_txn()?;
-        Ok(self.state.try_get_height(&rotxn)?)
+        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
+        Ok(self.state.try_get_height(&rotxn).map_err(DbError::from)?)
     }
 
     pub fn try_get_best_hash(&self) -> Result<Option<BlockHash>, Error> {
-        let rotxn = self.env.read_txn()?;
-        Ok(self.state.try_get_tip(&rotxn)?)
+        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
+        Ok(self.state.try_get_tip(&rotxn).map_err(DbError::from)?)
     }
 
     pub fn submit_transaction(
@@ -252,28 +259,30 @@ where
         transaction: AuthorizedTransaction,
     ) -> Result<(), Error> {
         {
-            let mut rotxn = self.env.write_txn()?;
+            let mut rotxn = self.env.write_txn().map_err(EnvError::from)?;
             self.state.validate_transaction(&rotxn, &transaction)?;
             self.mempool.put(&mut rotxn, &transaction)?;
-            rotxn.commit()?;
+            rotxn.commit().map_err(RwTxnError::from)?;
         }
         self.net.push_tx(Default::default(), transaction);
         Ok(())
     }
 
     pub fn get_all_utxos(&self) -> Result<HashMap<OutPoint, Output>, Error> {
-        let rotxn = self.env.read_txn()?;
-        self.state.get_utxos(&rotxn).map_err(Error::from)
+        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
+        self.state
+            .get_utxos(&rotxn)
+            .map_err(|err| DbError::from(err).into())
     }
 
     pub fn get_latest_failed_withdrawal_bundle_height(
         &self,
     ) -> Result<Option<u32>, Error> {
-        let rotxn = self.env.read_txn()?;
+        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         let res = self
             .state
             .get_latest_failed_withdrawal_bundle(&rotxn)
-            .map_err(Error::from)?
+            .map_err(DbError::from)?
             .map(|(height, _)| height);
         Ok(res)
     }
@@ -282,10 +291,15 @@ where
         &self,
         outpoints: &[OutPoint],
     ) -> Result<Vec<(OutPoint, SpentOutput)>, Error> {
-        let rotxn = self.env.read_txn()?;
+        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         let mut spent = vec![];
         for outpoint in outpoints {
-            if let Some(output) = self.state.stxos.get(&rotxn, outpoint)? {
+            if let Some(output) = self
+                .state
+                .stxos
+                .try_get(&rotxn, outpoint)
+                .map_err(DbError::from)?
+            {
                 spent.push((*outpoint, output));
             }
         }
@@ -296,18 +310,21 @@ where
         &self,
         addresses: &HashSet<Address>,
     ) -> Result<HashMap<OutPoint, Output>, Error> {
-        let rotxn = self.env.read_txn()?;
-        let utxos = self.state.get_utxos_by_addresses(&rotxn, addresses)?;
+        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
+        let utxos = self
+            .state
+            .get_utxos_by_addresses(&rotxn, addresses)
+            .map_err(DbError::from)?;
         Ok(utxos)
     }
 
     pub fn get_tip_accumulator(&self) -> Result<Accumulator, Error> {
-        let rotxn = self.env.read_txn()?;
+        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         Ok(self.state.get_accumulator(&rotxn)?)
     }
 
     pub fn regenerate_proof(&self, tx: &mut Transaction) -> Result<(), Error> {
-        let rotxn = self.env.read_txn()?;
+        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         let () = self.state.regenerate_proof(&rotxn, tx)?;
         Ok(())
     }
@@ -316,7 +333,7 @@ where
         &self,
         block_hash: BlockHash,
     ) -> Result<Option<Accumulator>, Error> {
-        let rotxn = self.env.read_txn()?;
+        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         Ok(self.archive.try_get_accumulator(&rotxn, block_hash)?)
     }
 
@@ -324,7 +341,7 @@ where
         &self,
         block_hash: BlockHash,
     ) -> Result<Accumulator, Error> {
-        let rotxn = self.env.read_txn()?;
+        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         Ok(self.archive.get_accumulator(&rotxn, block_hash)?)
     }
 
@@ -332,12 +349,12 @@ where
         &self,
         block_hash: BlockHash,
     ) -> Result<Option<Header>, Error> {
-        let txn = self.env.read_txn()?;
+        let txn = self.env.read_txn().map_err(EnvError::from)?;
         Ok(self.archive.try_get_header(&txn, block_hash)?)
     }
 
     pub fn get_header(&self, block_hash: BlockHash) -> Result<Header, Error> {
-        let txn = self.env.read_txn()?;
+        let txn = self.env.read_txn().map_err(EnvError::from)?;
         Ok(self.archive.get_header(&txn, block_hash)?)
     }
 
@@ -347,11 +364,15 @@ where
         &self,
         height: u32,
     ) -> Result<Option<BlockHash>, Error> {
-        let rotxn = self.env.read_txn()?;
-        let Some(tip) = self.state.try_get_tip(&rotxn)? else {
+        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
+        let Some(tip) =
+            self.state.try_get_tip(&rotxn).map_err(DbError::from)?
+        else {
             return Ok(None);
         };
-        let Some(tip_height) = self.state.try_get_height(&rotxn)? else {
+        let Some(tip_height) =
+            self.state.try_get_height(&rotxn).map_err(DbError::from)?
+        else {
             return Ok(None);
         };
         if tip_height >= height {
@@ -368,12 +389,12 @@ where
         &self,
         block_hash: BlockHash,
     ) -> Result<Option<Body>, Error> {
-        let rotxn = self.env.read_txn()?;
+        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         Ok(self.archive.try_get_body(&rotxn, block_hash)?)
     }
 
     pub fn get_body(&self, block_hash: BlockHash) -> Result<Body, Error> {
-        let rotxn = self.env.read_txn()?;
+        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         Ok(self.archive.get_body(&rotxn, block_hash)?)
     }
 
@@ -381,7 +402,7 @@ where
         &self,
         block_hash: BlockHash,
     ) -> Result<Vec<bitcoin::BlockHash>, Error> {
-        let rotxn = self.env.read_txn()?;
+        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         let bmm_inclusions = self
             .archive
             .get_bmm_results(&rotxn, block_hash)?
@@ -397,14 +418,14 @@ where
     pub fn get_all_transactions(
         &self,
     ) -> Result<Vec<AuthorizedTransaction>, Error> {
-        let rotxn = self.env.read_txn()?;
+        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         let transactions = self.mempool.take_all(&rotxn)?;
         Ok(transactions)
     }
 
     /// Get total sidechain wealth in Bitcoin
     pub fn get_sidechain_wealth(&self) -> Result<bitcoin::Amount, Error> {
-        let rotxn = self.env.read_txn()?;
+        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         Ok(self.state.sidechain_wealth(&rotxn)?)
     }
 
@@ -412,7 +433,7 @@ where
         &self,
         number: usize,
     ) -> Result<(Vec<AuthorizedTransaction>, bitcoin::Amount), Error> {
-        let mut txn = self.env.write_txn()?;
+        let mut txn = self.env.write_txn().map_err(EnvError::from)?;
         let transactions = self.mempool.take(&txn, number)?;
         let mut fee = bitcoin::Amount::ZERO;
         let mut returned_transactions = vec![];
@@ -457,14 +478,14 @@ where
             returned_transactions.push(transaction.clone());
             spent_utxos.extend(transaction.transaction.inputs.clone());
         }
-        txn.commit()?;
+        txn.commit().map_err(RwTxnError::from)?;
         Ok((returned_transactions, fee))
     }
 
     pub fn get_pending_withdrawal_bundle(
         &self,
     ) -> Result<Option<WithdrawalBundle>, Error> {
-        let txn = self.env.read_txn()?;
+        let txn = self.env.read_txn().map_err(EnvError::from)?;
         let bundle = self
             .state
             .get_pending_withdrawal_bundle(&txn)?
@@ -473,9 +494,9 @@ where
     }
 
     pub fn remove_from_mempool(&self, txid: Txid) -> Result<(), Error> {
-        let mut rwtxn = self.env.write_txn()?;
+        let mut rwtxn = self.env.write_txn().map_err(EnvError::from)?;
         let () = self.mempool.delete(&mut rwtxn, txid)?;
-        rwtxn.commit()?;
+        rwtxn.commit().map_err(RwTxnError::from)?;
         Ok(())
     }
 
@@ -549,14 +570,14 @@ where
         // Write header
         tracing::trace!("Storing header: {block_hash}");
         {
-            let mut rwtxn = self.env.write_txn()?;
+            let mut rwtxn = self.env.write_txn().map_err(EnvError::from)?;
             let () = self.archive.put_header(&mut rwtxn, header)?;
-            rwtxn.commit()?;
+            rwtxn.commit().map_err(RwTxnError::from)?;
         }
         tracing::trace!("Stored header: {block_hash}");
         // Check BMM
         {
-            let rotxn = self.env.read_txn()?;
+            let rotxn = self.env.read_txn().map_err(EnvError::from)?;
             if self.archive.get_bmm_result(
                 &rotxn,
                 block_hash,
@@ -568,12 +589,11 @@ where
                 );
                 return Ok(false);
             }
-            rotxn.commit()?;
         }
         // Check that ancestor bodies exist, and store body
         {
-            let rotxn = self.env.read_txn()?;
-            let tip = self.state.try_get_tip(&rotxn)?;
+            let rotxn = self.env.read_txn().map_err(EnvError::from)?;
+            let tip = self.state.try_get_tip(&rotxn).map_err(DbError::from)?;
             let common_ancestor = if let Some(tip) = tip {
                 self.archive.last_common_ancestor(&rotxn, tip, block_hash)?
             } else {
@@ -592,11 +612,11 @@ where
                 );
                 return Ok(false);
             }
-            rotxn.commit()?;
+            drop(rotxn);
             if missing_bodies == vec![block_hash] {
-                let mut rwtxn = self.env.write_txn()?;
+                let mut rwtxn = self.env.write_txn().map_err(EnvError::from)?;
                 let () = self.archive.put_body(&mut rwtxn, block_hash, body)?;
-                rwtxn.commit()?;
+                rwtxn.commit().map_err(RwTxnError::from)?;
             }
         }
         // Submit new tip
@@ -608,7 +628,7 @@ where
             tracing::warn!(%block_hash, "Not ready to reorg");
             return Ok(false);
         };
-        let rotxn = self.env.read_txn()?;
+        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         let bundle = self.state.get_pending_withdrawal_bundle(&rotxn)?;
         if let Some((bundle, _)) = bundle {
             let m6id = bundle.compute_m6id();
