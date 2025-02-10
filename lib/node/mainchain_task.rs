@@ -14,6 +14,7 @@ use futures::{
     },
     StreamExt,
 };
+use sneed::{EnvError, RwTxnError};
 use thiserror::Error;
 use tokio::{
     spawn,
@@ -39,10 +40,12 @@ pub(super) enum Request {
 pub enum ResponseError {
     #[error("Archive error")]
     Archive(#[from] archive::Error),
+    #[error("Database env error")]
+    DbEnv(#[from] EnvError),
+    #[error("Database write error")]
+    DbWrite(#[from] sneed::rwtxn::Error),
     #[error("CUSF Mainchain proto error")]
     Mainchain(#[from] proto::Error),
-    #[error("Heed error")]
-    Heed(#[from] heed::Error),
 }
 
 /// Response indicating that a request has been fulfilled
@@ -77,7 +80,7 @@ enum Error {
 }
 
 struct MainchainTask<Transport = tonic::transport::Channel> {
-    env: heed::Env,
+    env: sneed::Env,
     archive: Archive,
     mainchain: proto::mainchain::ValidatorClient<Transport>,
     // receive a request, and optional oneshot sender to send the result to
@@ -93,7 +96,7 @@ where
     /// Request ancestor headers from the mainchain node,
     /// including the specified header
     async fn request_ancestor_headers(
-        env: &heed::Env,
+        env: &sneed::Env,
         archive: &Archive,
         cusf_mainchain: &mut proto::mainchain::ValidatorClient<Transport>,
         block_hash: bitcoin::BlockHash,
@@ -101,7 +104,7 @@ where
         if block_hash == bitcoin::BlockHash::all_zeros() {
             return Ok(());
         } else {
-            let rotxn = env.read_txn()?;
+            let rotxn = env.read_txn().map_err(EnvError::from)?;
             if archive
                 .try_get_main_header_info(&rotxn, block_hash)?
                 .is_some()
@@ -136,7 +139,7 @@ where
             if current_block_hash == bitcoin::BlockHash::all_zeros() {
                 break;
             } else {
-                let rotxn = env.read_txn()?;
+                let rotxn = env.read_txn().map_err(EnvError::from)?;
                 if archive
                     .try_get_main_header_info(&rotxn, current_block_hash)?
                     .is_some()
@@ -149,11 +152,11 @@ where
         // Writing all headers during IBD can starve archive readers.
         tracing::trace!(%block_hash, "storing ancestor headers");
         task::block_in_place(|| {
-            let mut rwtxn = env.write_txn()?;
+            let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
             header_infos.into_iter().try_for_each(|header| {
                 archive.put_main_header_info(&mut rwtxn, &header)
             })?;
-            rwtxn.commit()?;
+            rwtxn.commit().map_err(RwTxnError::from)?;
             tracing::trace!(%block_hash, "stored ancestor headers");
             Ok(())
         })
@@ -164,7 +167,7 @@ where
     /// Mainchain headers for the specified block and all ancestors MUST exist
     /// in the archive.
     async fn request_bmm_commitments(
-        env: &heed::Env,
+        env: &sneed::Env,
         archive: &Archive,
         mainchain: &mut mainchain::ValidatorClient<Transport>,
         main_hash: bitcoin::BlockHash,
@@ -172,7 +175,7 @@ where
         if main_hash == bitcoin::BlockHash::all_zeros() {
             return Ok(Ok(()));
         } else {
-            let rotxn = env.read_txn()?;
+            let rotxn = env.read_txn().map_err(EnvError::from)?;
             if archive
                 .try_get_main_bmm_commitment(&rotxn, main_hash)?
                 .is_some()
@@ -181,7 +184,7 @@ where
             }
         }
         let mut missing_commitments: Vec<_> = {
-            let rotxn = env.read_txn()?;
+            let rotxn = env.read_txn().map_err(EnvError::from)?;
             archive
                 .main_ancestors(&rotxn, main_hash)
                 .take_while(|block_hash| {
@@ -209,13 +212,13 @@ where
                 "storing ancestor bmm commitment: {missing_commitment}"
             );
             {
-                let mut rwtxn = env.write_txn()?;
+                let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
                 archive.put_main_bmm_commitment(
                     &mut rwtxn,
                     missing_commitment,
                     commitment,
                 )?;
-                rwtxn.commit()?;
+                rwtxn.commit().map_err(RwTxnError::from)?;
             }
             tracing::trace!(%main_hash,
                 "stored ancestor bmm commitment: {missing_commitment}"
@@ -287,7 +290,7 @@ pub(super) struct MainchainTaskHandle {
 
 impl MainchainTaskHandle {
     pub fn new<Transport>(
-        env: heed::Env,
+        env: sneed::Env,
         archive: Archive,
         mainchain: mainchain::ValidatorClient<Transport>,
     ) -> (Self, mpsc::UnboundedReceiver<Response>)

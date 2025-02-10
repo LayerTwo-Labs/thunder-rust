@@ -31,6 +31,12 @@ pub enum Error {
     BodyTooLarge,
     #[error(transparent)]
     BorshSerialize(borsh::io::Error),
+    #[error(transparent)]
+    Db(#[from] sneed::db::error::Error),
+    #[error("Database env error")]
+    DbEnv(#[from] sneed::env::Error),
+    #[error("Database write error")]
+    DbWrite(#[from] sneed::rwtxn::Error),
     #[error("invalid body: expected merkle root {expected}, but computed {computed}")]
     InvalidBody {
         expected: MerkleRoot,
@@ -38,8 +44,6 @@ pub enum Error {
     },
     #[error("invalid header: {0}")]
     InvalidHeader(InvalidHeader),
-    #[error("heed error")]
-    Heed(#[from] heed::Error),
     #[error("deposit block doesn't exist")]
     NoDepositBlock,
     #[error("total fees less than coinbase value")]

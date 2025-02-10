@@ -14,6 +14,7 @@ use fallible_iterator::FallibleIterator;
 use futures::{channel::mpsc, stream, StreamExt, TryFutureExt, TryStreamExt};
 use quinn::SendStream;
 use serde::{Deserialize, Serialize};
+use sneed::{db::error::Error as DbError, EnvError};
 use thiserror::Error;
 use tokio::{
     spawn,
@@ -58,10 +59,12 @@ pub enum ConnectionError {
     ClosedStream(#[from] quinn::ClosedStream),
     #[error("connection error")]
     Connection(#[from] quinn::ConnectionError),
+    #[error(transparent)]
+    Db(#[from] sneed::db::error::Error),
+    #[error("Database env error")]
+    DbEnv(#[from] sneed::env::Error),
     #[error("Heartbeat timeout")]
     HeartbeatTimeout,
-    #[error("heed error")]
-    Heed(#[from] heed::Error),
     #[error("missing peer state for id {0}")]
     MissingPeerState(PeerStateId),
     #[error("peer should be banned; {0}")]
@@ -343,7 +346,7 @@ impl Connection {
 }
 
 pub struct ConnectionContext {
-    pub env: heed::Env,
+    pub env: sneed::Env,
     pub archive: Archive,
     pub state: State,
 }
@@ -404,7 +407,7 @@ impl ConnectionTask {
         let Some(tip_info) = tip_info else {
             // No tip.
             // Request headers from peer if necessary
-            let rotxn = ctxt.env.read_txn()?;
+            let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
             if ctxt
                 .archive
                 .try_get_header(&rotxn, peer_tip_info.tip.block_hash)?
@@ -430,7 +433,7 @@ impl ConnectionTask {
                 // No tip ancestor can have greater height,
                 // so peer tip is better.
                 // Request headers if necessary
-                let rotxn = ctxt.env.read_txn()?;
+                let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
                 if ctxt
                     .archive
                     .try_get_header(&rotxn, peer_tip_info.tip.block_hash)?
@@ -462,7 +465,7 @@ impl ConnectionTask {
             (Ordering::Less, Ordering::Equal) => {
                 // Within the same mainchain lineage, prefer lower work
                 // Otherwise, prefer tip with greater work
-                let rotxn = ctxt.env.read_txn()?;
+                let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
                 if ctxt.archive.shared_mainchain_lineage(
                     &rotxn,
                     tip_info.tip.main_block_hash,
@@ -497,7 +500,7 @@ impl ConnectionTask {
             (Ordering::Greater, Ordering::Equal) => {
                 // Within the same mainchain lineage, prefer lower work
                 // Otherwise, prefer tip with greater work
-                let rotxn = ctxt.env.read_txn()?;
+                let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
                 if !ctxt.archive.shared_mainchain_lineage(
                     &rotxn,
                     tip_info.tip.main_block_hash,
@@ -532,7 +535,7 @@ impl ConnectionTask {
             (Ordering::Less, Ordering::Greater) => {
                 // Need to check if tip ancestor before common
                 // mainchain ancestor had greater or equal height
-                let rotxn = ctxt.env.read_txn()?;
+                let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
                 let main_ancestor = ctxt.archive.last_common_main_ancestor(
                     &rotxn,
                     tip_info.tip.main_block_hash,
@@ -586,7 +589,7 @@ impl ConnectionTask {
             (Ordering::Greater, Ordering::Less) => {
                 // Need to check if peer's tip ancestor before common
                 // mainchain ancestor had greater or equal height
-                let rotxn = ctxt.env.read_txn()?;
+                let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
                 if ctxt
                     .archive
                     .try_get_header(&rotxn, peer_tip_info.tip.block_hash)?
@@ -646,7 +649,7 @@ impl ConnectionTask {
                 }
                 // Need to compare tip ancestor and peer's tip ancestor
                 // before common mainchain ancestor
-                let rotxn = ctxt.env.read_txn()?;
+                let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
                 if ctxt
                     .archive
                     .try_get_header(&rotxn, peer_tip_info.tip.block_hash)?
@@ -791,13 +794,16 @@ impl ConnectionTask {
             return Ok(());
         };
         let tip_info = 'tip_info: {
-            let rotxn = ctxt.env.read_txn()?;
-            let Some(tip) = ctxt.state.try_get_tip(&rotxn)? else {
+            let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
+            let Some(tip) =
+                ctxt.state.try_get_tip(&rotxn).map_err(DbError::from)?
+            else {
                 break 'tip_info None;
             };
             let tip_height = ctxt
                 .state
-                .try_get_height(&rotxn)?
+                .try_get_height(&rotxn)
+                .map_err(DbError::from)?
                 .expect("Height should be known for tip");
             let bmm_verification =
                 ctxt.archive.get_best_main_verification(&rotxn, tip)?;
@@ -816,7 +822,7 @@ impl ConnectionTask {
         // Check claimed work and request mainchain headers and BMM commitments
         // if necessary
         {
-            let rotxn = ctxt.env.read_txn()?;
+            let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
             match ctxt.archive.try_get_main_header_info(
                 &rotxn,
                 peer_tip_info.tip.main_block_hash,
@@ -875,7 +881,7 @@ impl ConnectionTask {
         }
         // Check BMM now that headers are available
         {
-            let rotxn = ctxt.env.read_txn()?;
+            let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
             let Some(BmmResult::Verified) = ctxt.archive.try_get_bmm_result(
                 &rotxn,
                 peer_tip_info.tip.block_hash,
@@ -892,7 +898,7 @@ impl ConnectionTask {
             Option<BlockHash>,
             Vec<BlockHash>,
         ) = {
-            let rotxn = ctxt.env.read_txn()?;
+            let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
             let common_ancestor = if let Some(tip_info) = tip_info {
                 ctxt.archive.last_common_ancestor(
                     &rotxn,
@@ -933,7 +939,7 @@ impl ConnectionTask {
         block_hash: BlockHash,
     ) -> Result<(), ConnectionError> {
         let (header, body) = {
-            let rotxn = ctxt.env.read_txn()?;
+            let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
             let header = ctxt.archive.try_get_header(&rotxn, block_hash)?;
             let body = ctxt.archive.try_get_body(&rotxn, block_hash)?;
             (header, body)
@@ -952,7 +958,7 @@ impl ConnectionTask {
         end: BlockHash,
     ) -> Result<(), ConnectionError> {
         let response = {
-            let rotxn = ctxt.env.read_txn()?;
+            let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
             if ctxt.archive.try_get_header(&rotxn, end)?.is_some() {
                 let mut headers: Vec<Header> = ctxt
                     .archive
@@ -979,7 +985,7 @@ impl ConnectionTask {
     ) -> Result<(), ConnectionError> {
         let txid = tx.transaction.txid();
         let validate_tx_result = {
-            let rotxn = ctxt.env.read_txn()?;
+            let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
             ctxt.state.validate_transaction(&rotxn, &tx)
         };
         match validate_tx_result {
@@ -1175,15 +1181,21 @@ impl ConnectionTask {
                 }
                 MailboxItem::Heartbeat => {
                     let tip_info = 'tip_info: {
-                        let rotxn = self.ctxt.env.read_txn()?;
-                        let Some(tip) = self.ctxt.state.try_get_tip(&rotxn)?
+                        let rotxn =
+                            self.ctxt.env.read_txn().map_err(EnvError::from)?;
+                        let Some(tip) = self
+                            .ctxt
+                            .state
+                            .try_get_tip(&rotxn)
+                            .map_err(DbError::from)?
                         else {
                             break 'tip_info None;
                         };
                         let tip_height = self
                             .ctxt
                             .state
-                            .try_get_height(&rotxn)?
+                            .try_get_height(&rotxn)
+                            .map_err(DbError::from)?
                             .expect("Height for tip should be known");
                         let bmm_verification = self
                             .ctxt

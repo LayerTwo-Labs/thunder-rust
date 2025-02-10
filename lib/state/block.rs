@@ -2,8 +2,9 @@
 
 use std::collections::HashSet;
 
-use heed::{RoTxn, RwTxn};
+use heed::RoTxn;
 use rustreexo::accumulator::node_hash::BitcoinNodeHash;
+use sneed::{db::error::Error as DbError, RwTxn};
 
 use crate::{
     state::{error, Error, State},
@@ -12,7 +13,6 @@ use crate::{
         GetValue as _, Header, InPoint, OutPoint, PointedOutput, SpentOutput,
         Verify as _,
     },
-    util::UnitKey,
     wallet::Authorization,
 };
 
@@ -22,7 +22,7 @@ pub fn validate(
     header: &Header,
     body: &Body,
 ) -> Result<bitcoin::Amount, Error> {
-    let tip_hash = state.try_get_tip(rotxn)?;
+    let tip_hash = state.try_get_tip(rotxn).map_err(DbError::from)?;
     if header.prev_side_hash != tip_hash {
         let err = error::InvalidHeader::PrevSideHash {
             expected: tip_hash,
@@ -30,7 +30,10 @@ pub fn validate(
         };
         return Err(Error::InvalidHeader(err));
     };
-    let height = state.try_get_height(rotxn)?.map_or(0, |height| height + 1);
+    let height = state
+        .try_get_height(rotxn)
+        .map_err(DbError::from)?
+        .map_or(0, |height| height + 1);
     if body.authorizations.len() > State::body_sigops_limit(height) {
         return Err(Error::TooManySigops);
     }
@@ -41,7 +44,8 @@ pub fn validate(
     }
     let mut accumulator = state
         .utreexo_accumulator
-        .get(rotxn, &UnitKey)?
+        .try_get(rotxn, &())
+        .map_err(DbError::from)?
         .unwrap_or_default();
     let mut accumulator_diff = AccumulatorDiff::default();
     let mut coinbase_value = bitcoin::Amount::ZERO;
@@ -139,7 +143,7 @@ pub fn connect(
     header: &Header,
     body: &Body,
 ) -> Result<(), Error> {
-    let tip_hash = state.try_get_tip(rwtxn)?;
+    let tip_hash = state.try_get_tip(rwtxn).map_err(DbError::from)?;
     if tip_hash != header.prev_side_hash {
         let err = error::InvalidHeader::PrevSideHash {
             expected: tip_hash,
@@ -157,7 +161,8 @@ pub fn connect(
     }
     let mut accumulator = state
         .utreexo_accumulator
-        .get(rwtxn, &UnitKey)?
+        .try_get(rwtxn, &())
+        .map_err(DbError::from)?
         .unwrap_or_default();
     let mut accumulator_diff = AccumulatorDiff::default();
     for (vout, output) in body.coinbase.iter().enumerate() {
@@ -170,19 +175,25 @@ pub fn connect(
             output: output.clone(),
         };
         accumulator_diff.insert((&pointed_output).into());
-        state.utxos.put(rwtxn, &outpoint, output)?;
+        state
+            .utxos
+            .put(rwtxn, &outpoint, output)
+            .map_err(DbError::from)?;
     }
     for transaction in &body.transactions {
         let txid = transaction.txid();
         for (vin, (outpoint, utxo_hash)) in
             transaction.inputs.iter().enumerate()
         {
-            let spent_output =
-                state.utxos.get(rwtxn, outpoint)?.ok_or(Error::NoUtxo {
+            let spent_output = state
+                .utxos
+                .try_get(rwtxn, outpoint)
+                .map_err(DbError::from)?
+                .ok_or(Error::NoUtxo {
                     outpoint: *outpoint,
                 })?;
             accumulator_diff.remove(utxo_hash.into());
-            state.utxos.delete(rwtxn, outpoint)?;
+            state.utxos.delete(rwtxn, outpoint).map_err(DbError::from)?;
             let spent_output = SpentOutput {
                 output: spent_output,
                 inpoint: InPoint::Regular {
@@ -190,7 +201,10 @@ pub fn connect(
                     vin: vin as u32,
                 },
             };
-            state.stxos.put(rwtxn, outpoint, &spent_output)?;
+            state
+                .stxos
+                .put(rwtxn, outpoint, &spent_output)
+                .map_err(DbError::from)?;
         }
         for (vout, output) in transaction.outputs.iter().enumerate() {
             let outpoint = OutPoint::Regular {
@@ -202,17 +216,30 @@ pub fn connect(
                 output: output.clone(),
             };
             accumulator_diff.insert((&pointed_output).into());
-            state.utxos.put(rwtxn, &outpoint, output)?;
+            state
+                .utxos
+                .put(rwtxn, &outpoint, output)
+                .map_err(DbError::from)?;
         }
     }
     let block_hash = header.hash();
-    let height = state.try_get_height(rwtxn)?.map_or(0, |height| height + 1);
-    state.tip.put(rwtxn, &UnitKey, &block_hash)?;
-    state.height.put(rwtxn, &UnitKey, &height)?;
+    let height = state
+        .try_get_height(rwtxn)
+        .map_err(DbError::from)?
+        .map_or(0, |height| height + 1);
+    state
+        .tip
+        .put(rwtxn, &(), &block_hash)
+        .map_err(DbError::from)?;
+    state
+        .height
+        .put(rwtxn, &(), &height)
+        .map_err(DbError::from)?;
     let () = accumulator.apply_diff(accumulator_diff)?;
     state
         .utreexo_accumulator
-        .put(rwtxn, &UnitKey, &accumulator)?;
+        .put(rwtxn, &(), &accumulator)
+        .map_err(DbError::from)?;
     Ok(())
 }
 
@@ -222,7 +249,11 @@ pub fn disconnect_tip(
     header: &Header,
     body: &Body,
 ) -> Result<(), Error> {
-    let tip_hash = state.tip.try_get(rwtxn, &UnitKey)?.ok_or(Error::NoTip)?;
+    let tip_hash = state
+        .tip
+        .try_get(rwtxn, &())
+        .map_err(DbError::from)?
+        .ok_or(Error::NoTip)?;
     if tip_hash != header.hash() {
         let err = error::InvalidHeader::BlockHash {
             expected: tip_hash,
@@ -240,7 +271,8 @@ pub fn disconnect_tip(
     }
     let mut accumulator = state
         .utreexo_accumulator
-        .get(rwtxn, &UnitKey)?
+        .try_get(rwtxn, &())
+        .map_err(DbError::from)?
         .unwrap_or_default();
     tracing::debug!("Got acc");
     let mut accumulator_diff = AccumulatorDiff::default();
@@ -259,7 +291,11 @@ pub fn disconnect_tip(
                     output: output.clone(),
                 };
                 accumulator_diff.remove((&pointed_output).into());
-                if state.utxos.delete(rwtxn, &outpoint)? {
+                if state
+                    .utxos
+                    .delete(rwtxn, &outpoint)
+                    .map_err(DbError::from)?
+                {
                     Ok(())
                 } else {
                     Err(Error::NoUtxo { outpoint })
@@ -271,10 +307,20 @@ pub fn disconnect_tip(
             .iter()
             .rev()
             .try_for_each(|(outpoint, utxo_hash)| {
-                if let Some(spent_output) = state.stxos.get(rwtxn, outpoint)? {
+                if let Some(spent_output) = state
+                    .stxos
+                    .try_get(rwtxn, outpoint)
+                    .map_err(DbError::from)?
+                {
                     accumulator_diff.insert(utxo_hash.into());
-                    state.stxos.delete(rwtxn, outpoint)?;
-                    state.utxos.put(rwtxn, outpoint, &spent_output.output)?;
+                    state
+                        .stxos
+                        .delete(rwtxn, outpoint)
+                        .map_err(DbError::from)?;
+                    state
+                        .utxos
+                        .put(rwtxn, outpoint, &spent_output.output)
+                        .map_err(DbError::from)?;
                     Ok(())
                 } else {
                     Err(Error::NoStxo {
@@ -298,29 +344,41 @@ pub fn disconnect_tip(
                 output: output.clone(),
             };
             accumulator_diff.remove((&pointed_output).into());
-            if state.utxos.delete(rwtxn, &outpoint)? {
+            if state
+                .utxos
+                .delete(rwtxn, &outpoint)
+                .map_err(DbError::from)?
+            {
                 Ok(())
             } else {
                 Err(Error::NoUtxo { outpoint })
             }
         })?;
     let height = state
-        .try_get_height(rwtxn)?
+        .try_get_height(rwtxn)
+        .map_err(DbError::from)?
         .expect("Height should not be None");
     match (header.prev_side_hash, height) {
         (None, 0) => {
-            state.tip.delete(rwtxn, &UnitKey)?;
-            state.height.delete(rwtxn, &UnitKey)?;
+            state.tip.delete(rwtxn, &()).map_err(DbError::from)?;
+            state.height.delete(rwtxn, &()).map_err(DbError::from)?;
         }
         (None, _) | (_, 0) => return Err(Error::NoTip),
         (Some(prev_side_hash), height) => {
-            state.tip.put(rwtxn, &UnitKey, &prev_side_hash)?;
-            state.height.put(rwtxn, &UnitKey, &(height - 1))?;
+            state
+                .tip
+                .put(rwtxn, &(), &prev_side_hash)
+                .map_err(DbError::from)?;
+            state
+                .height
+                .put(rwtxn, &(), &(height - 1))
+                .map_err(DbError::from)?;
         }
     }
     let () = accumulator.apply_diff(accumulator_diff)?;
     state
         .utreexo_accumulator
-        .put(rwtxn, &UnitKey, &accumulator)?;
+        .put(rwtxn, &(), &accumulator)
+        .map_err(DbError::from)?;
     Ok(())
 }
