@@ -20,6 +20,7 @@ use thiserror::Error;
 use tokio::task::JoinHandle;
 use tokio_stream::StreamNotifyClose;
 use tokio_util::task::LocalPoolHandle;
+use tracing::Instrument;
 
 use super::mainchain_task::{self, MainchainTaskHandle};
 use crate::{
@@ -70,7 +71,7 @@ pub enum Error {
     State(#[from] state::Error),
 }
 
-async fn connect_tip_<Transport>(
+async fn connect_tip<Transport>(
     rwtxn: &mut RwTxn<'_>,
     archive: &Archive,
     cusf_mainchain: &mut mainchain::ValidatorClient<Transport>,
@@ -346,7 +347,7 @@ where
     assert_eq!(tip, common_ancestor);
     // Apply blocks until new tip is reached
     for (header, body) in blocks_to_apply.into_iter().rev() {
-        let () = connect_tip_(
+        let () = connect_tip(
             &mut rwtxn,
             archive,
             cusf_mainchain,
@@ -605,7 +606,7 @@ where
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, strum::Display)]
 enum MailboxItem {
     AcceptConnection(Result<Option<SocketAddr>, Error>),
     // Forward a mainchain task request, along with the peer that
@@ -669,7 +670,11 @@ where
         resp: PeerResponse,
         req: PeerRequest,
     ) -> Result<(), Error> {
-        tracing::debug!(?req, ?resp, "starting response handler");
+        tracing::trace!(
+            req_kind = req.to_string(),
+            resp_kind = resp.to_string(),
+            "starting response handler"
+        );
         match (req, resp) {
             (
                 req @ PeerRequest::GetBlock {
@@ -980,7 +985,10 @@ where
         let mut mailbox_state = MailboxState::new();
 
         while let Some(mailbox_item) = mailbox_stream.next().await {
-            tracing::trace!(?mailbox_item, "received new mailbox item");
+            let item_id = uuid::Uuid::new_v4().simple();
+            let item_kind = mailbox_item.to_string();
+
+            tracing::trace!(?item_id, "received new mailbox item");
             mailbox_state
                 .handle_mailbox_item(
                     mailbox_item,
@@ -988,6 +996,12 @@ where
                     &self.forward_mainchain_task_request_tx,
                     &self.new_tip_ready_tx,
                 )
+                .instrument(tracing::span!(
+                    tracing::Level::DEBUG,
+                    "handle_mailbox_item",
+                    item_kind,
+                    item_id = item_id.to_string()
+                ))
                 .await?;
         }
         Ok(())
