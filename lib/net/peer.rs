@@ -139,7 +139,7 @@ impl std::fmt::Display for PeerStateId {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, strum::Display)]
 pub enum Response {
     Block {
         header: Header,
@@ -157,7 +157,9 @@ pub enum Response {
     TransactionRejected(Txid),
 }
 
-#[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize)]
+#[derive(
+    BorshSerialize, Clone, Debug, Deserialize, Serialize, strum::Display,
+)]
 pub enum Request {
     Heartbeat(PeerState),
     GetBlock {
