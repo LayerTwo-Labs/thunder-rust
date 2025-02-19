@@ -384,6 +384,25 @@ struct NetTaskContext<MainchainTransport> {
 type NewTipReadyMessage =
     (Tip, Option<SocketAddr>, Option<oneshot::Sender<bool>>);
 
+#[derive(Debug)]
+enum MailboxItem {
+    AcceptConnection(Result<Option<SocketAddr>, Error>),
+    // Forward a mainchain task request, along with the peer that
+    // caused the request, and the peer state ID of the request
+    ForwardMainchainTaskRequest(
+        mainchain_task::Request,
+        SocketAddr,
+        PeerStateId,
+    ),
+    MainchainTaskResponse(mainchain_task::Response),
+    // Apply new tip from peer or self.
+    // An optional oneshot sender can be used receive the result of
+    // attempting to reorg to the new tip, on the corresponding oneshot
+    // receiver.
+    NewTipReady(Tip, Option<SocketAddr>, Option<oneshot::Sender<bool>>),
+    PeerInfo(Option<(SocketAddr, Option<PeerConnectionInfo>)>),
+}
+
 struct NetTask<MainchainTransport> {
     ctxt: NetTaskContext<MainchainTransport>,
     /// Receive a request to forward to the mainchain task, with the address of
@@ -693,24 +712,6 @@ where
 
     async fn run(mut self) -> Result<(), Error> {
         tracing::debug!("starting net task");
-        #[derive(Debug)]
-        enum MailboxItem {
-            AcceptConnection(Result<Option<SocketAddr>, Error>),
-            // Forward a mainchain task request, along with the peer that
-            // caused the request, and the peer state ID of the request
-            ForwardMainchainTaskRequest(
-                mainchain_task::Request,
-                SocketAddr,
-                PeerStateId,
-            ),
-            MainchainTaskResponse(mainchain_task::Response),
-            // Apply new tip from peer or self.
-            // An optional oneshot sender can be used receive the result of
-            // attempting to reorg to the new tip, on the corresponding oneshot
-            // receiver.
-            NewTipReady(Tip, Option<SocketAddr>, Option<oneshot::Sender<bool>>),
-            PeerInfo(Option<(SocketAddr, Option<PeerConnectionInfo>)>),
-        }
         let accept_connections = stream::try_unfold((), |()| {
             let env = self.ctxt.env.clone();
             let net = self.ctxt.net.clone();
