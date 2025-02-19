@@ -368,7 +368,8 @@ where
 struct NetTaskContext<MainchainTransport> {
     env: sneed::Env,
     archive: Archive,
-    cusf_mainchain: mainchain::ValidatorClient<MainchainTransport>,
+    cusf_mainchain:
+        std::cell::RefCell<mainchain::ValidatorClient<MainchainTransport>>,
     mainchain_task: MainchainTaskHandle,
     mempool: MemPool,
     net: Net,
@@ -383,6 +384,226 @@ struct NetTaskContext<MainchainTransport> {
 /// to reorg to the new tip, on the corresponding oneshot receiver.
 type NewTipReadyMessage =
     (Tip, Option<SocketAddr>, Option<oneshot::Sender<bool>>);
+
+/// State maintained by the mailbox loop
+struct MailboxState<MainchainTransport> {
+    /// Attempt to switch to a descendant tip once a body has been
+    /// stored, if all other ancestor bodies are available.
+    /// Each descendant tip maps to the peers that sent that tip.
+    descendant_tips: HashMap<Tip, HashMap<Tip, HashSet<SocketAddr>>>,
+
+    /// Map associating mainchain task requests with the peer(s) that
+    /// caused the request, and the request peer state ID
+    mainchain_task_request_sources:
+        HashMap<mainchain_task::Request, HashSet<(SocketAddr, PeerStateId)>>,
+
+    /// PhantomData to use the MainchainTransport type parameter
+    _phantom: std::marker::PhantomData<MainchainTransport>,
+}
+
+impl<MainchainTransport> MailboxState<MainchainTransport>
+where
+    MainchainTransport: proto::Transport,
+{
+    fn new() -> Self {
+        Self {
+            descendant_tips: HashMap::new(),
+            mainchain_task_request_sources: HashMap::new(),
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    async fn handle_mailbox_item(
+        &mut self,
+        item: MailboxItem,
+        ctxt: &NetTaskContext<MainchainTransport>,
+        forward_mainchain_task_request_tx: &UnboundedSender<(
+            mainchain_task::Request,
+            SocketAddr,
+            PeerStateId,
+        )>,
+        new_tip_ready_tx: &UnboundedSender<NewTipReadyMessage>,
+    ) -> Result<(), Error> {
+        match item {
+            MailboxItem::AcceptConnection(res) => match res {
+                // We received a connection new incoming network connection, but no peer
+                // was added
+                Ok(None) => {}
+                Ok(Some(addr)) => {
+                    tracing::trace!(%addr, "accepted new incoming connection");
+                }
+                Err(err) => {
+                    tracing::error!(%err, "failed to accept connection");
+                }
+            },
+            MailboxItem::ForwardMainchainTaskRequest(
+                request,
+                peer,
+                peer_state_id,
+            ) => {
+                self.mainchain_task_request_sources
+                    .entry(request)
+                    .or_default()
+                    .insert((peer, peer_state_id));
+                let () = ctxt
+                    .mainchain_task
+                    .request(request)
+                    .map_err(|_| Error::SendMainchainTaskRequest)?;
+            }
+            MailboxItem::MainchainTaskResponse(response) => {
+                let request = (&response).into();
+                match response {
+                    mainchain_task::Response::AncestorHeaders(
+                        _block_hash,
+                        res,
+                    ) => {
+                        let Some(sources) = self
+                            .mainchain_task_request_sources
+                            .remove(&request)
+                        else {
+                            return Ok(());
+                        };
+                        let res = res.map_err(Arc::new);
+                        for (addr, peer_state_id) in sources {
+                            let message = match res {
+                                Ok(()) => PeerConnectionMessage::MainchainAncestors(peer_state_id),
+                                Err(ref err) => PeerConnectionMessage::MainchainAncestorsError(
+                                    anyhow::Error::from(err.clone())
+                                )
+                            };
+                            let () = ctxt
+                                .net
+                                .push_internal_message(message, addr)?;
+                        }
+                    }
+                    mainchain_task::Response::VerifyBmm(_block_hash, res) => {
+                        let Some(sources) = self
+                            .mainchain_task_request_sources
+                            .remove(&request)
+                        else {
+                            return Ok(());
+                        };
+                        let res = res.map_err(Arc::new);
+                        for (addr, peer_state_id) in sources {
+                            let message = match res {
+                                Ok(bmm_verification_res) => {
+                                    PeerConnectionMessage::BmmVerification {
+                                        res: bmm_verification_res,
+                                        peer_state_id,
+                                    }
+                                }
+                                Err(ref err) => {
+                                    PeerConnectionMessage::BmmVerificationError(
+                                        anyhow::Error::from(err.clone()),
+                                    )
+                                }
+                            };
+                            let () = ctxt
+                                .net
+                                .push_internal_message(message, addr)?;
+                        }
+                    }
+                }
+            }
+            MailboxItem::NewTipReady(new_tip, _addr, resp_tx) => {
+                let reorg_applied = reorg_to_tip(
+                    &ctxt.env,
+                    &ctxt.archive,
+                    &mut ctxt.cusf_mainchain.borrow_mut(),
+                    &ctxt.mempool,
+                    &ctxt.state,
+                    new_tip,
+                )
+                .await?;
+                if let Some(resp_tx) = resp_tx {
+                    let () = resp_tx
+                        .send(reorg_applied)
+                        .map_err(|_| Error::SendReorgResultOneshot)?;
+                }
+            }
+            MailboxItem::PeerInfo(None) => return Err(Error::PeerInfoRxClosed),
+            MailboxItem::PeerInfo(Some((addr, None))) => {
+                // peer connection is closed, remove it
+                tracing::warn!(%addr, "Connection to peer closed");
+                let () = ctxt.net.remove_active_peer(addr);
+            }
+            MailboxItem::PeerInfo(Some((addr, Some(peer_info)))) => {
+                tracing::trace!(%addr, ?peer_info, "mailbox item: received PeerInfo");
+                match peer_info {
+                    PeerConnectionInfo::Error(err) => {
+                        let err = anyhow::anyhow!(err);
+                        tracing::error!(%addr, err = format!("{err:#}"), "Peer connection error");
+                        let () = ctxt.net.remove_active_peer(addr);
+                    }
+                    PeerConnectionInfo::NeedBmmVerification {
+                        main_hash,
+                        peer_state_id,
+                    } => {
+                        let request =
+                            mainchain_task::Request::VerifyBmm(main_hash);
+                        let () = forward_mainchain_task_request_tx
+                            .unbounded_send((request, addr, peer_state_id))
+                            .map_err(|_| Error::ForwardMainchainTaskRequest)?;
+                    }
+                    PeerConnectionInfo::NeedMainchainAncestors {
+                        main_hash,
+                        peer_state_id,
+                    } => {
+                        let request =
+                            mainchain_task::Request::AncestorHeaders(main_hash);
+                        let () = forward_mainchain_task_request_tx
+                            .unbounded_send((request, addr, peer_state_id))
+                            .map_err(|_| Error::ForwardMainchainTaskRequest)?;
+                    }
+                    PeerConnectionInfo::NewTipReady(new_tip) => {
+                        tracing::debug!(
+                            ?new_tip,
+                            %addr,
+                            "mailbox item: received NewTipReady from peer, sending on channel"
+                        );
+                        new_tip_ready_tx
+                            .unbounded_send((new_tip, Some(addr), None))
+                            .map_err(Error::SendNewTipReady)?;
+                    }
+                    PeerConnectionInfo::NewTransaction(mut new_tx) => {
+                        let mut rwtxn =
+                            ctxt.env.write_txn().map_err(EnvError::from)?;
+
+                        let () = ctxt.state.regenerate_proof(
+                            &rwtxn,
+                            &mut new_tx.transaction,
+                        )?;
+                        ctxt.mempool.put(&mut rwtxn, &new_tx)?;
+                        rwtxn.commit().map_err(RwTxnError::from)?;
+                        // broadcast
+                        let () = ctxt
+                            .net
+                            .push_tx(HashSet::from_iter([addr]), new_tx);
+                    }
+                    PeerConnectionInfo::Response(boxed) => {
+                        let (resp, req) = *boxed;
+                        tracing::trace!(
+                            resp = format!("{resp:#?}"),
+                            req = format!("{req:#?}"),
+                            "mail box: received PeerConnectionInfo::Response"
+                        );
+                        let () =
+                            NetTask::<MainchainTransport>::handle_response(
+                                ctxt,
+                                &mut self.descendant_tips,
+                                new_tip_ready_tx,
+                                addr,
+                                resp,
+                                req,
+                            )
+                            .await?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug)]
 enum MailboxItem {
@@ -710,7 +931,7 @@ where
         }
     }
 
-    async fn run(mut self) -> Result<(), Error> {
+    async fn run(self) -> Result<(), Error> {
         tracing::debug!("starting net task");
         let accept_connections = stream::try_unfold((), |()| {
             let env = self.ctxt.env.clone();
@@ -755,211 +976,19 @@ where
             new_tip_ready_stream.boxed(),
             peer_info_stream.boxed(),
         ]);
-        // Attempt to switch to a descendant tip once a body has been
-        // stored, if all other ancestor bodies are available.
-        // Each descendant tip maps to the peers that sent that tip.
-        let mut descendant_tips =
-            HashMap::<Tip, HashMap<Tip, HashSet<SocketAddr>>>::new();
-        // Map associating mainchain task requests with the peer(s) that
-        // caused the request, and the request peer state ID
-        let mut mainchain_task_request_sources = HashMap::<
-            mainchain_task::Request,
-            HashSet<(SocketAddr, PeerStateId)>,
-        >::new();
+
+        let mut mailbox_state = MailboxState::new();
+
         while let Some(mailbox_item) = mailbox_stream.next().await {
             tracing::trace!(?mailbox_item, "received new mailbox item");
-            match mailbox_item {
-                MailboxItem::AcceptConnection(res) => match res {
-                    // We received a connection new incoming network connection, but no peer
-                    // was added
-                    Ok(None) => {
-                        continue;
-                    }
-                    Ok(Some(addr)) => {
-                        tracing::trace!(%addr, "accepted new incoming connection");
-                    }
-                    Err(err) => {
-                        tracing::error!(%err, "failed to accept connection");
-                    }
-                },
-                MailboxItem::ForwardMainchainTaskRequest(
-                    request,
-                    peer,
-                    peer_state_id,
-                ) => {
-                    mainchain_task_request_sources
-                        .entry(request)
-                        .or_default()
-                        .insert((peer, peer_state_id));
-                    let () = self
-                        .ctxt
-                        .mainchain_task
-                        .request(request)
-                        .map_err(|_| Error::SendMainchainTaskRequest)?;
-                }
-                MailboxItem::MainchainTaskResponse(response) => {
-                    let request = (&response).into();
-                    match response {
-                        mainchain_task::Response::AncestorHeaders(
-                            _block_hash,
-                            res,
-                        ) => {
-                            let Some(sources) =
-                                mainchain_task_request_sources.remove(&request)
-                            else {
-                                continue;
-                            };
-                            let res = res.map_err(Arc::new);
-                            for (addr, peer_state_id) in sources {
-                                let message = match res {
-                                    Ok(()) => PeerConnectionMessage::MainchainAncestors(
-                                        peer_state_id,
-                                    ),
-                                    Err(ref err) => PeerConnectionMessage::MainchainAncestorsError(
-                                        anyhow::Error::from(err.clone())
-                                    )
-                                };
-                                let () = self
-                                    .ctxt
-                                    .net
-                                    .push_internal_message(message, addr)?;
-                            }
-                        }
-                        mainchain_task::Response::VerifyBmm(
-                            _block_hash,
-                            res,
-                        ) => {
-                            let Some(sources) =
-                                mainchain_task_request_sources.remove(&request)
-                            else {
-                                continue;
-                            };
-                            let res = res.map_err(Arc::new);
-                            for (addr, peer_state_id) in sources {
-                                let message = match res {
-                                    Ok(bmm_verification_res) => PeerConnectionMessage::BmmVerification {
-                                        res: bmm_verification_res,
-                                        peer_state_id,
-                                    },
-                                    Err(ref err) => PeerConnectionMessage::BmmVerificationError(anyhow::Error::from(err.clone()))
-                                };
-                                let () = self
-                                    .ctxt
-                                    .net
-                                    .push_internal_message(message, addr)?;
-                            }
-                        }
-                    }
-                }
-                MailboxItem::NewTipReady(new_tip, _addr, resp_tx) => {
-                    let reorg_applied = reorg_to_tip(
-                        &self.ctxt.env,
-                        &self.ctxt.archive,
-                        &mut self.ctxt.cusf_mainchain,
-                        &self.ctxt.mempool,
-                        &self.ctxt.state,
-                        new_tip,
-                    )
-                    .await?;
-                    if let Some(resp_tx) = resp_tx {
-                        let () = resp_tx
-                            .send(reorg_applied)
-                            .map_err(|_| Error::SendReorgResultOneshot)?;
-                    }
-                }
-                MailboxItem::PeerInfo(None) => {
-                    return Err(Error::PeerInfoRxClosed)
-                }
-                MailboxItem::PeerInfo(Some((addr, None))) => {
-                    // peer connection is closed, remove it
-                    tracing::warn!(%addr, "Connection to peer closed");
-                    let () = self.ctxt.net.remove_active_peer(addr);
-                    continue;
-                }
-                MailboxItem::PeerInfo(Some((addr, Some(peer_info)))) => {
-                    tracing::trace!(%addr, ?peer_info, "mailbox item: received PeerInfo");
-                    match peer_info {
-                        PeerConnectionInfo::Error(err) => {
-                            let err = anyhow::anyhow!(err);
-                            tracing::error!(%addr, err = format!("{err:#}"), "Peer connection error");
-                            let () = self.ctxt.net.remove_active_peer(addr);
-                        }
-                        PeerConnectionInfo::NeedBmmVerification {
-                            main_hash,
-                            peer_state_id,
-                        } => {
-                            let request =
-                                mainchain_task::Request::VerifyBmm(main_hash);
-                            let () = self
-                                .forward_mainchain_task_request_tx
-                                .unbounded_send((request, addr, peer_state_id))
-                                .map_err(|_| {
-                                    Error::ForwardMainchainTaskRequest
-                                })?;
-                        }
-                        PeerConnectionInfo::NeedMainchainAncestors {
-                            main_hash,
-                            peer_state_id,
-                        } => {
-                            let request =
-                                mainchain_task::Request::AncestorHeaders(
-                                    main_hash,
-                                );
-                            let () = self
-                                .forward_mainchain_task_request_tx
-                                .unbounded_send((request, addr, peer_state_id))
-                                .map_err(|_| {
-                                    Error::ForwardMainchainTaskRequest
-                                })?;
-                        }
-                        PeerConnectionInfo::NewTipReady(new_tip) => {
-                            tracing::debug!(
-                                ?new_tip,
-                                %addr,
-                                "mailbox item: received NewTipReady from peer, sending on channel"
-                            );
-                            self.new_tip_ready_tx
-                                .unbounded_send((new_tip, Some(addr), None))
-                                .map_err(Error::SendNewTipReady)?;
-                        }
-                        PeerConnectionInfo::NewTransaction(mut new_tx) => {
-                            let mut rwtxn = self
-                                .ctxt
-                                .env
-                                .write_txn()
-                                .map_err(EnvError::from)?;
-                            let () = self.ctxt.state.regenerate_proof(
-                                &rwtxn,
-                                &mut new_tx.transaction,
-                            )?;
-                            self.ctxt.mempool.put(&mut rwtxn, &new_tx)?;
-                            rwtxn.commit().map_err(RwTxnError::from)?;
-                            // broadcast
-                            let () = self
-                                .ctxt
-                                .net
-                                .push_tx(HashSet::from_iter([addr]), new_tx);
-                        }
-                        PeerConnectionInfo::Response(boxed) => {
-                            let (resp, req) = *boxed;
-                            tracing::trace!(
-                                resp = format!("{resp:#?}"),
-                                req = format!("{req:#?}"),
-                                "mail box: received PeerConnectionInfo::Response"
-                            );
-                            let () = Self::handle_response(
-                                &self.ctxt,
-                                &mut descendant_tips,
-                                &self.new_tip_ready_tx,
-                                addr,
-                                resp,
-                                req,
-                            )
-                            .await?;
-                        }
-                    }
-                }
-            }
+            mailbox_state
+                .handle_mailbox_item(
+                    mailbox_item,
+                    &self.ctxt,
+                    &self.forward_mainchain_task_request_tx,
+                    &self.new_tip_ready_tx,
+                )
+                .await?;
         }
         Ok(())
     }
@@ -999,7 +1028,7 @@ impl NetTaskHandle {
         let ctxt = NetTaskContext {
             env,
             archive,
-            cusf_mainchain,
+            cusf_mainchain: std::cell::RefCell::new(cusf_mainchain),
             mainchain_task,
             mempool,
             net,
