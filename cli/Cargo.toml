@@ -9,16 +9,16 @@ version.workspace = true
 [dependencies]
 anyhow = { workspace = true }
 bitcoin = { workspace = true, features = ["serde"] }
-clap = { version = "4.5.4", features = ["derive"] }
+clap = { workspace = true, features = ["derive"] }
 http = { workspace = true }
 jsonrpsee = { workspace = true, features = ["http-client"] }
 serde_json = { workspace = true }
-thunder = { path = "../lib" }
-thunder_app_rpc_api = { path = "../rpc-api" }
+thunder = { workspace = true }
+thunder_app_rpc_api = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-url = "2.5.4"
+url = { workspace = true }
 utoipa = { workspace = true }
 uuid = { workspace = true }
 
