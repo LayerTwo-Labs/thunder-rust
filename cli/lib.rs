@@ -27,6 +27,10 @@ pub enum Command {
     FormatDepositAddress { address: Address },
     /// Generate a mnemonic seed phrase
     GenerateMnemonic,
+    /// Get the best mainchain block hash
+    GetBestMainchainBlockHash,
+    /// Get the best sidechain block hash
+    GetBestSidechainBlockHash,
     /// Get the block with specified block hash, if it exists
     GetBlock {
         block_hash: thunder::types::BlockHash,
@@ -136,6 +140,14 @@ where
         Command::GetBlock { block_hash } => {
             let block = rpc_client.get_block(block_hash).await?;
             serde_json::to_string_pretty(&block)?
+        }
+        Command::GetBestMainchainBlockHash => {
+            let block_hash = rpc_client.get_best_mainchain_block_hash().await?;
+            serde_json::to_string_pretty(&block_hash)?
+        }
+        Command::GetBestSidechainBlockHash => {
+            let block_hash = rpc_client.get_best_sidechain_block_hash().await?;
+            serde_json::to_string_pretty(&block_hash)?
         }
         Command::GetBmmInclusions { block_hash } => {
             let bmm_inclusions =

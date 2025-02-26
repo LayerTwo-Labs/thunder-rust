@@ -20,6 +20,21 @@ impl ToSchema for BitcoinAddr {
     }
 }
 
+pub struct ThunderBlockHash;
+
+impl PartialSchema for ThunderBlockHash {
+    fn schema() -> RefOr<Schema> {
+        let obj = utoipa::openapi::Object::with_type(openapi::Type::String);
+        RefOr::T(Schema::Object(obj))
+    }
+}
+
+impl ToSchema for ThunderBlockHash {
+    fn name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("thunder.BlockHash")
+    }
+}
+
 pub struct BitcoinBlockHash;
 
 impl PartialSchema for BitcoinBlockHash {

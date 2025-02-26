@@ -98,6 +98,29 @@ impl RpcServer for RpcServerImpl {
         Ok(Some(block))
     }
 
+    async fn get_best_sidechain_block_hash(
+        &self,
+    ) -> RpcResult<Option<thunder::types::BlockHash>> {
+        self.app.node.try_get_tip().map_err(custom_err)
+    }
+
+    async fn get_best_mainchain_block_hash(
+        &self,
+    ) -> RpcResult<Option<bitcoin::BlockHash>> {
+        let Some(sidechain_hash) =
+            self.app.node.try_get_tip().map_err(custom_err)?
+        else {
+            // No sidechain tip, so no best mainchain block hash.
+            return Ok(None);
+        };
+        let block_hash = self
+            .app
+            .node
+            .get_best_main_verification(sidechain_hash)
+            .map_err(custom_err)?;
+        Ok(Some(block_hash))
+    }
+
     async fn get_bmm_inclusions(
         &self,
         block_hash: thunder::types::BlockHash,
