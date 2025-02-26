@@ -24,7 +24,7 @@ pub type Hash = [u8; BLAKE3_LENGTH];
     PartialOrd,
     Serialize,
 )]
-pub struct BlockHash(pub Hash);
+pub struct BlockHash(#[serde(with = "serde_hexstr_human_readable")] pub Hash);
 
 impl From<Hash> for BlockHash {
     fn from(other: Hash) -> Self {

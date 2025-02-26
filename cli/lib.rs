@@ -14,7 +14,9 @@ pub enum Command {
     /// Get balance in sats
     Balance,
     /// Connect to a peer
-    ConnectPeer { addr: SocketAddr },
+    ConnectPeer {
+        addr: SocketAddr,
+    },
     /// Deposit to address
     CreateDeposit {
         address: Address,
@@ -24,7 +26,9 @@ pub enum Command {
         fee_sats: u64,
     },
     /// Format a deposit address
-    FormatDepositAddress { address: Address },
+    FormatDepositAddress {
+        address: Address,
+    },
     /// Generate a mnemonic seed phrase
     GenerateMnemonic,
     /// Get the best mainchain block hash
@@ -64,9 +68,13 @@ pub enum Command {
     #[command(name = "openapi-schema")]
     OpenApiSchema,
     /// Remove a tx from the mempool
-    RemoveFromMempool { txid: Txid },
+    RemoveFromMempool {
+        txid: Txid,
+    },
     /// Set the wallet seed from a mnemonic seed phrase
-    SetSeedFromMnemonic { mnemonic: String },
+    SetSeedFromMnemonic {
+        mnemonic: String,
+    },
     /// Get total sidechain wealth
     SidechainWealth,
     /// Stop the node
