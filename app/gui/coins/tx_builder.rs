@@ -108,33 +108,35 @@ impl TxBuilder {
         app: Option<&App>,
         ui: &mut egui::Ui,
     ) -> anyhow::Result<()> {
-        egui::SidePanel::left("spend_utxo")
-            .exact_width(250.)
-            .resizable(false)
-            .show_inside(ui, |ui| {
-                self.utxo_selector.show(app, ui, &mut self.base_tx);
-            });
-        egui::SidePanel::left("value_in")
-            .exact_width(250.)
-            .resizable(false)
-            .show_inside(ui, |ui| {
-                let () = self.show_value_in(app, ui);
-            });
-        egui::SidePanel::left("value_out")
-            .exact_width(250.)
-            .resizable(false)
-            .show_inside(ui, |ui| {
-                let () = self.show_value_out(ui);
-            });
-        egui::SidePanel::left("create_utxo")
-            .exact_width(450.)
-            .resizable(false)
-            .show_separator_line(false)
-            .show_inside(ui, |ui| {
-                self.utxo_creator.show(app, ui, &mut self.base_tx);
-                ui.separator();
-                self.tx_creator.show(app, ui, &mut self.base_tx).unwrap();
-            });
+        egui::ScrollArea::horizontal().show(ui, |ui| {
+            egui::SidePanel::left("spend_utxo")
+                .exact_width(250.)
+                .resizable(false)
+                .show_inside(ui, |ui| {
+                    self.utxo_selector.show(app, ui, &mut self.base_tx);
+                });
+            egui::SidePanel::left("value_in")
+                .exact_width(250.)
+                .resizable(false)
+                .show_inside(ui, |ui| {
+                    let () = self.show_value_in(app, ui);
+                });
+            egui::SidePanel::left("value_out")
+                .exact_width(250.)
+                .resizable(false)
+                .show_inside(ui, |ui| {
+                    let () = self.show_value_out(ui);
+                });
+            egui::SidePanel::left("create_utxo")
+                .exact_width(450.)
+                .resizable(false)
+                .show_separator_line(false)
+                .show_inside(ui, |ui| {
+                    self.utxo_creator.show(app, ui, &mut self.base_tx);
+                    ui.separator();
+                    self.tx_creator.show(app, ui, &mut self.base_tx).unwrap();
+                });
+        });
         Ok(())
     }
 }
