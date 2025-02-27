@@ -318,6 +318,12 @@ where
         Ok(utxos)
     }
 
+    pub fn try_get_tip(&self) -> Result<Option<BlockHash>, Error> {
+        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
+        let tip = self.state.try_get_tip(&rotxn).map_err(DbError::from)?;
+        Ok(tip)
+    }
+
     pub fn get_tip_accumulator(&self) -> Result<Accumulator, Error> {
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         Ok(self.state.get_accumulator(&rotxn)?)
@@ -396,6 +402,15 @@ where
     pub fn get_body(&self, block_hash: BlockHash) -> Result<Body, Error> {
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         Ok(self.archive.get_body(&rotxn, block_hash)?)
+    }
+
+    pub fn get_best_main_verification(
+        &self,
+        hash: BlockHash,
+    ) -> Result<bitcoin::BlockHash, Error> {
+        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
+        let hash = self.archive.get_best_main_verification(&rotxn, hash)?;
+        Ok(hash)
     }
 
     pub fn get_bmm_inclusions(

@@ -32,7 +32,9 @@ pub trait Rpc {
     #[method(name = "connect_peer")]
     async fn connect_peer(
         &self,
-        #[open_api_method_arg(schema(PartialSchema = "schema::SocketAddr"))]
+        #[open_api_method_arg(schema(
+            PartialSchema = "thunder_schema::SocketAddr"
+        ))]
         addr: SocketAddr,
     ) -> RpcResult<()>;
 
@@ -73,6 +75,24 @@ pub trait Rpc {
         &self,
         block_hash: thunder::types::BlockHash,
     ) -> RpcResult<Vec<bitcoin::BlockHash>>;
+
+    /// Get the best mainchain block hash known by Thunder
+    #[open_api_method(output_schema(
+        PartialSchema = "schema::Optional<thunder_schema::BitcoinBlockHash>"
+    ))]
+    #[method(name = "get_best_mainchain_block_hash")]
+    async fn get_best_mainchain_block_hash(
+        &self,
+    ) -> RpcResult<Option<bitcoin::BlockHash>>;
+
+    /// Get the best sidechain block hash known by Thunder
+    #[open_api_method(output_schema(
+        PartialSchema = "schema::Optional<thunder::types::BlockHash>"
+    ))]
+    #[method(name = "get_best_sidechain_block_hash")]
+    async fn get_best_sidechain_block_hash(
+        &self,
+    ) -> RpcResult<Option<thunder::types::BlockHash>>;
 
     /// Get a new address
     #[method(name = "get_new_address")]
