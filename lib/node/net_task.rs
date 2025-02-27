@@ -369,8 +369,7 @@ where
 struct NetTaskContext<MainchainTransport> {
     env: sneed::Env,
     archive: Archive,
-    cusf_mainchain:
-        std::cell::RefCell<mainchain::ValidatorClient<MainchainTransport>>,
+    cusf_mainchain: mainchain::ValidatorClient<MainchainTransport>,
     mainchain_task: MainchainTaskHandle,
     mempool: MemPool,
     net: Net,
@@ -417,7 +416,7 @@ where
     async fn handle_mailbox_item(
         &mut self,
         item: MailboxItem,
-        ctxt: &NetTaskContext<MainchainTransport>,
+        ctxt: &mut NetTaskContext<MainchainTransport>,
         forward_mainchain_task_request_tx: &UnboundedSender<(
             mainchain_task::Request,
             SocketAddr,
@@ -510,7 +509,7 @@ where
                 let reorg_applied = reorg_to_tip(
                     &ctxt.env,
                     &ctxt.archive,
-                    &mut ctxt.cusf_mainchain.borrow_mut(),
+                    &mut ctxt.cusf_mainchain,
                     &ctxt.mempool,
                     &ctxt.state,
                     new_tip,
@@ -936,24 +935,27 @@ where
         }
     }
 
-    async fn run(self) -> Result<(), Error> {
+    async fn run(mut self) -> Result<(), Error> {
         tracing::debug!("starting net task");
-        let accept_connections = stream::try_unfold((), |()| {
+        let accept_connections = stream::try_unfold((), {
             let env = self.ctxt.env.clone();
             let net = self.ctxt.net.clone();
-            let fut = async move {
-                let maybe_socket_addr = net.accept_incoming(env).await?;
+            move |()| {
+                let env = env.clone();
+                let net = net.clone();
+                let fut = async move {
+                    let maybe_socket_addr = net.accept_incoming(env).await?;
 
-                // / Return:
-                // - The value to yield (maybe_socket_addr)
-                // - The state for the next iteration (())
-                // Wrapped in Result and Option
-                Result::<Option<(Option<SocketAddr>, ())>, Error>::Ok(Some((
-                    maybe_socket_addr,
-                    (),
-                )))
-            };
-            Box::pin(fut)
+                    // / Return:
+                    // - The value to yield (maybe_socket_addr)
+                    // - The state for the next iteration (())
+                    // Wrapped in Result and Option
+                    Result::<Option<(Option<SocketAddr>, ())>, Error>::Ok(Some(
+                        (maybe_socket_addr, ()),
+                    ))
+                };
+                Box::pin(fut)
+            }
         })
         .map(MailboxItem::AcceptConnection);
         let forward_request_stream = self
@@ -992,7 +994,7 @@ where
             mailbox_state
                 .handle_mailbox_item(
                     mailbox_item,
-                    &self.ctxt,
+                    &mut self.ctxt,
                     &self.forward_mainchain_task_request_tx,
                     &self.new_tip_ready_tx,
                 )
@@ -1042,7 +1044,7 @@ impl NetTaskHandle {
         let ctxt = NetTaskContext {
             env,
             archive,
-            cusf_mainchain: std::cell::RefCell::new(cusf_mainchain),
+            cusf_mainchain,
             mainchain_task,
             mempool,
             net,
