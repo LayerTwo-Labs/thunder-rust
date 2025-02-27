@@ -1,5 +1,7 @@
 //! Schemas for OpenAPI
 
+use std::marker::PhantomData;
+
 use utoipa::{
     openapi::{self, RefOr, Schema},
     PartialSchema, ToSchema,
@@ -29,11 +31,20 @@ impl PartialSchema for OpenApi {
     }
 }
 
-pub struct SocketAddr;
+/// Optional `T`
+pub struct Optional<T>(PhantomData<T>);
 
-impl PartialSchema for SocketAddr {
-    fn schema() -> RefOr<Schema> {
-        let obj = utoipa::openapi::Object::with_type(openapi::Type::String);
-        RefOr::T(Schema::Object(obj))
+impl<T> PartialSchema for Optional<T>
+where
+    T: PartialSchema,
+{
+    fn schema() -> openapi::RefOr<openapi::schema::Schema> {
+        openapi::schema::OneOf::builder()
+            .item(
+                openapi::schema::Object::builder()
+                    .schema_type(openapi::schema::Type::Null),
+            )
+            .item(T::schema())
+            .into()
     }
 }

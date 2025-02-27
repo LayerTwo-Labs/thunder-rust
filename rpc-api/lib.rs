@@ -7,8 +7,8 @@ use l2l_openapi::open_api;
 use thunder::{
     net::Peer,
     types::{
-        schema as thunder_schema, Address, BlockHash, MerkleRoot, OutPoint,
-        Output, OutputContent, PointedOutput, Txid, WithdrawalBundle,
+        schema as thunder_schema, Address, MerkleRoot, OutPoint, Output,
+        OutputContent, PointedOutput, Txid, WithdrawalBundle,
     },
     wallet::Balance,
 };
@@ -16,7 +16,7 @@ use thunder::{
 mod schema;
 
 #[open_api(ref_schemas[
-    Address, MerkleRoot, OutPoint, Output, OutputContent, Txid, BlockHash,
+    Address, MerkleRoot, OutPoint, Output, OutputContent, Txid,
     schema::BitcoinTxid, thunder_schema::BitcoinAddr,
     thunder_schema::BitcoinOutPoint,
 ])]
@@ -32,7 +32,9 @@ pub trait Rpc {
     #[method(name = "connect_peer")]
     async fn connect_peer(
         &self,
-        #[open_api_method_arg(schema(PartialSchema = "schema::SocketAddr"))]
+        #[open_api_method_arg(schema(
+            PartialSchema = "thunder_schema::SocketAddr"
+        ))]
         addr: SocketAddr,
     ) -> RpcResult<()>;
 
@@ -76,7 +78,7 @@ pub trait Rpc {
 
     /// Get the best mainchain block hash known by Thunder
     #[open_api_method(output_schema(
-        PartialSchema = "thunder_schema::BitcoinBlockHash"
+        PartialSchema = "schema::Optional<thunder_schema::BitcoinBlockHash>"
     ))]
     #[method(name = "get_best_mainchain_block_hash")]
     async fn get_best_mainchain_block_hash(
@@ -85,7 +87,7 @@ pub trait Rpc {
 
     /// Get the best sidechain block hash known by Thunder
     #[open_api_method(output_schema(
-        PartialSchema = "thunder_schema::ThunderBlockHash"
+        PartialSchema = "schema::Optional<thunder::types::BlockHash>"
     ))]
     #[method(name = "get_best_sidechain_block_hash")]
     async fn get_best_sidechain_block_hash(
