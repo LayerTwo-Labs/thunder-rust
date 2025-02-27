@@ -51,6 +51,7 @@ tokio-util = { workspace = true, features = ["rt"] }
 tonic = { workspace = true }
 tracing = { workspace = true }
 utoipa = { workspace = true, features = ["macros", "non_strict_integers"] }
+uuid = { workspace = true }
 
 [lints]
 workspace = true

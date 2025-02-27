@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use futures::{StreamExt, TryFutureExt};
 use parking_lot::RwLock;
@@ -206,6 +206,7 @@ impl App {
             format!("{}", config.mainchain_grpc_url),
         )
         .unwrap()
+        .timeout(Duration::from_secs(10))
         .concurrency_limit(256)
         .connect_lazy();
         let (cusf_mainchain, cusf_mainchain_wallet) = if runtime

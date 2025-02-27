@@ -20,6 +20,7 @@ use tokio::{
     spawn,
     task::{self, JoinHandle},
 };
+use tracing::instrument;
 
 use crate::{
     archive::{self, Archive},
@@ -166,6 +167,7 @@ where
     /// up to and including the specified block.
     /// Mainchain headers for the specified block and all ancestors MUST exist
     /// in the archive.
+    #[instrument(skip_all, fields(main_hash), err)]
     async fn request_bmm_commitments(
         env: &sneed::Env,
         archive: &Archive,
@@ -196,10 +198,10 @@ where
                 .collect()?
         };
         missing_commitments.reverse();
-        tracing::debug!(%main_hash, "requesting ancestor bmm commitments");
+        tracing::debug!("requesting ancestor BMM commitments");
         for missing_commitment in missing_commitments {
-            tracing::trace!(%main_hash,
-                "requesting ancestor bmm commitment: {missing_commitment}"
+            tracing::trace!(
+                "requesting ancestor BMM commitment: {missing_commitment}"
             );
             let commitment = match mainchain
                 .get_bmm_hstar_commitments(missing_commitment)
@@ -208,8 +210,8 @@ where
                 Ok(commitment) => commitment,
                 Err(block_not_found) => return Ok(Err(block_not_found)),
             };
-            tracing::trace!(%main_hash,
-                "storing ancestor bmm commitment: {missing_commitment}"
+            tracing::trace!(
+                "storing ancestor BMM commitment: {missing_commitment}"
             );
             {
                 let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
@@ -220,8 +222,8 @@ where
                 )?;
                 rwtxn.commit().map_err(RwTxnError::from)?;
             }
-            tracing::trace!(%main_hash,
-                "stored ancestor bmm commitment: {missing_commitment}"
+            tracing::trace!(
+                "stored ancestor BMM commitment: {missing_commitment}"
             );
         }
         Ok(Ok(()))
