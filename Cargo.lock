@@ -6018,6 +6018,7 @@ dependencies = [
  "tonic-build",
  "tracing",
  "utoipa",
+ "uuid",
 ]
 
 [[package]]
