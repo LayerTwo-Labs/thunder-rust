@@ -66,7 +66,7 @@ pub enum Error {
     #[error(transparent)]
     NoInitialCipherSuite(#[from] quinn::crypto::rustls::NoInitialCipherSuite),
     #[error("peer connection")]
-    PeerConnection(#[from] PeerConnectionError),
+    PeerConnection(#[source] Box<PeerConnectionError>),
     #[error("quinn rustls error")]
     QuinnRustls(#[from] quinn::crypto::rustls::Error),
     #[error("rcgen")]
@@ -79,6 +79,12 @@ pub enum Error {
     ServerEndpointClosed,
     #[error("write error")]
     Write(#[from] quinn::WriteError),
+}
+
+impl From<PeerConnectionError> for Error {
+    fn from(err: PeerConnectionError) -> Self {
+        Self::PeerConnection(Box::new(err))
+    }
 }
 
 /// Dummy certificate verifier that treats any certificate as valid.

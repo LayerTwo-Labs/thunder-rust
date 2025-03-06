@@ -64,7 +64,7 @@ pub enum Error {
     #[error("net error")]
     Net(#[from] net::Error),
     #[error("net task error")]
-    NetTask(#[from] net_task::Error),
+    NetTask(#[source] Box<net_task::Error>),
     #[error("No CUSF mainchain wallet client")]
     NoCusfMainchainWalletClient,
     #[error("peer info stream closed")]
@@ -74,11 +74,23 @@ pub enum Error {
     #[error("Send mainchain task request failed")]
     SendMainchainTaskRequest,
     #[error("state error")]
-    State(#[from] state::Error),
+    State(#[source] Box<state::Error>),
     #[error("Utreexo error: {0}")]
     Utreexo(String),
     #[error("Verify BMM error")]
     VerifyBmm(anyhow::Error),
+}
+
+impl From<net_task::Error> for Error {
+    fn from(err: net_task::Error) -> Self {
+        Self::NetTask(Box::new(err))
+    }
+}
+
+impl From<state::Error> for Error {
+    fn from(err: state::Error) -> Self {
+        Self::State(Box::new(err))
+    }
 }
 
 /// Request any missing two way peg data up to the specified block hash.

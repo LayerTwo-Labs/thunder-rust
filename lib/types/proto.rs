@@ -14,7 +14,7 @@ pub trait Transport = where
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(transparent)]
-    Grpc(#[from] tonic::Status),
+    Grpc(Box<tonic::Status>),
     #[error("Invalid enum variant in field `{field_name}` of message `{message_name}`: `{variant_name}`")]
     InvalidEnumVariant {
         field_name: String,
@@ -99,6 +99,12 @@ impl Error {
     }
 }
 
+impl From<tonic::Status> for Error {
+    fn from(err: tonic::Status) -> Self {
+        Self::Grpc(Box::new(err))
+    }
+}
+
 pub mod common {
     pub mod generated {
         tonic::include_proto!("cusf.common.v1");
@@ -127,13 +133,14 @@ pub mod common {
         pub fn decode_tonic<Message, T>(
             self,
             field_name: &str,
-        ) -> Result<T, tonic::Status>
+        ) -> Result<T, Box<tonic::Status>>
         where
             Message: prost::Name,
             T: bitcoin::consensus::Decodable,
         {
-            self.decode::<Message, _>(field_name)
-                .map_err(|err| tonic::Status::from_error(Box::new(err)))
+            self.decode::<Message, _>(field_name).map_err(|err| {
+                Box::new(tonic::Status::from_error(Box::new(err)))
+            })
         }
 
         pub fn encode<T>(value: &T) -> Self
@@ -214,13 +221,14 @@ pub mod common {
         pub fn decode_tonic<Message, T>(
             self,
             field_name: &str,
-        ) -> Result<T, tonic::Status>
+        ) -> Result<T, Box<tonic::Status>>
         where
             Message: prost::Name,
             T: bitcoin::consensus::Decodable,
         {
-            self.decode::<Message, _>(field_name)
-                .map_err(|err| tonic::Status::from_error(Box::new(err)))
+            self.decode::<Message, _>(field_name).map_err(|err| {
+                Box::new(tonic::Status::from_error(Box::new(err)))
+            })
         }
 
         pub fn encode<T>(value: &T) -> Self
