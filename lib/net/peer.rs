@@ -79,8 +79,11 @@ pub enum ConnectionError {
     SendInfo,
     #[error("state error")]
     State(#[from] state::Error),
-    #[error("write error")]
-    Write(#[from] quinn::WriteError),
+    #[error("write error ({stream_id})")]
+    Write {
+        stream_id: quinn::StreamId,
+        source: quinn::WriteError,
+    },
 }
 
 impl From<mpsc::TrySendError<Info>> for ConnectionError {
@@ -293,7 +296,7 @@ impl Connection {
             Request::GetHeaders {
                 height: Some(height),
                 ..
-            } => *height as usize * Self::READ_HEADER_LIMIT,
+            } => (*height as usize + 1) * Self::READ_HEADER_LIMIT,
             // Should have no response, so limit zero
             Request::Heartbeat(_) => 0,
             Request::PushTransaction { .. } => Self::READ_TX_ACK_LIMIT,
@@ -320,9 +323,15 @@ impl Connection {
         &self,
     ) -> Result<(Request, SendStream), ConnectionError> {
         let (tx, mut rx) = self.0.accept_bi().await?;
+        tracing::trace!(recv_id = %rx.id(), "Receiving request");
         let request_bytes =
             rx.read_to_end(Connection::READ_REQUEST_LIMIT).await?;
         let request: Request = bincode::deserialize(&request_bytes)?;
+        tracing::trace!(
+            recv_id = %rx.id(),
+            ?request,
+            "Received request"
+        );
         Ok((request, tx))
     }
 
@@ -332,12 +341,28 @@ impl Connection {
     ) -> Result<Option<Response>, ConnectionError> {
         let read_response_limit = Self::read_response_limit(message);
         let (mut send, mut recv) = self.0.open_bi().await?;
+        tracing::trace!(
+            request = ?message,
+            send_id = %send.id(),
+            "Sending request"
+        );
         let message = bincode::serialize(message)?;
-        send.write_all(&message).await?;
+        send.write_all(&message).await.map_err(|err| {
+            ConnectionError::Write {
+                stream_id: send.id(),
+                source: err,
+            }
+        })?;
         send.finish()?;
         if read_response_limit > 0 {
+            tracing::trace!(recv_id = %recv.id(), "Receiving response");
             let response_bytes = recv.read_to_end(read_response_limit).await?;
             let response: Response = bincode::deserialize(&response_bytes)?;
+            tracing::trace!(
+                recv_id = %recv.id(),
+                ?response,
+                "Received response"
+            );
             Ok(Some(response))
         } else {
             Ok(None)
@@ -385,11 +410,18 @@ impl ConnectionTask {
         mut response_tx: SendStream,
         response: Response,
     ) -> Result<(), ConnectionError> {
+        tracing::trace!(
+            ?response,
+            send_id = %response_tx.id(),
+            "Sending response"
+        );
         let response_bytes = bincode::serialize(&response)?;
-        response_tx
-            .write_all(&response_bytes)
-            .await
-            .map_err(ConnectionError::from)
+        response_tx.write_all(&response_bytes).await.map_err(|err| {
+            ConnectionError::Write {
+                stream_id: response_tx.id(),
+                source: err,
+            }
+        })
     }
 
     /// Check if peer tip is better, requesting headers if necessary.
