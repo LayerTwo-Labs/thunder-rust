@@ -253,6 +253,7 @@ pub mod mainchain {
     };
     use futures::{stream::BoxStream, StreamExt as _, TryStreamExt as _};
     use hashlink::LinkedHashMap;
+    use nonempty::NonEmpty;
     use serde::{Deserialize, Serialize};
     use thiserror::Error;
 
@@ -317,8 +318,29 @@ pub mod mainchain {
         }
     }
 
+    impl
+        TryFrom<
+            generated::get_bmm_h_star_commitment_response::OptionalCommitment,
+        > for Option<crate::types::BlockHash>
+    {
+        type Error = super::Error;
+
+        fn try_from(
+            commitment: generated::get_bmm_h_star_commitment_response::OptionalCommitment,
+        ) -> Result<Self, Self::Error> {
+            let generated::get_bmm_h_star_commitment_response::OptionalCommitment {
+                commitment,
+            } = commitment;
+            let Some(commitment) = commitment else {
+                return Ok(None);
+            };
+            commitment.decode::<generated::get_bmm_h_star_commitment_response::OptionalCommitment, _>("commitment")
+                .map(|block_hash| Some(crate::types::BlockHash(block_hash)))
+        }
+    }
+
     impl TryFrom<generated::get_bmm_h_star_commitment_response::Commitment>
-        for Option<crate::types::BlockHash>
+        for nonempty::NonEmpty<Option<crate::types::BlockHash>>
     {
         type Error = super::Error;
 
@@ -327,17 +349,28 @@ pub mod mainchain {
         ) -> Result<Self, Self::Error> {
             let generated::get_bmm_h_star_commitment_response::Commitment {
                 commitment,
+                ancestor_commitments,
             } = commitment;
-            let Some(commitment) = commitment else {
-                return Ok(None);
-            };
-            commitment.decode::<generated::get_bmm_h_star_commitment_response::Commitment, _>("commitment")
-                .map(|block_hash| Some(crate::types::BlockHash(block_hash)))
+            let commitment = commitment.map(|commitment|
+                commitment.decode::<generated::get_bmm_h_star_commitment_response::Commitment, _>("commitment")
+                .map(crate::types::BlockHash)
+            ).transpose()?;
+            let ancestor_commitments = ancestor_commitments
+                .into_iter()
+                .map(|ancestor_commitment| ancestor_commitment.try_into())
+                .collect::<Result<_, _>>()?;
+            Ok(nonempty::NonEmpty {
+                head: commitment,
+                tail: ancestor_commitments,
+            })
         }
     }
 
     impl TryFrom<generated::get_bmm_h_star_commitment_response::Result>
-        for Result<Option<crate::types::BlockHash>, BlockNotFoundError>
+        for Result<
+            nonempty::NonEmpty<Option<crate::types::BlockHash>>,
+            BlockNotFoundError,
+        >
     {
         type Error = super::Error;
 
@@ -918,9 +951,12 @@ pub mod mainchain {
         ) -> Result<BlockHeaderInfo, super::Error> {
             let request = generated::GetBlockHeaderInfoRequest {
                 block_hash: Some(ReverseHex::encode(&block_hash)),
+                max_ancestors: Some(0),
             };
-            let generated::GetBlockHeaderInfoResponse { header_info } =
-                self.0.get_block_header_info(request).await?.into_inner();
+            let generated::GetBlockHeaderInfoResponse {
+                header_info,
+                ancestor_infos: _,
+            } = self.0.get_block_header_info(request).await?.into_inner();
             let Some(header_info) = header_info else {
                 return Err(super::Error::missing_field::<
                     generated::GetBlockHeaderInfoResponse,
@@ -929,16 +965,67 @@ pub mod mainchain {
             header_info.try_into()
         }
 
+        pub async fn get_block_header_infos(
+            &mut self,
+            block_hash: BlockHash,
+            max_ancestors: u32,
+        ) -> Result<NonEmpty<BlockHeaderInfo>, super::Error> {
+            let request = generated::GetBlockHeaderInfoRequest {
+                block_hash: Some(ReverseHex::encode(&block_hash)),
+                max_ancestors: Some(max_ancestors),
+            };
+            let generated::GetBlockHeaderInfoResponse {
+                header_info,
+                ancestor_infos,
+            } = self.0.get_block_header_info(request).await?.into_inner();
+            let header_info: BlockHeaderInfo = header_info
+                .ok_or_else(|| {
+                    super::Error::missing_field::<
+                        generated::GetBlockHeaderInfoResponse,
+                    >("header_info")
+                })?
+                .try_into()?;
+            let mut expected_block_hash = header_info.prev_block_hash;
+            let ancestor_infos = ancestor_infos
+                .into_iter()
+                .map(|ancestor_info| {
+                    let ancestor_info: BlockHeaderInfo =
+                        ancestor_info.try_into()?;
+                    // Check that ancestor infos are sequential
+                    if ancestor_info.block_hash == expected_block_hash {
+                        expected_block_hash = ancestor_info.prev_block_hash;
+                        Ok(ancestor_info)
+                    } else {
+                        Err(super::Error::invalid_repeated_value::<
+                            generated::GetBlockHeaderInfoResponse,
+                        >(
+                            "ancestor_infos",
+                            &serde_json::to_string(&ancestor_info).unwrap(),
+                        ))
+                    }
+                })
+                .collect::<Result<_, _>>()?;
+            Ok(NonEmpty {
+                head: header_info,
+                tail: ancestor_infos,
+            })
+        }
+
         pub async fn get_bmm_hstar_commitments(
             &mut self,
             block_hash: BlockHash,
+            max_ancestors: u32,
         ) -> Result<
-            Result<Option<crate::types::BlockHash>, BlockNotFoundError>,
+            Result<
+                nonempty::NonEmpty<Option<crate::types::BlockHash>>,
+                BlockNotFoundError,
+            >,
             super::Error,
         > {
             let request = generated::GetBmmHStarCommitmentRequest {
                 block_hash: Some(ReverseHex::encode(&block_hash)),
                 sidechain_id: Some(THIS_SIDECHAIN as u32),
+                max_ancestors: Some(max_ancestors),
             };
             let generated::GetBmmHStarCommitmentResponse { result } = self
                 .0

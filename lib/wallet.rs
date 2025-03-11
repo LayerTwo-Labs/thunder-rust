@@ -8,15 +8,12 @@ use byteorder::{BigEndian, ByteOrder};
 use ed25519_dalek_bip32::{ChildIndex, DerivationPath, ExtendedSigningKey};
 use fallible_iterator::FallibleIterator as _;
 use futures::{Stream, StreamExt};
-use heed::{
-    types::{Bytes, SerdeBincode, U8},
-    RoTxn,
-};
+use heed::types::{Bytes, SerdeBincode, U8};
 use rustreexo::accumulator::node_hash::BitcoinNodeHash;
 use serde::{Deserialize, Serialize};
 use sneed::{
-    db::error::Error as DbError, DatabaseUnique, Env, EnvError, RwTxnError,
-    UnitKey,
+    db::error::Error as DbError, DatabaseUnique, Env, EnvError, RoTxn,
+    RwTxnError, UnitKey,
 };
 use tokio_stream::{wrappers::WatchStream, StreamMap};
 

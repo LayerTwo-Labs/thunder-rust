@@ -117,6 +117,7 @@ where
         let mut header_infos = Vec::<mainchain::BlockHeaderInfo>::new();
         tracing::debug!(%block_hash, "requesting ancestor headers");
         const LOG_PROGRESS_INTERVAL: Duration = Duration::from_secs(5);
+        const BATCH_REQUEST_SIZE: u32 = 1000;
         let mut progress_logged = Instant::now();
         loop {
             if let Some(current_height) = current_height {
@@ -130,12 +131,18 @@ where
                 }
                 tracing::trace!(%block_hash, "requesting ancestor headers: {current_block_hash}({current_height})")
             }
-            let header_info = cusf_mainchain
-                .get_block_header_info(current_block_hash)
+            let header_infos_resp = cusf_mainchain
+                .get_block_header_infos(
+                    current_block_hash,
+                    BATCH_REQUEST_SIZE - 1,
+                )
                 .await?;
-            current_block_hash = header_info.prev_block_hash;
-            current_height = header_info.height.checked_sub(1);
-            header_infos.push(header_info);
+            {
+                let current = header_infos_resp.last();
+                current_block_hash = current.prev_block_hash;
+                current_height = current.height.checked_sub(1);
+            }
+            header_infos.extend(header_infos_resp);
             if current_block_hash == bitcoin::BlockHash::all_zeros() {
                 break;
             } else {
@@ -195,33 +202,62 @@ where
                 })
                 .collect()?
         };
-        missing_commitments.reverse();
         tracing::debug!(%main_hash, "requesting ancestor bmm commitments");
-        for missing_commitment in missing_commitments {
+        const BATCH_REQUEST_SIZE: usize = 1000;
+        while !missing_commitments.is_empty() {
+            let len = missing_commitments.len();
+            let max_ancestors = if len >= BATCH_REQUEST_SIZE {
+                BATCH_REQUEST_SIZE - 1
+            } else {
+                len - 1
+            };
+            let batch_start_idx = len - 1 - max_ancestors;
+            let batch_start = missing_commitments[batch_start_idx];
+            let batch_end = *missing_commitments.last().unwrap();
             tracing::trace!(%main_hash,
-                "requesting ancestor bmm commitment: {missing_commitment}"
+                %batch_start,
+                %batch_end,
+                "requesting ancestor bmm commitments"
             );
-            let commitment = match mainchain
-                .get_bmm_hstar_commitments(missing_commitment)
+            let commitments = match mainchain
+                .get_bmm_hstar_commitments(batch_start, max_ancestors as u32)
                 .await?
             {
-                Ok(commitment) => commitment,
+                Ok(commitments) => commitments,
                 Err(block_not_found) => return Ok(Err(block_not_found)),
             };
+            if commitments.tail.len() < max_ancestors {
+                // A commitment was missing, return an error
+                let err = mainchain::BlockNotFoundError(
+                    missing_commitments
+                        [batch_start_idx + commitments.tail.len() + 1],
+                );
+                return Ok(Err(err));
+            }
             tracing::trace!(%main_hash,
-                "storing ancestor bmm commitment: {missing_commitment}"
+                %batch_start,
+                %batch_end,
+                "storing ancestor bmm commitments"
             );
             {
                 let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
-                archive.put_main_bmm_commitment(
-                    &mut rwtxn,
-                    missing_commitment,
-                    commitment,
-                )?;
+                missing_commitments
+                    .drain(batch_start_idx..)
+                    .rev()
+                    .zip(commitments.into_iter().rev())
+                    .try_for_each(|(missing_commitment, commitment)| {
+                        archive.put_main_bmm_commitment(
+                            &mut rwtxn,
+                            missing_commitment,
+                            commitment,
+                        )
+                    })?;
                 rwtxn.commit().map_err(RwTxnError::from)?;
             }
             tracing::trace!(%main_hash,
-                "stored ancestor bmm commitment: {missing_commitment}"
+                %batch_start,
+                %batch_end,
+                "stored ancestor bmm commitments"
             );
         }
         Ok(Ok(()))
