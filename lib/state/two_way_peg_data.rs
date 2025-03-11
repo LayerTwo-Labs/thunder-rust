@@ -3,8 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use fallible_iterator::FallibleIterator;
-use heed::RoTxn;
-use sneed::{db::error::Error as DbError, RwTxn};
+use sneed::{db::error::Error as DbError, RoTxn, RwTxn};
 
 use crate::{
     state::{
@@ -414,10 +413,7 @@ pub fn connect(
     rwtxn: &mut RwTxn,
     two_way_peg_data: &TwoWayPegData,
 ) -> Result<(), Error> {
-    let block_height = state
-        .try_get_height(rwtxn)
-        .map_err(DbError::from)?
-        .ok_or(Error::NoTip)?;
+    let block_height = state.try_get_height(rwtxn)?.ok_or(Error::NoTip)?;
     tracing::trace!(%block_height, "Connecting 2WPD...");
     let mut accumulator = state
         .utreexo_accumulator
@@ -791,8 +787,7 @@ pub fn disconnect(
     two_way_peg_data: &TwoWayPegData,
 ) -> Result<(), Error> {
     let block_height = state
-        .try_get_height(rwtxn)
-        .map_err(DbError::from)?
+        .try_get_height(rwtxn)?
         .expect("Height should not be None");
     let mut accumulator = state
         .utreexo_accumulator

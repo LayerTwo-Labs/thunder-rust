@@ -2,14 +2,14 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use fallible_iterator::FallibleIterator;
 use futures::Stream;
-use heed::{types::SerdeBincode, RoTxn};
+use heed::types::SerdeBincode;
 use rustreexo::accumulator::{node_hash::BitcoinNodeHash, proof::Proof};
 use serde::{Deserialize, Serialize};
 use sneed::{
     db::error::{self as db_error, Error as DbError},
     env::Error as EnvError,
     rwtxn::Error as RwTxnError,
-    DatabaseUnique, RwTxn, UnitKey,
+    DatabaseUnique, RoTxn, RwTxn, UnitKey,
 };
 
 use crate::{
@@ -164,15 +164,12 @@ impl State {
     pub fn try_get_tip(
         &self,
         rotxn: &RoTxn,
-    ) -> Result<Option<BlockHash>, db_error::TryGet> {
+    ) -> Result<Option<BlockHash>, Error> {
         let tip = self.tip.try_get(rotxn, &())?;
         Ok(tip)
     }
 
-    pub fn try_get_height(
-        &self,
-        rotxn: &RoTxn,
-    ) -> Result<Option<u32>, db_error::TryGet> {
+    pub fn try_get_height(&self, rotxn: &RoTxn) -> Result<Option<u32>, Error> {
         let height = self.height.try_get(rotxn, &())?;
         Ok(height)
     }

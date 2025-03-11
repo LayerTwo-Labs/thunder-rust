@@ -14,7 +14,7 @@ use fallible_iterator::FallibleIterator;
 use futures::{channel::mpsc, stream, StreamExt, TryFutureExt, TryStreamExt};
 use quinn::SendStream;
 use serde::{Deserialize, Serialize};
-use sneed::{db::error::Error as DbError, EnvError};
+use sneed::{DbError, EnvError};
 use thiserror::Error;
 use tokio::{
     spawn,
@@ -60,7 +60,7 @@ pub enum ConnectionError {
     #[error("connection error")]
     Connection(#[from] quinn::ConnectionError),
     #[error(transparent)]
-    Db(#[from] sneed::db::error::Error),
+    Db(#[from] DbError),
     #[error("Database env error")]
     DbEnv(#[from] sneed::env::Error),
     #[error("Heartbeat timeout")]
@@ -827,15 +827,12 @@ impl ConnectionTask {
         };
         let tip_info = 'tip_info: {
             let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
-            let Some(tip) =
-                ctxt.state.try_get_tip(&rotxn).map_err(DbError::from)?
-            else {
+            let Some(tip) = ctxt.state.try_get_tip(&rotxn)? else {
                 break 'tip_info None;
             };
             let tip_height = ctxt
                 .state
-                .try_get_height(&rotxn)
-                .map_err(DbError::from)?
+                .try_get_height(&rotxn)?
                 .expect("Height should be known for tip");
             let bmm_verification =
                 ctxt.archive.get_best_main_verification(&rotxn, tip)?;
@@ -1215,19 +1212,14 @@ impl ConnectionTask {
                     let tip_info = 'tip_info: {
                         let rotxn =
                             self.ctxt.env.read_txn().map_err(EnvError::from)?;
-                        let Some(tip) = self
-                            .ctxt
-                            .state
-                            .try_get_tip(&rotxn)
-                            .map_err(DbError::from)?
+                        let Some(tip) = self.ctxt.state.try_get_tip(&rotxn)?
                         else {
                             break 'tip_info None;
                         };
                         let tip_height = self
                             .ctxt
                             .state
-                            .try_get_height(&rotxn)
-                            .map_err(DbError::from)?
+                            .try_get_height(&rotxn)?
                             .expect("Height for tip should be known");
                         let bmm_verification = self
                             .ctxt

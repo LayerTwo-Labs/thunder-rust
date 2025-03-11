@@ -1,10 +1,10 @@
 use std::collections::VecDeque;
 
 use fallible_iterator::FallibleIterator as _;
-use heed::{types::SerdeBincode, RoTxn};
+use heed::types::SerdeBincode;
 use sneed::{
-    db::error::Error as DbError, DatabaseUnique, EnvError, RwTxn, RwTxnError,
-    UnitKey,
+    db::error::Error as DbError, DatabaseUnique, EnvError, RoTxn, RwTxn,
+    RwTxnError, UnitKey,
 };
 
 use crate::types::{

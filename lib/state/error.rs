@@ -1,4 +1,6 @@
+use sneed::{db::error as db, env::error as env, rwtxn::error as rwtxn};
 use thiserror::Error;
+use transitive::Transitive;
 
 use crate::types::{
     AmountOverflowError, AmountUnderflowError, BlockHash, M6id, MerkleRoot,
@@ -19,7 +21,20 @@ pub enum InvalidHeader {
     },
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Error, Transitive)]
+#[transitive(from(db::Clear, db::Error))]
+#[transitive(from(db::Delete, db::Error))]
+#[transitive(from(db::Error, sneed::Error))]
+#[transitive(from(db::IterInit, db::Error))]
+#[transitive(from(db::IterItem, db::Error))]
+#[transitive(from(db::Last, db::Error))]
+#[transitive(from(db::Put, db::Error))]
+#[transitive(from(db::TryGet, db::Error))]
+#[transitive(from(env::CreateDb, env::Error))]
+#[transitive(from(env::Error, sneed::Error))]
+#[transitive(from(env::WriteTxn, env::Error))]
+#[transitive(from(rwtxn::Commit, rwtxn::Error))]
+#[transitive(from(rwtxn::Error, sneed::Error))]
 pub enum Error {
     #[error("failed to verify authorization")]
     AuthorizationError,
@@ -32,11 +47,7 @@ pub enum Error {
     #[error(transparent)]
     BorshSerialize(borsh::io::Error),
     #[error(transparent)]
-    Db(#[from] sneed::db::error::Error),
-    #[error("Database env error")]
-    DbEnv(#[from] sneed::env::Error),
-    #[error("Database write error")]
-    DbWrite(#[from] sneed::rwtxn::Error),
+    Db(#[from] sneed::Error),
     #[error("invalid body: expected merkle root {expected}, but computed {computed}")]
     InvalidBody {
         expected: MerkleRoot,

@@ -2,9 +2,8 @@
 
 use std::collections::HashSet;
 
-use heed::RoTxn;
 use rustreexo::accumulator::node_hash::BitcoinNodeHash;
-use sneed::{db::error::Error as DbError, RwTxn};
+use sneed::{db::error::Error as DbError, RoTxn, RwTxn};
 
 use crate::{
     state::{error, Error, State},
@@ -22,7 +21,7 @@ pub fn validate(
     header: &Header,
     body: &Body,
 ) -> Result<bitcoin::Amount, Error> {
-    let tip_hash = state.try_get_tip(rotxn).map_err(DbError::from)?;
+    let tip_hash = state.try_get_tip(rotxn)?;
     if header.prev_side_hash != tip_hash {
         let err = error::InvalidHeader::PrevSideHash {
             expected: tip_hash,
@@ -30,10 +29,7 @@ pub fn validate(
         };
         return Err(Error::InvalidHeader(err));
     };
-    let height = state
-        .try_get_height(rotxn)
-        .map_err(DbError::from)?
-        .map_or(0, |height| height + 1);
+    let height = state.try_get_height(rotxn)?.map_or(0, |height| height + 1);
     if body.authorizations.len() > State::body_sigops_limit(height) {
         return Err(Error::TooManySigops);
     }
@@ -143,7 +139,7 @@ pub fn connect(
     header: &Header,
     body: &Body,
 ) -> Result<(), Error> {
-    let tip_hash = state.try_get_tip(rwtxn).map_err(DbError::from)?;
+    let tip_hash = state.try_get_tip(rwtxn)?;
     if tip_hash != header.prev_side_hash {
         let err = error::InvalidHeader::PrevSideHash {
             expected: tip_hash,
@@ -223,10 +219,7 @@ pub fn connect(
         }
     }
     let block_hash = header.hash();
-    let height = state
-        .try_get_height(rwtxn)
-        .map_err(DbError::from)?
-        .map_or(0, |height| height + 1);
+    let height = state.try_get_height(rwtxn)?.map_or(0, |height| height + 1);
     state
         .tip
         .put(rwtxn, &(), &block_hash)
@@ -355,8 +348,7 @@ pub fn disconnect_tip(
             }
         })?;
     let height = state
-        .try_get_height(rwtxn)
-        .map_err(DbError::from)?
+        .try_get_height(rwtxn)?
         .expect("Height should not be None");
     match (header.prev_side_hash, height) {
         (None, 0) => {

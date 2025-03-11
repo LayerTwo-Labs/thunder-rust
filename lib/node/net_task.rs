@@ -15,7 +15,7 @@ use futures::{
     },
     stream, StreamExt,
 };
-use sneed::{db::error::Error as DbError, EnvError, RwTxn, RwTxnError};
+use sneed::{db, DbError, EnvError, RwTxn, RwTxnError};
 use thiserror::Error;
 use tokio::task::JoinHandle;
 use tokio_stream::StreamNotifyClose;
@@ -36,7 +36,10 @@ use crate::{
     },
 };
 
-#[derive(Debug, Error)]
+#[allow(clippy::duplicated_attributes)]
+#[derive(transitive::Transitive, Debug, Error)]
+#[transitive(from(db::error::IterInit, DbError))]
+#[transitive(from(db::error::IterItem, DbError))]
 pub enum Error {
     #[error("archive error")]
     Archive(#[from] archive::Error),
@@ -121,7 +124,7 @@ where
     let _fees: bitcoin::Amount = state.validate_block(rwtxn, header, body)?;
     if tracing::enabled!(tracing::Level::DEBUG) {
         let merkle_root = body.compute_merkle_root();
-        let height = state.try_get_height(rwtxn).map_err(DbError::from)?;
+        let height = state.try_get_height(rwtxn)?;
         let () = state.connect_block(rwtxn, header, body)?;
         tracing::debug!(?height, %merkle_root, %block_hash,
                             "connected body")
@@ -150,16 +153,11 @@ async fn disconnect_tip_<Transport>(
 where
     Transport: proto::Transport,
 {
-    let tip_block_hash = state
-        .try_get_tip(rwtxn)
-        .map_err(DbError::from)?
-        .ok_or(state::Error::NoTip)?;
+    let tip_block_hash =
+        state.try_get_tip(rwtxn)?.ok_or(state::Error::NoTip)?;
     let tip_header = archive.get_header(rwtxn, tip_block_hash)?;
     let tip_body = archive.get_body(rwtxn, tip_block_hash)?;
-    let height = state
-        .try_get_height(rwtxn)
-        .map_err(DbError::from)?
-        .ok_or(state::Error::NoTip)?;
+    let height = state.try_get_height(rwtxn)?.ok_or(state::Error::NoTip)?;
     let two_way_peg_data = {
         let last_applied_deposit_block = state
             .deposit_blocks
@@ -233,7 +231,7 @@ where
     // TODO: revert accumulator only necessary because rustreexo does not
     // support undo yet
     {
-        match state.try_get_tip(rwtxn).map_err(DbError::from)? {
+        match state.try_get_tip(rwtxn)? {
             Some(new_tip) => {
                 let accumulator = archive.get_accumulator(rwtxn, new_tip)?;
                 let () = state
@@ -273,15 +271,19 @@ where
     Transport: proto::Transport,
 {
     let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
-    let tip_hash = state.try_get_tip(&rwtxn).map_err(DbError::from)?;
-    let tip_height = state.try_get_height(&rwtxn).map_err(DbError::from)?;
-    if let Some(tip_hash) = tip_hash {
-        let bmm_verification =
-            archive.get_best_main_verification(&rwtxn, tip_hash)?;
-        let tip = Tip {
-            block_hash: tip_hash,
-            main_block_hash: bmm_verification,
-        };
+    let tip_height = state.try_get_height(&rwtxn)?;
+    let tip = state
+        .try_get_tip(&rwtxn)?
+        .map(|tip_hash| {
+            let bmm_verification =
+                archive.get_best_main_verification(&rwtxn, tip_hash)?;
+            Ok::<_, Error>(Tip {
+                block_hash: tip_hash,
+                main_block_hash: bmm_verification,
+            })
+        })
+        .transpose()?;
+    if let Some(tip) = tip {
         // check that new tip is better than current tip
         if archive.better_tip(&rwtxn, tip, new_tip)? != Some(new_tip) {
             tracing::debug!(
@@ -292,8 +294,12 @@ where
             return Ok(false);
         }
     }
-    let common_ancestor = if let Some(tip_hash) = tip_hash {
-        archive.last_common_ancestor(&rwtxn, tip_hash, new_tip.block_hash)?
+    let common_ancestor = if let Some(tip) = tip {
+        archive.last_common_ancestor(
+            &rwtxn,
+            tip.block_hash,
+            new_tip.block_hash,
+        )?
     } else {
         None
     };
@@ -319,7 +325,7 @@ where
                 None
             };
         tracing::debug!(
-            ?tip_hash,
+            ?tip,
             ?tip_height,
             ?common_ancestor,
             ?common_ancestor_height,
@@ -342,8 +348,10 @@ where
             .await?;
         }
     }
-    let tip = state.try_get_tip(&rwtxn).map_err(DbError::from)?;
-    assert_eq!(tip, common_ancestor);
+    {
+        let tip_hash = state.try_get_tip(&rwtxn)?;
+        assert_eq!(tip_hash, common_ancestor);
+    }
     // Apply blocks until new tip is reached
     for (header, body) in blocks_to_apply.into_iter().rev() {
         let () = connect_tip_(
@@ -356,8 +364,23 @@ where
             &body,
         )
         .await?;
+        let new_tip_hash = state.try_get_tip(&rwtxn)?.unwrap();
+        let bmm_verification =
+            archive.get_best_main_verification(&rwtxn, new_tip_hash)?;
+        let new_tip = Tip {
+            block_hash: new_tip_hash,
+            main_block_hash: bmm_verification,
+        };
+        if let Some(tip) = tip
+            && archive.better_tip(&rwtxn, tip, new_tip)? != Some(new_tip)
+        {
+            continue;
+        }
+        rwtxn.commit().map_err(RwTxnError::from)?;
+        tracing::info!("synced to tip: {}", new_tip.block_hash);
+        rwtxn = env.write_txn().map_err(EnvError::from)?;
     }
-    let tip = state.try_get_tip(&rwtxn).map_err(DbError::from)?;
+    let tip = state.try_get_tip(&rwtxn)?;
     assert_eq!(tip, Some(new_tip.block_hash));
     rwtxn.commit().map_err(RwTxnError::from)?;
     tracing::info!("synced to tip: {}", new_tip.block_hash);
@@ -475,10 +498,7 @@ where
                 // and send new tip ready if so
                 {
                     let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
-                    let tip_hash = ctxt
-                        .state
-                        .try_get_tip(&rotxn)
-                        .map_err(DbError::from)?;
+                    let tip_hash = ctxt.state.try_get_tip(&rotxn)?;
                     // Find the BMM verification that is an ancestor of
                     // `main_descendant_tip`
                     let main_block_hash = ctxt

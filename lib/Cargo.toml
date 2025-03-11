@@ -41,7 +41,7 @@ semver = { version = "1.0.25", features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 serde_with = { version = "3.4.0" }
-sneed = { version = "0.0.9", features = ["observe"] }
+sneed = { version = "0.0.11", features = ["observe"] }
 strum = { workspace = true }
 thiserror = { workspace = true }
 tiny-bip39 = { workspace = true }
@@ -50,6 +50,7 @@ tokio-stream = { version = "0.1.15", features = ["sync"] }
 tokio-util = { workspace = true, features = ["rt"] }
 tonic = { workspace = true }
 tracing = { workspace = true }
+transitive = "1.0.1"
 utoipa = { workspace = true, features = ["macros", "non_strict_integers"] }
 
 [lints]

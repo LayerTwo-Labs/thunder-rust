@@ -5,10 +5,10 @@ use std::{
 
 use bitcoin::{self, hashes::Hash as _};
 use fallible_iterator::{FallibleIterator, IteratorExt};
-use heed::{types::SerdeBincode, RoTxn};
+use heed::types::SerdeBincode;
 use sneed::{
     db::error::Error as DbError, rwtxn::Error as RwTxnError, DatabaseUnique,
-    EnvError, RwTxn, UnitKey,
+    EnvError, RoTxn, RwTxn, UnitKey,
 };
 
 use crate::types::{
