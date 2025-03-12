@@ -222,6 +222,7 @@ impl EguiApp {
 
 impl eframe::App for EguiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.request_repaint();
         if let Some(app) = self.app.as_ref()
             && !app.wallet.has_seed().unwrap_or(false)
         {
