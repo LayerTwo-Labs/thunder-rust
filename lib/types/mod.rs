@@ -378,7 +378,7 @@ impl Accumulator {
             .0
             .modify(&insertions, &deletions)
             .map_err(UtreexoError)?;
-        tracing::debug!(accumulator = %self.0, "Applied diff");
+        tracing::trace!(accumulator = %self.0, "Applied diff");
         Ok(())
     }
 
