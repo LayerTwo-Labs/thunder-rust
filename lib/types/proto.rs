@@ -15,13 +15,17 @@ pub trait Transport = where
 pub enum Error {
     #[error(transparent)]
     Grpc(Box<tonic::Status>),
-    #[error("Invalid enum variant in field `{field_name}` of message `{message_name}`: `{variant_name}`")]
+    #[error(
+        "Invalid enum variant in field `{field_name}` of message `{message_name}`: `{variant_name}`"
+    )]
     InvalidEnumVariant {
         field_name: String,
         message_name: String,
         variant_name: String,
     },
-    #[error("Invalid field value in field `{field_name}` of message `{message_name}`: `{value}`")]
+    #[error(
+        "Invalid field value in field `{field_name}` of message `{message_name}`: `{value}`"
+    )]
     InvalidFieldValue {
         field_name: String,
         message_name: String,
@@ -40,7 +44,9 @@ pub enum Error {
         field_name: String,
         message_name: String,
     },
-    #[error("Unknown enum tag in field `{field_name}` of message `{message_name}`: `{tag}`")]
+    #[error(
+        "Unknown enum tag in field `{field_name}` of message `{message_name}`: `{tag}`"
+    )]
     UnknownEnumTag {
         field_name: String,
         message_name: String,
@@ -248,10 +254,10 @@ pub mod mainchain {
     use std::str::FromStr;
 
     use bitcoin::{
-        self, hashes::Hash as _, BlockHash, Network, OutPoint, Transaction,
-        Txid, Work,
+        self, BlockHash, Network, OutPoint, Transaction, Txid, Work,
+        hashes::Hash as _,
     };
-    use futures::{stream::BoxStream, StreamExt as _, TryStreamExt as _};
+    use futures::{StreamExt as _, TryStreamExt as _, stream::BoxStream};
     use hashlink::LinkedHashMap;
     use nonempty::NonEmpty;
     use serde::{Deserialize, Serialize};

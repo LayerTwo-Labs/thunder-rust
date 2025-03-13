@@ -9,13 +9,14 @@ use std::{
 
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::{
+    StreamExt,
     channel::{
         mpsc::{self, TrySendError, UnboundedReceiver, UnboundedSender},
         oneshot,
     },
-    stream, StreamExt,
+    stream,
 };
-use sneed::{db, DbError, EnvError, RwTxn, RwTxnError};
+use sneed::{DbError, EnvError, RwTxn, RwTxnError, db};
 use thiserror::Error;
 use tokio::task::JoinHandle;
 use tokio_stream::StreamNotifyClose;
@@ -31,8 +32,8 @@ use crate::{
     },
     state::{self, State},
     types::{
-        proto::{self, mainchain},
         BmmResult, Body, Header, Tip,
+        proto::{self, mainchain},
     },
 };
 
@@ -561,7 +562,10 @@ where
                             common_ancestor,
                         )?;
                         if missing_bodies.is_empty() {
-                            tracing::debug!(?descendant_tip, "no missing bodies, submitting new tip ready to sources");
+                            tracing::debug!(
+                                ?descendant_tip,
+                                "no missing bodies, submitting new tip ready to sources"
+                            );
 
                             for addr in sources {
                                 tracing::trace!(%addr, ?descendant_tip, "sending new tip ready");
@@ -887,7 +891,7 @@ where
                     }
                 }
                 MailboxItem::PeerInfo(None) => {
-                    return Err(Error::PeerInfoRxClosed)
+                    return Err(Error::PeerInfoRxClosed);
                 }
                 MailboxItem::PeerInfo(Some((addr, None))) => {
                     // peer connection is closed, remove it

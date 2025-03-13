@@ -3,10 +3,10 @@
 use std::collections::HashSet;
 
 use rustreexo::accumulator::node_hash::BitcoinNodeHash;
-use sneed::{db::error::Error as DbError, RoTxn, RwTxn};
+use sneed::{RoTxn, RwTxn, db::error::Error as DbError};
 
 use crate::{
-    state::{error, Error, State},
+    state::{Error, State, error},
     types::{
         AccumulatorDiff, AmountOverflowError, Body, GetAddress as _,
         GetValue as _, Header, InPoint, OutPoint, PointedOutput, SpentOutput,

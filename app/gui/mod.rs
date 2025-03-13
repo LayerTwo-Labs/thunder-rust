@@ -3,7 +3,7 @@ use std::task::Poll;
 use eframe::egui::{self, RichText};
 use strum::{EnumIter, IntoEnumIterator};
 use thunder::{util::Watchable, wallet::Wallet};
-use util::{show_btc_amount, BITCOIN_LOGO_FA, BITCOIN_ORANGE};
+use util::{BITCOIN_LOGO_FA, BITCOIN_ORANGE, show_btc_amount};
 
 use crate::{app::App, line_buffer::LineBuffer, util::PromiseStream};
 

@@ -6,7 +6,7 @@ use clap::Parser as _;
 
 use tokio::{signal::ctrl_c, sync::oneshot};
 use tracing_subscriber::{
-    filter as tracing_filter, fmt::format, layer::SubscriberExt, Layer,
+    Layer, filter as tracing_filter, fmt::format, layer::SubscriberExt,
 };
 
 mod app;

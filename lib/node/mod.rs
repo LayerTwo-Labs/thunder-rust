@@ -8,9 +8,9 @@ use std::{
 
 use bitcoin::amount::CheckedSum;
 use fallible_iterator::FallibleIterator;
-use futures::{future::BoxFuture, Stream};
-use hashlink::{linked_hash_map, LinkedHashMap};
-use sneed::{db::error::Error as DbError, Env, EnvError, RwTxnError};
+use futures::{Stream, future::BoxFuture};
+use hashlink::{LinkedHashMap, linked_hash_map};
+use sneed::{Env, EnvError, RwTxnError, db::error::Error as DbError};
 use tokio::sync::Mutex;
 use tokio_util::task::LocalPoolHandle;
 use tonic::transport::Channel;
@@ -21,11 +21,11 @@ use crate::{
     net::{self, Net, Peer},
     state::{self, State},
     types::{
-        proto::{self, mainchain},
         Accumulator, Address, AmountOverflowError, AmountUnderflowError,
         AuthorizedTransaction, BlockHash, BmmResult, Body, GetValue, Header,
         OutPoint, Output, SpentOutput, Tip, Transaction, Txid,
         WithdrawalBundle,
+        proto::{self, mainchain},
     },
     util::Watchable,
 };

@@ -9,7 +9,7 @@ use bip300301_enforcer_integration_tests::{
     util::AbortOnDrop,
 };
 use bip300301_enforcer_lib::types::SidechainNumber;
-use futures::{channel::mpsc, future, TryFutureExt as _};
+use futures::{TryFutureExt as _, channel::mpsc, future};
 use reserve_port::ReservedPort;
 use thiserror::Error;
 use thunder::types::{OutputContent, PointedOutput};

@@ -3,19 +3,18 @@
 use std::collections::{BTreeMap, HashMap};
 
 use fallible_iterator::FallibleIterator;
-use sneed::{db::error::Error as DbError, RoTxn, RwTxn};
+use sneed::{RoTxn, RwTxn, db::error::Error as DbError};
 
 use crate::{
     state::{
-        rollback::RollBack, Error, State, WithdrawalBundleInfo,
-        WITHDRAWAL_BUNDLE_FAILURE_GAP,
+        Error, State, WITHDRAWAL_BUNDLE_FAILURE_GAP, WithdrawalBundleInfo,
+        rollback::RollBack,
     },
     types::{
-        hash,
-        proto::mainchain::{BlockEvent, TwoWayPegData},
         AccumulatorDiff, AggregatedWithdrawal, AmountOverflowError, InPoint,
         M6id, OutPoint, Output, OutputContent, PointedOutput, SpentOutput,
-        WithdrawalBundle, WithdrawalBundleEvent, WithdrawalBundleStatus,
+        WithdrawalBundle, WithdrawalBundleEvent, WithdrawalBundleStatus, hash,
+        proto::mainchain::{BlockEvent, TwoWayPegData},
     },
 };
 

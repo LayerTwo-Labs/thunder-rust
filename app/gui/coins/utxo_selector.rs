@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use eframe::egui;
 use thunder::types::{
-    hash, GetValue, OutPoint, Output, PointedOutput, Transaction,
+    GetValue, OutPoint, Output, PointedOutput, Transaction, hash,
 };
 
 use crate::app::App;

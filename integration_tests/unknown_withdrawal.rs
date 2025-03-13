@@ -6,13 +6,13 @@ use bip300301_enforcer_integration_tests::{
         withdraw_succeed,
     },
     setup::{
-        setup as setup_enforcer, Mode, Network, PostSetup as EnforcerPostSetup,
-        Sidechain as _,
+        Mode, Network, PostSetup as EnforcerPostSetup, Sidechain as _,
+        setup as setup_enforcer,
     },
     util::{AbortOnDrop, AsyncTrial},
 };
 use futures::{
-    channel::mpsc, future::BoxFuture, FutureExt as _, StreamExt as _,
+    FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture,
 };
 use thunder::types::OutPoint;
 use thunder_app_rpc_api::RpcClient as _;

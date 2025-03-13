@@ -8,7 +8,7 @@ use rustreexo::accumulator::{
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use super::{hash, Address, AmountOverflowError, Hash, M6id, MerkleRoot, Txid};
+use super::{Address, AmountOverflowError, Hash, M6id, MerkleRoot, Txid, hash};
 use crate::authorization::Authorization;
 
 pub trait GetAddress {

@@ -7,13 +7,13 @@ use bitcoin::{self, hashes::Hash as _};
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use heed::types::SerdeBincode;
 use sneed::{
-    db::error::Error as DbError, rwtxn::Error as RwTxnError, DatabaseUnique,
-    EnvError, RoTxn, RwTxn, UnitKey,
+    DatabaseUnique, EnvError, RoTxn, RwTxn, UnitKey,
+    db::error::Error as DbError, rwtxn::Error as RwTxnError,
 };
 
 use crate::types::{
+    Accumulator, BlockHash, BmmResult, Body, Header, Tip, VERSION, Version,
     proto::mainchain::{self, Deposit},
-    Accumulator, BlockHash, BmmResult, Body, Header, Tip, Version, VERSION,
 };
 
 #[derive(Debug, thiserror::Error)]

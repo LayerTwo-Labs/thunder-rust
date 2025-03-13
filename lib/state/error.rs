@@ -14,7 +14,9 @@ pub enum InvalidHeader {
         expected: BlockHash,
         computed: BlockHash,
     },
-    #[error("expected previous sidechain block hash {expected:?}, but received {received:?}")]
+    #[error(
+        "expected previous sidechain block hash {expected:?}, but received {received:?}"
+    )]
     PrevSideHash {
         expected: Option<BlockHash>,
         received: Option<BlockHash>,
@@ -48,7 +50,9 @@ pub enum Error {
     BorshSerialize(borsh::io::Error),
     #[error(transparent)]
     Db(#[from] sneed::Error),
-    #[error("invalid body: expected merkle root {expected}, but computed {computed}")]
+    #[error(
+        "invalid body: expected merkle root {expected}, but computed {computed}"
+    )]
     InvalidBody {
         expected: MerkleRoot,
         computed: MerkleRoot,

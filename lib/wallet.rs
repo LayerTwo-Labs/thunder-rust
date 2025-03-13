@@ -12,13 +12,13 @@ use heed::types::{Bytes, SerdeBincode, U8};
 use rustreexo::accumulator::node_hash::BitcoinNodeHash;
 use serde::{Deserialize, Serialize};
 use sneed::{
-    db::error::Error as DbError, DatabaseUnique, Env, EnvError, RoTxn,
-    RwTxnError, UnitKey,
+    DatabaseUnique, Env, EnvError, RoTxn, RwTxnError, UnitKey,
+    db::error::Error as DbError,
 };
-use tokio_stream::{wrappers::WatchStream, StreamMap};
+use tokio_stream::{StreamMap, wrappers::WatchStream};
 
 pub use crate::{
-    authorization::{get_address, Authorization},
+    authorization::{Authorization, get_address},
     types::{
         Address, AuthorizedTransaction, GetValue, InPoint, OutPoint, Output,
         OutputContent, SpentOutput, Transaction,
@@ -26,8 +26,8 @@ pub use crate::{
 };
 use crate::{
     types::{
-        hash, Accumulator, AmountOverflowError, AmountUnderflowError,
-        PointedOutput, UtreexoError, Version, VERSION,
+        Accumulator, AmountOverflowError, AmountUnderflowError, PointedOutput,
+        UtreexoError, VERSION, Version, hash,
     },
     util::Watchable,
 };

@@ -7,8 +7,8 @@ use l2l_openapi::open_api;
 use thunder::{
     net::Peer,
     types::{
-        schema as thunder_schema, Address, MerkleRoot, OutPoint, Output,
-        OutputContent, PointedOutput, Txid, WithdrawalBundle,
+        Address, MerkleRoot, OutPoint, Output, OutputContent, PointedOutput,
+        Txid, WithdrawalBundle, schema as thunder_schema,
     },
     wallet::Balance,
 };

@@ -3,13 +3,13 @@ use std::collections::VecDeque;
 use fallible_iterator::FallibleIterator as _;
 use heed::types::SerdeBincode;
 use sneed::{
-    db::error::Error as DbError, DatabaseUnique, EnvError, RoTxn, RwTxn,
-    RwTxnError, UnitKey,
+    DatabaseUnique, EnvError, RoTxn, RwTxn, RwTxnError, UnitKey,
+    db::error::Error as DbError,
 };
 
 use crate::types::{
-    Accumulator, AuthorizedTransaction, OutPoint, Txid, UtreexoError, Version,
-    VERSION,
+    Accumulator, AuthorizedTransaction, OutPoint, Txid, UtreexoError, VERSION,
+    Version,
 };
 
 #[derive(Debug, thiserror::Error)]

@@ -6,21 +6,20 @@ use heed::types::SerdeBincode;
 use rustreexo::accumulator::{node_hash::BitcoinNodeHash, proof::Proof};
 use serde::{Deserialize, Serialize};
 use sneed::{
+    DatabaseUnique, RoTxn, RwTxn, UnitKey,
     db::error::{self as db_error, Error as DbError},
     env::Error as EnvError,
     rwtxn::Error as RwTxnError,
-    DatabaseUnique, RoTxn, RwTxn, UnitKey,
 };
 
 use crate::{
     authorization::Authorization,
     types::{
-        proto::mainchain::TwoWayPegData, Accumulator, Address,
-        AmountOverflowError, AmountUnderflowError, AuthorizedTransaction,
-        BlockHash, Body, FilledTransaction, GetAddress, GetValue, Header,
-        InPoint, M6id, OutPoint, Output, PointedOutput, SpentOutput,
-        Transaction, Verify, Version, WithdrawalBundle, WithdrawalBundleStatus,
-        VERSION,
+        Accumulator, Address, AmountOverflowError, AmountUnderflowError,
+        AuthorizedTransaction, BlockHash, Body, FilledTransaction, GetAddress,
+        GetValue, Header, InPoint, M6id, OutPoint, Output, PointedOutput,
+        SpentOutput, Transaction, VERSION, Verify, Version, WithdrawalBundle,
+        WithdrawalBundleStatus, proto::mainchain::TwoWayPegData,
     },
     util::Watchable,
 };

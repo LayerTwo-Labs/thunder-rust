@@ -4,8 +4,8 @@ use std::{
 };
 
 use bip300301_enforcer_integration_tests::util::{
-    get_env_var, spawn_command_with_args, AbortOnDrop,
-    BinPaths as EnforcerBinPaths, VarError,
+    AbortOnDrop, BinPaths as EnforcerBinPaths, VarError, get_env_var,
+    spawn_command_with_args,
 };
 
 fn load_env_var_from_string(s: &str) -> Result<(), VarError> {

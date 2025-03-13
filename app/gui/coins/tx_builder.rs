@@ -7,7 +7,7 @@ use thunder::types::{GetValue, Transaction};
 use super::{
     tx_creator::TxCreator,
     utxo_creator::UtxoCreator,
-    utxo_selector::{show_utxo, UtxoSelector},
+    utxo_selector::{UtxoSelector, show_utxo},
 };
 use crate::app::App;
 

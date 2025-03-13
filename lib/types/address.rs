@@ -1,4 +1,4 @@
-use bitcoin::hashes::{sha256, Hash as _};
+use bitcoin::hashes::{Hash as _, sha256};
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeAs, DisplayFromStr};

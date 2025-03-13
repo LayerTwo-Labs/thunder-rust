@@ -5,12 +5,12 @@ use std::net::SocketAddr;
 use bip300301_enforcer_integration_tests::{
     integration_test::{activate_sidechain, fund_enforcer, propose_sidechain},
     setup::{
-        setup as setup_enforcer, Mode, Network, PostSetup as EnforcerPostSetup,
-        Sidechain as _,
+        Mode, Network, PostSetup as EnforcerPostSetup, Sidechain as _,
+        setup as setup_enforcer,
     },
     util::{AbortOnDrop, AsyncTrial},
 };
-use futures::{channel::mpsc, future::BoxFuture, FutureExt, StreamExt as _};
+use futures::{FutureExt, StreamExt as _, channel::mpsc, future::BoxFuture};
 use thunder_app_rpc_api::RpcClient as _;
 use tokio::time::sleep;
 use tracing::Instrument as _;

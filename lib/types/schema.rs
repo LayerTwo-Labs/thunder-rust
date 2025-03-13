@@ -1,8 +1,8 @@
 //! Schemas for OpenAPI
 
 use utoipa::{
-    openapi::{self, RefOr, Schema},
     PartialSchema, ToSchema,
+    openapi::{self, RefOr, Schema},
 };
 
 pub struct BitcoinAddr;
