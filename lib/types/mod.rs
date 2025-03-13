@@ -1,5 +1,5 @@
 use borsh::BorshSerialize;
-use hashlink::{linked_hash_map, LinkedHashMap};
+use hashlink::{LinkedHashMap, linked_hash_map};
 use rustreexo::accumulator::{
     mem_forest::MemForest, node_hash::BitcoinNodeHash, proof::Proof,
 };
@@ -20,7 +20,7 @@ pub mod schema;
 mod transaction;
 
 pub use address::Address;
-pub use hashes::{hash, BlockHash, Hash, M6id, MerkleRoot, Txid};
+pub use hashes::{BlockHash, Hash, M6id, MerkleRoot, Txid, hash};
 pub use transaction::{
     AuthorizedTransaction, Body, Content as OutputContent, FilledTransaction,
     GetAddress, GetValue, InPoint, OutPoint, Output, PointedOutput,

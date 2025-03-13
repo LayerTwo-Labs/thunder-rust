@@ -8,11 +8,11 @@ use std::{
 use bitcoin::{self, hashes::Hash as _};
 use fallible_iterator::FallibleIterator;
 use futures::{
+    StreamExt,
     channel::{
         mpsc::{self, UnboundedReceiver, UnboundedSender},
         oneshot,
     },
-    StreamExt,
 };
 use sneed::{EnvError, RwTxnError};
 use thiserror::Error;

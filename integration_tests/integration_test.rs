@@ -2,7 +2,7 @@ use bip300301_enforcer_integration_tests::{
     setup::{Mode, Network},
     util::AsyncTrial,
 };
-use futures::{future::BoxFuture, FutureExt};
+use futures::{FutureExt, future::BoxFuture};
 
 use crate::{
     ibd::ibd_trial,

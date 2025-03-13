@@ -1,8 +1,8 @@
 use futures::TryStreamExt;
 
 use crate::types::{
-    proto::{self, mainchain},
     Body, Header,
+    proto::{self, mainchain},
 };
 
 #[derive(Debug, thiserror::Error)]

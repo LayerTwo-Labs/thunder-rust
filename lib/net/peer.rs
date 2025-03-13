@@ -3,15 +3,15 @@ use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
     sync::{
-        atomic::{self, AtomicBool},
         Arc,
+        atomic::{self, AtomicBool},
     },
 };
 
 use bitcoin::Work;
 use borsh::BorshSerialize;
 use fallible_iterator::FallibleIterator;
-use futures::{channel::mpsc, stream, StreamExt, TryFutureExt, TryStreamExt};
+use futures::{StreamExt, TryFutureExt, TryStreamExt, channel::mpsc, stream};
 use quinn::SendStream;
 use serde::{Deserialize, Serialize};
 use sneed::{DbError, EnvError};
@@ -19,7 +19,7 @@ use thiserror::Error;
 use tokio::{
     spawn,
     task::{JoinHandle, JoinSet},
-    time::{interval, timeout, Duration},
+    time::{Duration, interval, timeout},
 };
 use tokio_stream::wrappers::IntervalStream;
 
@@ -27,8 +27,8 @@ use crate::{
     archive::{self, Archive},
     state::{self, State},
     types::{
-        hash, proto::mainchain, schema, AuthorizedTransaction, BlockHash,
-        BmmResult, Body, Hash, Header, Tip, Txid, Version, VERSION,
+        AuthorizedTransaction, BlockHash, BmmResult, Body, Hash, Header, Tip,
+        Txid, VERSION, Version, hash, proto::mainchain, schema,
     },
 };
 

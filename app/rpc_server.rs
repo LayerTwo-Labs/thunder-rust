@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use bitcoin::Amount;
 use jsonrpsee::{
-    core::{async_trait, RpcResult},
+    core::{RpcResult, async_trait},
     server::{RpcServiceBuilder, Server},
     types::ErrorObject,
 };
