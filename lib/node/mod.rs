@@ -9,10 +9,8 @@ use std::{
 use bitcoin::amount::CheckedSum;
 use fallible_iterator::FallibleIterator;
 use futures::{Stream, future::BoxFuture};
-use hashlink::{LinkedHashMap, linked_hash_map};
 use sneed::{Env, EnvError, RwTxnError, db::error::Error as DbError};
 use tokio::sync::Mutex;
-use tokio_util::task::LocalPoolHandle;
 use tonic::transport::Channel;
 
 use crate::{
@@ -93,63 +91,6 @@ impl From<state::Error> for Error {
     }
 }
 
-/// Request any missing two way peg data up to the specified block hash.
-/// All ancestor headers must exist in the archive.
-// TODO: deposits only for now
-#[allow(dead_code)]
-async fn request_two_way_peg_data<Transport>(
-    env: &sneed::Env,
-    archive: &Archive,
-    mainchain: &mut mainchain::ValidatorClient<Transport>,
-    block_hash: bitcoin::BlockHash,
-) -> Result<(), Error>
-where
-    Transport: proto::Transport,
-{
-    // last block for which deposit info is known
-    let last_known_deposit_info = {
-        let rotxn = env.read_txn().map_err(EnvError::from)?;
-        #[allow(clippy::let_and_return)]
-        let last_known_deposit_info = archive
-            .main_ancestors(&rotxn, block_hash)
-            .find(|block_hash| {
-                let deposits = archive.try_get_deposits(&rotxn, *block_hash)?;
-                Ok(deposits.is_some())
-            })?;
-        last_known_deposit_info
-    };
-    if last_known_deposit_info == Some(block_hash) {
-        return Ok(());
-    }
-    let two_way_peg_data = mainchain
-        .get_two_way_peg_data(last_known_deposit_info, block_hash)
-        .await?;
-    let mut block_deposits =
-        LinkedHashMap::<_, _>::from_iter(two_way_peg_data.into_deposits());
-    let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
-    let () = archive
-        .main_ancestors(&rwtxn, block_hash)
-        .take_while(|block_hash| {
-            Ok(last_known_deposit_info != Some(*block_hash))
-        })
-        .for_each(|block_hash| {
-            match block_deposits.entry(block_hash) {
-                linked_hash_map::Entry::Occupied(_) => (),
-                linked_hash_map::Entry::Vacant(entry) => {
-                    entry.insert(Vec::new());
-                }
-            };
-            Ok(())
-        })?;
-    block_deposits
-        .into_iter()
-        .try_for_each(|(block_hash, deposits)| {
-            archive.put_deposits(&mut rwtxn, block_hash, deposits)
-        })?;
-    rwtxn.commit().map_err(RwTxnError::from)?;
-    Ok(())
-}
-
 #[derive(Clone)]
 pub struct Node<MainchainTransport = Channel> {
     archive: Archive,
@@ -157,7 +98,6 @@ pub struct Node<MainchainTransport = Channel> {
     cusf_mainchain_wallet:
         Option<Arc<Mutex<mainchain::WalletClient<MainchainTransport>>>>,
     env: sneed::Env,
-    _local_pool: LocalPoolHandle,
     mainchain_task: MainchainTaskHandle,
     mempool: MemPool,
     net: Net,
@@ -176,7 +116,7 @@ where
         cusf_mainchain_wallet: Option<
             mainchain::WalletClient<MainchainTransport>,
         >,
-        local_pool: LocalPoolHandle,
+        runtime: &tokio::runtime::Runtime,
     ) -> Result<Self, Error>
     where
         mainchain::ValidatorClient<MainchainTransport>: Clone,
@@ -214,10 +154,9 @@ where
             Net::new(&env, archive.clone(), state.clone(), bind_addr)?;
 
         let net_task = NetTaskHandle::new(
-            local_pool.clone(),
+            runtime,
             env.clone(),
             archive.clone(),
-            cusf_mainchain.clone(),
             mainchain_task.clone(),
             mainchain_task_response_rx,
             mempool.clone(),
@@ -232,7 +171,6 @@ where
             cusf_mainchain: Arc::new(Mutex::new(cusf_mainchain)),
             cusf_mainchain_wallet,
             env,
-            _local_pool: local_pool,
             mainchain_task,
             mempool,
             net,
@@ -557,39 +495,16 @@ where
             );
             return Ok(false);
         }
-        // Request mainchain headers if they do not exist
-        let mainchain_task::Response::AncestorHeaders(_, res): mainchain_task::Response = self
+        // Request mainchain header/infos if they do not exist
+        let mainchain_task::Response::AncestorInfos(_, res): mainchain_task::Response = self
             .mainchain_task
-            .request_oneshot(mainchain_task::Request::AncestorHeaders(
+            .request_oneshot(mainchain_task::Request::AncestorInfos(
                 main_block_hash,
             ))
             .map_err(|_| Error::SendMainchainTaskRequest)?
             .await
-            .map_err(|_| Error::ReceiveMainchainTaskResponse)?
-        else {
-            panic!("should be impossible")
-        };
+            .map_err(|_| Error::ReceiveMainchainTaskResponse)?;
         let () = res.map_err(Error::MainchainAncestors)?;
-        // Verify BMM
-        let mainchain_task::Response::VerifyBmm(_, res) = self
-            .mainchain_task
-            .request_oneshot(mainchain_task::Request::VerifyBmm(
-                main_block_hash,
-            ))
-            .map_err(|_| Error::SendMainchainTaskRequest)?
-            .await
-            .map_err(|_| Error::ReceiveMainchainTaskResponse)?
-        else {
-            panic!("should be impossible")
-        };
-        if let Err(mainchain::BlockNotFoundError(missing_block)) =
-            res.map_err(|err| Error::VerifyBmm(err.into()))?
-        {
-            tracing::error!(%block_hash,
-                "Rejecting block {block_hash} due to missing mainchain block {missing_block}",
-            );
-            return Ok(false);
-        }
         // Write header
         tracing::trace!("Storing header: {block_hash}");
         {
