@@ -434,7 +434,7 @@ impl Net {
                         error,
                         remote_address,
                     })?;
-                Connection(raw_conn)
+                Connection::from(raw_conn)
             }
             None => {
                 tracing::debug!("server endpoint closed");
@@ -449,10 +449,10 @@ impl Net {
                 %addr, "incoming connection: already peered, refusing duplicate",
             );
             connection
-                .0
+                .inner
                 .close(quinn::VarInt::from_u32(1), b"already connected");
         }
-        if connection.0.close_reason().is_some() {
+        if connection.inner.close_reason().is_some() {
             return Ok(None);
         }
         tracing::info!(%addr, "connected to new peer");
@@ -485,27 +485,31 @@ impl Net {
         Ok(Some(addr))
     }
 
-    // Push an internal message to the specified peer
+    /// Attempt to push an internal message to the specified peer
+    /// Returns `true` if successful
     pub fn push_internal_message(
         &self,
         message: PeerConnectionMessage,
         addr: SocketAddr,
-    ) -> Result<(), Error> {
+    ) -> bool {
         let active_peers_read = self.active_peers.read();
-        let peer_connection_handle = active_peers_read
-            .get(&addr)
-            .ok_or_else(|| Error::MissingPeerConnection(addr))?;
+        let Some(peer_connection_handle) = active_peers_read.get(&addr) else {
+            let err = Error::MissingPeerConnection(addr);
+            tracing::warn!("{:#}", anyhow::Error::from(err));
+            return false;
+        };
 
         if let Err(send_err) = peer_connection_handle
             .internal_message_tx
             .unbounded_send(message)
         {
             let message = send_err.into_inner();
-            tracing::error!(
+            tracing::warn!(
                 "Failed to push internal message to peer connection {addr}: {message:?}"
-            )
+            );
+            return false;
         }
-        Ok(())
+        true
     }
 
     /// Push a tx to all active peers, except those in the provided set

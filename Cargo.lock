@@ -6277,6 +6277,7 @@ dependencies = [
  "bytes",
  "ed25519-dalek",
  "ed25519-dalek-bip32",
+ "educe",
  "fallible-iterator",
  "futures",
  "hashlink 0.10.0",

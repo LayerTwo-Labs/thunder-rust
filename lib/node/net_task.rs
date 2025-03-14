@@ -16,6 +16,7 @@ use futures::{
     },
     stream,
 };
+use nonempty::NonEmpty;
 use sneed::{DbError, EnvError, RwTxn, RwTxnError, db};
 use thiserror::Error;
 use tokio::task::JoinHandle;
@@ -74,18 +75,22 @@ pub enum Error {
     State(#[from] state::Error),
 }
 
-async fn connect_tip_<Transport>(
+static TWO_WAY_PEG_DATA_REQUESTS_DURATION_MICROS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+async fn connect_tip_(
     rwtxn: &mut RwTxn<'_>,
     archive: &Archive,
-    cusf_mainchain: &mut mainchain::ValidatorClient<Transport>,
+    // FIXME: remove
+    //cusf_mainchain: &mut mainchain::ValidatorClient<Transport>,
     mempool: &MemPool,
     state: &State,
     header: &Header,
     body: &Body,
-) -> Result<(), Error>
-where
-    Transport: proto::Transport,
-{
+    two_way_peg_data: &mainchain::TwoWayPegData,
+) -> Result<(), Error> {
+    // FIXME: remove
+    /*
     let last_deposit_block_hash = state.get_last_deposit_block_hash(rwtxn)?;
     let last_withdrawal_bundle_event_block_hash =
         state.get_last_withdrawal_bundle_event_block_hash(rwtxn)?;
@@ -118,9 +123,26 @@ where
             }
         }
     };
-    let two_way_peg_data = cusf_mainchain
-        .get_two_way_peg_data(last_2wpd_block, header.prev_main_hash)
+    let two_way_peg_data = {
+        use std::sync::atomic::Ordering::SeqCst;
+        use futures::FutureExt as _;
+        let start = std::time::Instant::now();
+        cusf_mainchain
+            .get_two_way_peg_data(last_2wpd_block, header.prev_main_hash)
+            .inspect(move |_| {
+                let elapsed = std::time::Instant::now() - start;
+                let elapsed_micros = elapsed.as_micros().try_into().unwrap();
+                let acc = TWO_WAY_PEG_DATA_REQUESTS_DURATION_MICROS.fetch_update(SeqCst, SeqCst, |acc| {
+                    acc.checked_add(elapsed_micros)
+                }).unwrap();
+                tracing::debug!(
+                    duration_micros = %(acc + elapsed_micros),
+                    "Cumulative 2WPD request time"
+                )
+            })
+        }
         .await?;
+    */
     let block_hash = header.hash();
     let _fees: bitcoin::Amount = state.validate_block(rwtxn, header, body)?;
     if tracing::enabled!(tracing::Level::DEBUG) {
@@ -132,7 +154,7 @@ where
     } else {
         let () = state.connect_block(rwtxn, header, body)?;
     }
-    let () = state.connect_two_way_peg_data(rwtxn, &two_way_peg_data)?;
+    let () = state.connect_two_way_peg_data(rwtxn, two_way_peg_data)?;
     let accumulator = state.get_accumulator(rwtxn)?;
     let () = archive.put_header(rwtxn, header)?;
     let () = archive.put_body(rwtxn, block_hash, body)?;
@@ -305,18 +327,64 @@ where
         None
     };
     // Check that all necessary bodies exist before disconnecting tip
-    let blocks_to_apply: Vec<(Header, Body)> = archive
-        .ancestors(&rwtxn, new_tip.block_hash)
-        .take_while(|block_hash| {
-            Ok(common_ancestor
-                .is_none_or(|common_ancestor| *block_hash != common_ancestor))
-        })
-        .map(|block_hash| {
-            let header = archive.get_header(&rwtxn, block_hash)?;
-            let body = archive.get_body(&rwtxn, block_hash)?;
-            Ok((header, body))
-        })
-        .collect()?;
+    let blocks_to_apply: NonEmpty<(Header, Body)> = {
+        let header = archive.get_header(&rwtxn, new_tip.block_hash)?;
+        let body = archive.get_body(&rwtxn, new_tip.block_hash)?;
+        let ancestors = if let Some(prev_side_hash) = header.prev_side_hash {
+            archive
+                .ancestors(&rwtxn, prev_side_hash)
+                .take_while(|block_hash| {
+                    Ok(common_ancestor.is_none_or(|common_ancestor| {
+                        *block_hash != common_ancestor
+                    }))
+                })
+                .map(|block_hash| {
+                    let header = archive.get_header(&rwtxn, block_hash)?;
+                    let body = archive.get_body(&rwtxn, block_hash)?;
+                    Ok((header, body))
+                })
+                .collect()?
+        } else {
+            Vec::new()
+        };
+        NonEmpty {
+            head: (header, body),
+            tail: ancestors,
+        }
+    };
+    // Batch Request 2WPD
+    let mut two_way_peg_data_batch = {
+        use futures::FutureExt as _;
+        use std::sync::atomic::Ordering::SeqCst;
+        let common_ancestor_header =
+            if let Some(common_ancestor) = common_ancestor {
+                Some(archive.get_header(&rwtxn, common_ancestor)?)
+            } else {
+                None
+            };
+        let start = std::time::Instant::now();
+        cusf_mainchain
+            .get_two_way_peg_data(
+                common_ancestor_header.map(|common_ancestor_header| {
+                    common_ancestor_header.prev_main_hash
+                }),
+                blocks_to_apply.head.0.prev_main_hash,
+            )
+            .inspect(move |_| {
+                let elapsed = std::time::Instant::now() - start;
+                let elapsed_micros = elapsed.as_micros().try_into().unwrap();
+                let acc = TWO_WAY_PEG_DATA_REQUESTS_DURATION_MICROS
+                    .fetch_update(SeqCst, SeqCst, |acc| {
+                        acc.checked_add(elapsed_micros)
+                    })
+                    .unwrap();
+                tracing::debug!(
+                    duration_micros = %(acc + elapsed_micros),
+                    "Cumulative 2WPD request time"
+                )
+            })
+    }
+    .await?;
     // Disconnect tip until common ancestor is reached
     if let Some(tip_height) = tip_height {
         let common_ancestor_height =
@@ -355,14 +423,33 @@ where
     }
     // Apply blocks until new tip is reached
     for (header, body) in blocks_to_apply.into_iter().rev() {
+        let two_way_peg_data = {
+            let mut two_way_peg_data = mainchain::TwoWayPegData::default();
+            'fill_2wpd: while let Some((block_hash, _)) =
+                two_way_peg_data_batch.block_info.front()
+            {
+                if !archive.is_main_descendant(
+                    &rwtxn,
+                    *block_hash,
+                    header.prev_main_hash,
+                )? {
+                    break 'fill_2wpd;
+                }
+                let (block_hash, block_info) =
+                    two_way_peg_data_batch.block_info.pop_front().unwrap();
+                two_way_peg_data.block_info.replace(block_hash, block_info);
+            }
+            two_way_peg_data
+        };
         let () = connect_tip_(
             &mut rwtxn,
             archive,
-            cusf_mainchain,
+            // cusf_mainchain,
             mempool,
             state,
             &header,
             &body,
+            &two_way_peg_data,
         )
         .await?;
         let new_tip_hash = state.try_get_tip(&rwtxn)?.unwrap();
@@ -491,8 +578,8 @@ where
                         let message = PeerConnectionMessage::BodiesAvailable(
                             peer_state_id,
                         );
-                        let () =
-                            ctxt.net.push_internal_message(message, addr)?;
+                        let _: bool =
+                            ctxt.net.push_internal_message(message, addr);
                     }
                 }
                 // Check if any new tips can be applied,
@@ -680,7 +767,7 @@ where
                 rwtxn.commit().map_err(RwTxnError::from)?;
                 // Notify peer connection that headers are available
                 let message = PeerConnectionMessage::Headers(peer_state_id);
-                let () = ctxt.net.push_internal_message(message, addr)?;
+                let _: bool = ctxt.net.push_internal_message(message, addr);
                 Ok(())
             }
             (
@@ -704,7 +791,8 @@ where
                 req @ (PeerRequest::GetBlock { .. }
                 | PeerRequest::GetHeaders { .. }
                 | PeerRequest::Heartbeat(_)
-                | PeerRequest::PushTransaction { .. }),
+                | PeerRequest::PushTransaction { .. }
+                | PeerRequest::GetBlocks { .. }),
                 resp,
             ) => {
                 // Invalid response
@@ -842,10 +930,10 @@ where
                                         anyhow::Error::from(err.clone())
                                     )
                                 };
-                                let () = self
+                                let _: bool = self
                                     .ctxt
                                     .net
-                                    .push_internal_message(message, addr)?;
+                                    .push_internal_message(message, addr);
                             }
                         }
                         mainchain_task::Response::VerifyBmm(
@@ -866,10 +954,10 @@ where
                                     },
                                     Err(ref err) => PeerConnectionMessage::BmmVerificationError(anyhow::Error::from(err.clone()))
                                 };
-                                let () = self
+                                let _: bool = self
                                     .ctxt
                                     .net
-                                    .push_internal_message(message, addr)?;
+                                    .push_internal_message(message, addr);
                             }
                         }
                     }

@@ -4,14 +4,16 @@ use std::{
     net::SocketAddr,
     sync::{
         Arc,
-        atomic::{self, AtomicBool},
+        atomic::{self, AtomicBool, AtomicUsize},
     },
 };
 
 use bitcoin::Work;
 use borsh::BorshSerialize;
-use fallible_iterator::FallibleIterator;
+use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::{StreamExt, TryFutureExt, TryStreamExt, channel::mpsc, stream};
+use nonempty::NonEmpty;
+use parking_lot::RwLock;
 use quinn::SendStream;
 use serde::{Deserialize, Serialize};
 use sneed::{DbError, EnvError};
@@ -142,14 +144,15 @@ impl std::fmt::Display for PeerStateId {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(educe::Educe, Serialize, Deserialize)]
+#[educe(Debug)]
 pub enum Response {
     Block {
         header: Header,
         body: Body,
     },
     /// Headers, from start to end
-    Headers(Vec<Header>),
+    Headers(#[educe(Debug(method(Response::fmt_headers)))] Vec<Header>),
     NoBlock {
         block_hash: BlockHash,
     },
@@ -158,6 +161,22 @@ pub enum Response {
     },
     TransactionAccepted(Txid),
     TransactionRejected(Txid),
+    /// Blocks, sorted newest-first
+    Blocks(NonEmpty<(Header, Body)>),
+}
+
+impl Response {
+    /// Format headers for `Debug` impl
+    fn fmt_headers(
+        headers: &Vec<Header>,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        if let [first, .., last] = headers.as_slice() {
+            write!(f, "[{first:?}, .., {last:?}]")
+        } else {
+            std::fmt::Debug::fmt(headers, f)
+        }
+    }
 }
 
 #[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize)]
@@ -199,6 +218,26 @@ pub enum Request {
     },
     PushTransaction {
         transaction: AuthorizedTransaction,
+    },
+    GetBlocks {
+        block_hash: BlockHash,
+        /// Request up to max_ancestors ancestor blocks, if they exist
+        max_ancestors: u8,
+        /// Mainchain descendant tip that we are requesting the block to reach.
+        /// Only relevant for the requester, so serialization is skipped
+        #[borsh(skip)]
+        #[serde(skip)]
+        descendant_tip: Option<Tip>,
+        /// Ancestor block. If no bodies are missing between `descendant_tip`
+        /// and `ancestor`, then `descendant_tip` is ready to apply.
+        /// Only relevant for the requester, so serialization is skipped
+        #[borsh(skip)]
+        #[serde(skip)]
+        ancestor: Option<BlockHash>,
+        /// Only relevant for the requester, so serialization is skipped
+        #[borsh(skip)]
+        #[serde(skip)]
+        peer_state_id: Option<PeerStateId>,
     },
 }
 
@@ -271,7 +310,11 @@ impl From<Request> for InternalMessage {
 }
 
 #[derive(Clone)]
-pub struct Connection(pub(super) quinn::Connection);
+pub struct Connection {
+    pub(in crate::net) inner: quinn::Connection,
+    requested_blocks: Arc<RwLock<HashSet<BlockHash>>>,
+    duplicate_block_requests: Arc<AtomicUsize>,
+}
 
 impl Connection {
     // 100KB limit for reading requests (tx size could be ~100KB)
@@ -302,11 +345,14 @@ impl Connection {
             Request::PushTransaction { .. } => Self::READ_TX_ACK_LIMIT,
             // Should never happen, so limit zero
             Request::GetHeaders { height: None, .. } => 0,
+            Request::GetBlocks { max_ancestors, .. } => {
+                (*max_ancestors as usize + 1) * Self::READ_BLOCK_LIMIT
+            }
         }
     }
 
     pub fn addr(&self) -> SocketAddr {
-        self.0.remote_address()
+        self.inner.remote_address()
     }
 
     pub async fn new(
@@ -316,13 +362,17 @@ impl Connection {
         tracing::trace!(%addr, "connecting to peer");
         let connection = connecting.await?;
         tracing::info!(%addr, "connected successfully to peer");
-        Ok(Self(connection))
+        Ok(Self {
+            inner: connection,
+            requested_blocks: Arc::new(RwLock::new(HashSet::new())),
+            duplicate_block_requests: Arc::new(AtomicUsize::new(0)),
+        })
     }
 
     async fn receive_request(
         &self,
     ) -> Result<(Request, SendStream), ConnectionError> {
-        let (tx, mut rx) = self.0.accept_bi().await?;
+        let (tx, mut rx) = self.inner.accept_bi().await?;
         tracing::trace!(recv_id = %rx.id(), "Receiving request");
         let request_bytes =
             rx.read_to_end(Connection::READ_REQUEST_LIMIT).await?;
@@ -340,12 +390,22 @@ impl Connection {
         message: &Request,
     ) -> Result<Option<Response>, ConnectionError> {
         let read_response_limit = Self::read_response_limit(message);
-        let (mut send, mut recv) = self.0.open_bi().await?;
+        let (mut send, mut recv) = self.inner.open_bi().await?;
         tracing::trace!(
             request = ?message,
             send_id = %send.id(),
             "Sending request"
         );
+        // FIXME: remove
+        if let Request::GetBlock { block_hash, .. } = message
+            && !self.requested_blocks.write().insert(*block_hash)
+        {
+            let duplicate_block_requests = self
+                .duplicate_block_requests
+                .fetch_add(1, atomic::Ordering::SeqCst)
+                + 1;
+            tracing::debug!(%duplicate_block_requests);
+        }
         let message = bincode::serialize(message)?;
         send.write_all(&message).await.map_err(|err| {
             ConnectionError::Write {
@@ -366,6 +426,16 @@ impl Connection {
             Ok(Some(response))
         } else {
             Ok(None)
+        }
+    }
+}
+
+impl From<quinn::Connection> for Connection {
+    fn from(inner: quinn::Connection) -> Self {
+        Self {
+            inner,
+            requested_blocks: Arc::new(RwLock::new(HashSet::new())),
+            duplicate_block_requests: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -980,6 +1050,65 @@ impl ConnectionTask {
         Self::send_response(response_tx, resp).await
     }
 
+    async fn handle_get_blocks(
+        ctxt: &ConnectionContext,
+        response_tx: SendStream,
+        block_hash: BlockHash,
+        max_ancestors: u8,
+    ) -> Result<(), ConnectionError> {
+        let resp = {
+            let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
+            let block = if let Some(header) =
+                ctxt.archive.try_get_header(&rotxn, block_hash)?
+                && let Some(body) =
+                    ctxt.archive.try_get_body(&rotxn, block_hash)?
+            {
+                Some((header, body))
+            } else {
+                None
+            };
+            match block {
+                None => Response::NoBlock { block_hash },
+                Some((header, body)) => {
+                    let ancestors =
+                        if let Some(block_hash) = header.prev_side_hash {
+                            ctxt.archive
+                                .ancestors(&rotxn, block_hash)
+                                .take(max_ancestors as usize)
+                                .map(|block_hash| {
+                                    if let Some(header) = ctxt
+                                        .archive
+                                        .try_get_header(&rotxn, block_hash)?
+                                        && let Some(body) = ctxt
+                                            .archive
+                                            .try_get_body(&rotxn, block_hash)?
+                                    {
+                                        Ok(Some((header, body)))
+                                    } else {
+                                        Ok(None)
+                                    }
+                                })
+                                .take_while(|block| Ok(block.is_some()))
+                                .flat_map(|block| {
+                                    Ok(block
+                                        .into_iter()
+                                        .map(Ok)
+                                        .transpose_into_fallible())
+                                })
+                                .collect()?
+                        } else {
+                            Vec::new()
+                        };
+                    Response::Blocks(NonEmpty {
+                        head: (header, body),
+                        tail: ancestors,
+                    })
+                }
+            }
+        };
+        Self::send_response(response_tx, resp).await
+    }
+
     async fn handle_get_headers(
         ctxt: &ConnectionContext,
         response_tx: SendStream,
@@ -1079,6 +1208,21 @@ impl ConnectionTask {
             Request::PushTransaction { transaction } => {
                 Self::handle_push_tx(ctxt, info_tx, response_tx, transaction)
                     .await
+            }
+            Request::GetBlocks {
+                block_hash,
+                max_ancestors,
+                descendant_tip: _,
+                ancestor: _,
+                peer_state_id: _,
+            } => {
+                Self::handle_get_blocks(
+                    ctxt,
+                    response_tx,
+                    block_hash,
+                    max_ancestors,
+                )
+                .await
             }
         }
     }
