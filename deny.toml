@@ -271,11 +271,10 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # List of URLs for allowed Git repositories
 allow-git = [
     "https://github.com/Ash-L2L/bip300301.git",
-    "https://github.com/Ash-L2L/bip300301_enforcer.git",
     "https://github.com/Ash-L2L/l2l-openapi.git",
     "https://gitlab.com/A-Manning/leonhard-llc-ops",
     "https://github.com/erikjohnston/ouroboros.git?rev=ea82b33947f60c511dac6eb3815b6af3f6c3f555",
-    "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git",
+    "https://github.com/LayerTwo-Labs/bip300301_enforcer.git",
     "https://github.com/mit-dci/rustreexo.git",
     "https://github.com/torkelrogstad/cusf-enforcer-mempool.git",
 ]

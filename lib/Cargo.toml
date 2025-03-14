@@ -14,6 +14,7 @@ tonic-build = "0.12.3"
 
 [dependencies]
 anyhow = { workspace = true, features = ["backtrace"] }
+async-lock = "3.4.0"
 bincode = { workspace = true }
 bitcoin = { workspace = true, features = ["serde"] }
 blake3 = "1.4.1"
@@ -52,6 +53,17 @@ tonic = { workspace = true }
 tracing = { workspace = true }
 transitive = "1.0.1"
 utoipa = { workspace = true, features = ["macros", "non_strict_integers"] }
+
+[dependencies.educe]
+version = "0.6.0"
+default-features = false
+features = ["Clone", "Debug"]
+
+
+[dependencies.governor]
+version = "0.8.1"
+default-features = false
+features = ["quanta", "std"]
 
 [lints]
 workspace = true
