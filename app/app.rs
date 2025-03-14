@@ -301,7 +301,7 @@ impl App {
             config.net_addr,
             cusf_mainchain,
             cusf_mainchain_wallet,
-            local_pool.clone(),
+            &runtime,
         )?;
         let utxos = {
             let mut utxos = {
