@@ -54,6 +54,11 @@ tracing = { workspace = true }
 transitive = "1.0.1"
 utoipa = { workspace = true, features = ["macros", "non_strict_integers"] }
 
+[dependencies.governor]
+version = "0.8.1"
+default-features = false
+features = ["quanta", "std"]
+
 [lints]
 workspace = true
 

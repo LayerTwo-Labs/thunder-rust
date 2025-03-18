@@ -239,7 +239,7 @@ where
                 %batch_end,
                 "storing ancestor bmm commitments"
             );
-            {
+            let () = task::block_in_place(|| {
                 let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
                 missing_commitments
                     .drain(batch_start_idx..)
@@ -252,13 +252,14 @@ where
                             commitment,
                         )
                     })?;
+                tracing::trace!(%main_hash,
+                    %batch_start,
+                    %batch_end,
+                    "commiting rwtxn"
+                );
                 rwtxn.commit().map_err(RwTxnError::from)?;
-            }
-            tracing::trace!(%main_hash,
-                %batch_start,
-                %batch_end,
-                "stored ancestor bmm commitments"
-            );
+                Ok::<_, ResponseError>(())
+            })?;
         }
         Ok(Ok(()))
     }

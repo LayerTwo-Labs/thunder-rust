@@ -75,74 +75,15 @@ pub enum Error {
     State(#[from] state::Error),
 }
 
-static TWO_WAY_PEG_DATA_REQUESTS_DURATION_MICROS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
 async fn connect_tip_(
     rwtxn: &mut RwTxn<'_>,
     archive: &Archive,
-    // FIXME: remove
-    //cusf_mainchain: &mut mainchain::ValidatorClient<Transport>,
     mempool: &MemPool,
     state: &State,
     header: &Header,
     body: &Body,
     two_way_peg_data: &mainchain::TwoWayPegData,
 ) -> Result<(), Error> {
-    // FIXME: remove
-    /*
-    let last_deposit_block_hash = state.get_last_deposit_block_hash(rwtxn)?;
-    let last_withdrawal_bundle_event_block_hash =
-        state.get_last_withdrawal_bundle_event_block_hash(rwtxn)?;
-    let last_2wpd_block = match (
-        last_deposit_block_hash,
-        last_withdrawal_bundle_event_block_hash,
-    ) {
-        (None, None) => None,
-        (Some(last_deposit_block_hash), None) => Some(last_deposit_block_hash),
-        (None, Some(last_withdrawal_bundle_event_block_hash)) => {
-            Some(last_withdrawal_bundle_event_block_hash)
-        }
-        (
-            Some(last_deposit_block_hash),
-            Some(last_withdrawal_bundle_event_block_hash),
-        ) => {
-            if archive.is_main_descendant(
-                rwtxn,
-                last_deposit_block_hash,
-                last_withdrawal_bundle_event_block_hash,
-            )? {
-                Some(last_withdrawal_bundle_event_block_hash)
-            } else {
-                assert!(archive.is_main_descendant(
-                    rwtxn,
-                    last_withdrawal_bundle_event_block_hash,
-                    last_deposit_block_hash
-                )?);
-                Some(last_deposit_block_hash)
-            }
-        }
-    };
-    let two_way_peg_data = {
-        use std::sync::atomic::Ordering::SeqCst;
-        use futures::FutureExt as _;
-        let start = std::time::Instant::now();
-        cusf_mainchain
-            .get_two_way_peg_data(last_2wpd_block, header.prev_main_hash)
-            .inspect(move |_| {
-                let elapsed = std::time::Instant::now() - start;
-                let elapsed_micros = elapsed.as_micros().try_into().unwrap();
-                let acc = TWO_WAY_PEG_DATA_REQUESTS_DURATION_MICROS.fetch_update(SeqCst, SeqCst, |acc| {
-                    acc.checked_add(elapsed_micros)
-                }).unwrap();
-                tracing::debug!(
-                    duration_micros = %(acc + elapsed_micros),
-                    "Cumulative 2WPD request time"
-                )
-            })
-        }
-        .await?;
-    */
     let block_hash = header.hash();
     let _fees: bitcoin::Amount = state.validate_block(rwtxn, header, body)?;
     if tracing::enabled!(tracing::Level::DEBUG) {
@@ -354,35 +295,18 @@ where
     };
     // Batch Request 2WPD
     let mut two_way_peg_data_batch = {
-        use futures::FutureExt as _;
-        use std::sync::atomic::Ordering::SeqCst;
         let common_ancestor_header =
             if let Some(common_ancestor) = common_ancestor {
                 Some(archive.get_header(&rwtxn, common_ancestor)?)
             } else {
                 None
             };
-        let start = std::time::Instant::now();
-        cusf_mainchain
-            .get_two_way_peg_data(
-                common_ancestor_header.map(|common_ancestor_header| {
-                    common_ancestor_header.prev_main_hash
-                }),
-                blocks_to_apply.head.0.prev_main_hash,
-            )
-            .inspect(move |_| {
-                let elapsed = std::time::Instant::now() - start;
-                let elapsed_micros = elapsed.as_micros().try_into().unwrap();
-                let acc = TWO_WAY_PEG_DATA_REQUESTS_DURATION_MICROS
-                    .fetch_update(SeqCst, SeqCst, |acc| {
-                        acc.checked_add(elapsed_micros)
-                    })
-                    .unwrap();
-                tracing::debug!(
-                    duration_micros = %(acc + elapsed_micros),
-                    "Cumulative 2WPD request time"
-                )
-            })
+        cusf_mainchain.get_two_way_peg_data(
+            common_ancestor_header.map(|common_ancestor_header| {
+                common_ancestor_header.prev_main_hash
+            }),
+            blocks_to_apply.head.0.prev_main_hash,
+        )
     }
     .await?;
     // Disconnect tip until common ancestor is reached
@@ -534,7 +458,10 @@ where
         // Attempt to switch to a descendant tip once a body has been
         // stored, if all other ancestor bodies are available.
         // Each descendant tip maps to the peers that sent that tip.
-        descendant_tips: &mut HashMap<Tip, HashMap<Tip, HashSet<SocketAddr>>>,
+        descendant_tips: &mut HashMap<
+            crate::types::BlockHash,
+            HashMap<Tip, HashSet<SocketAddr>>,
+        >,
         new_tip_ready_tx: &UnboundedSender<NewTipReadyMessage>,
         addr: SocketAddr,
         resp: PeerResponse,
@@ -574,7 +501,15 @@ where
                     let missing_bodies = ctxt
                         .archive
                         .get_missing_bodies(&rotxn, block_hash, ancestor)?;
-                    if missing_bodies.is_empty() {
+                    if let Some(earliest_missing_body) = missing_bodies.first()
+                    {
+                        descendant_tips
+                            .entry(*earliest_missing_body)
+                            .or_default()
+                            .entry(descendant_tip)
+                            .or_default()
+                            .insert(addr);
+                    } else {
                         let message = PeerConnectionMessage::BodiesAvailable(
                             peer_state_id,
                         );
@@ -586,7 +521,19 @@ where
                 // and send new tip ready if so
                 {
                     let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
-                    let tip_hash = ctxt.state.try_get_tip(&rotxn)?;
+                    let tip = ctxt
+                        .state
+                        .try_get_tip(&rotxn)?
+                        .map(|tip_hash| {
+                            let bmm_verification = ctxt
+                                .archive
+                                .get_best_main_verification(&rotxn, tip_hash)?;
+                            Ok::<_, Error>(Tip {
+                                block_hash: tip_hash,
+                                main_block_hash: bmm_verification,
+                            })
+                        })
+                        .transpose()?;
                     // Find the BMM verification that is an ancestor of
                     // `main_descendant_tip`
                     let main_block_hash = ctxt
@@ -617,7 +564,7 @@ where
                         main_block_hash,
                     };
 
-                    if header.prev_side_hash == tip_hash {
+                    if header.prev_side_hash == tip.map(|tip| tip.block_hash) {
                         tracing::trace!(
                             ?block_tip,
                             %addr,
@@ -628,17 +575,17 @@ where
                             .unbounded_send((block_tip, Some(addr), None))
                             .map_err(Error::SendNewTipReady)?;
                     }
-                    let Some(descendant_tips) =
-                        descendant_tips.remove(&block_tip)
+                    let Some(block_descendant_tips) =
+                        descendant_tips.remove(&block_hash)
                     else {
                         return Ok(());
                     };
-                    for (descendant_tip, sources) in descendant_tips {
-                        let common_ancestor = if let Some(tip_hash) = tip_hash {
+                    for (descendant_tip, sources) in block_descendant_tips {
+                        let common_ancestor = if let Some(tip) = tip {
                             ctxt.archive.last_common_ancestor(
                                 &rotxn,
                                 descendant_tip.block_hash,
-                                tip_hash,
+                                tip.block_hash,
                             )?
                         } else {
                             None
@@ -648,23 +595,62 @@ where
                             descendant_tip.block_hash,
                             common_ancestor,
                         )?;
-                        if missing_bodies.is_empty() {
-                            tracing::debug!(
-                                ?descendant_tip,
-                                "no missing bodies, submitting new tip ready to sources"
-                            );
+                        // If a better tip is ready, send a notification
+                        'better_tip: {
+                            let next_tip = if let Some(earliest_missing_body) =
+                                missing_bodies.first()
+                            {
+                                descendant_tips
+                                    .entry(*earliest_missing_body)
+                                    .or_default()
+                                    .entry(descendant_tip)
+                                    .or_default()
+                                    .extend(sources.iter().cloned());
 
-                            for addr in sources {
-                                tracing::trace!(%addr, ?descendant_tip, "sending new tip ready");
-                                let () = new_tip_ready_tx
-                                    .unbounded_send((
-                                        descendant_tip,
-                                        Some(addr),
-                                        None,
-                                    ))
-                                    .map_err(|err| {
-                                        Error::SendNewTipReady(err)
-                                    })?;
+                                // Parent of the earlist missing body
+                                ctxt.archive
+                                    .get_header(&rotxn, *earliest_missing_body)?
+                                    .prev_side_hash
+                                    .map(|tip_hash| {
+                                        let bmm_verification = ctxt
+                                            .archive
+                                            .get_best_main_verification(
+                                                &rotxn, tip_hash,
+                                            )?;
+                                        Ok::<_, Error>(Tip {
+                                            block_hash: tip_hash,
+                                            main_block_hash: bmm_verification,
+                                        })
+                                    })
+                                    .transpose()?
+                            } else {
+                                Some(descendant_tip)
+                            };
+                            let Some(next_tip) = next_tip else {
+                                break 'better_tip;
+                            };
+                            if let Some(tip) = tip
+                                && ctxt
+                                    .archive
+                                    .better_tip(&rotxn, tip, next_tip)?
+                                    != Some(next_tip)
+                            {
+                                break 'better_tip;
+                            } else {
+                                tracing::debug!(
+                                    new_tip = ?next_tip,
+                                    "sending new tip ready to sources"
+                                );
+                                for addr in sources {
+                                    tracing::trace!(%addr, new_tip = ?next_tip, "sending new tip ready");
+                                    let () = new_tip_ready_tx
+                                        .unbounded_send((
+                                            next_tip,
+                                            Some(addr),
+                                            None,
+                                        ))
+                                        .map_err(Error::SendNewTipReady)?;
+                                }
                             }
                         }
                     }
@@ -869,8 +855,10 @@ where
         // Attempt to switch to a descendant tip once a body has been
         // stored, if all other ancestor bodies are available.
         // Each descendant tip maps to the peers that sent that tip.
-        let mut descendant_tips =
-            HashMap::<Tip, HashMap<Tip, HashSet<SocketAddr>>>::new();
+        let mut descendant_tips = HashMap::<
+            crate::types::BlockHash,
+            HashMap<Tip, HashSet<SocketAddr>>,
+        >::new();
         // Map associating mainchain task requests with the peer(s) that
         // caused the request, and the request peer state ID
         let mut mainchain_task_request_sources = HashMap::<
