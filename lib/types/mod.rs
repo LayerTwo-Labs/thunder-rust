@@ -369,7 +369,8 @@ impl Accumulator {
             }
         }
         tracing::trace!(
-            accumulator = %self.0,
+            leaves = %self.0.leaves,
+            roots = ?self.get_roots(),
             insertions = ?insertions,
             deletions = ?deletions,
             "Applying diff"
@@ -378,7 +379,11 @@ impl Accumulator {
             .0
             .modify(&insertions, &deletions)
             .map_err(UtreexoError)?;
-        tracing::debug!(accumulator = %self.0, "Applied diff");
+        tracing::debug!(
+            leaves = %self.0.leaves,
+            roots = ?self.get_roots(),
+            "Applied diff"
+        );
         Ok(())
     }
 
