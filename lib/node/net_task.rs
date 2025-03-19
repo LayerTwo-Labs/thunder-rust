@@ -19,9 +19,8 @@ use futures::{
 use nonempty::NonEmpty;
 use sneed::{DbError, EnvError, RwTxn, RwTxnError, db};
 use thiserror::Error;
-use tokio::task::JoinHandle;
+use tokio::task::{self, JoinHandle};
 use tokio_stream::StreamNotifyClose;
-use tokio_util::task::LocalPoolHandle;
 
 use super::mainchain_task::{self, MainchainTaskHandle};
 use crate::{
@@ -75,7 +74,7 @@ pub enum Error {
     State(#[from] state::Error),
 }
 
-async fn connect_tip_(
+fn connect_tip_(
     rwtxn: &mut RwTxn<'_>,
     archive: &Archive,
     mempool: &MemPool,
@@ -107,16 +106,12 @@ async fn connect_tip_(
     Ok(())
 }
 
-async fn disconnect_tip_<Transport>(
+fn disconnect_tip_(
     rwtxn: &mut RwTxn<'_>,
     archive: &Archive,
-    cusf_mainchain: &mut mainchain::ValidatorClient<Transport>,
     mempool: &MemPool,
     state: &State,
-) -> Result<(), Error>
-where
-    Transport: proto::Transport,
-{
+) -> Result<(), Error> {
     let tip_block_hash =
         state.try_get_tip(rwtxn)?.ok_or(state::Error::NoTip)?;
     let tip_header = archive.get_header(rwtxn, tip_block_hash)?;
@@ -186,9 +181,24 @@ where
                 }
             }
         };
-        cusf_mainchain
-            .get_two_way_peg_data(start_block_hash, tip_header.prev_main_hash)
-            .await?
+        let block_infos: Vec<_> = archive
+            .main_ancestors(rwtxn, tip_header.prev_main_hash)
+            .take_while(|ancestor| {
+                Ok(Some(ancestor) != start_block_hash.as_ref())
+            })
+            .filter_map(|ancestor| {
+                let block_info =
+                    archive.get_main_block_info(rwtxn, &ancestor)?;
+                if block_info.events.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some((ancestor, block_info)))
+                }
+            })
+            .collect()?;
+        mainchain::TwoWayPegData {
+            block_info: block_infos.into_iter().rev().collect(),
+        }
     };
     let () = state.disconnect_two_way_peg_data(rwtxn, &two_way_peg_data)?;
     let () = state.disconnect_tip(rwtxn, &tip_header, &tip_body)?;
@@ -223,17 +233,13 @@ where
 /// The new tip block and all ancestor blocks must exist in the node's archive.
 /// A result of `Ok(true)` indicates a successful re-org.
 /// A result of `Ok(false)` indicates that no re-org was attempted.
-async fn reorg_to_tip<Transport>(
+fn reorg_to_tip(
     env: &sneed::Env,
     archive: &Archive,
-    cusf_mainchain: &mut mainchain::ValidatorClient<Transport>,
     mempool: &MemPool,
     state: &State,
     new_tip: Tip,
-) -> Result<bool, Error>
-where
-    Transport: proto::Transport,
-{
+) -> Result<bool, Error> {
     let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
     let tip_height = state.try_get_height(&rwtxn)?;
     let tip = state
@@ -293,22 +299,6 @@ where
             tail: ancestors,
         }
     };
-    // Batch Request 2WPD
-    let mut two_way_peg_data_batch = {
-        let common_ancestor_header =
-            if let Some(common_ancestor) = common_ancestor {
-                Some(archive.get_header(&rwtxn, common_ancestor)?)
-            } else {
-                None
-            };
-        cusf_mainchain.get_two_way_peg_data(
-            common_ancestor_header.map(|common_ancestor_header| {
-                common_ancestor_header.prev_main_hash
-            }),
-            blocks_to_apply.head.0.prev_main_hash,
-        )
-    }
-    .await?;
     // Disconnect tip until common ancestor is reached
     if let Some(tip_height) = tip_height {
         let common_ancestor_height =
@@ -331,51 +321,57 @@ where
                 tip_height + 1
             };
         for _ in 0..disconnects {
-            let () = disconnect_tip_(
-                &mut rwtxn,
-                archive,
-                cusf_mainchain,
-                mempool,
-                state,
-            )
-            .await?;
+            let () = disconnect_tip_(&mut rwtxn, archive, mempool, state)?;
         }
     }
     {
         let tip_hash = state.try_get_tip(&rwtxn)?;
         assert_eq!(tip_hash, common_ancestor);
     }
+    let mut two_way_peg_data_batch: Vec<_> = {
+        let common_ancestor_header =
+            if let Some(common_ancestor) = common_ancestor {
+                Some(archive.get_header(&rwtxn, common_ancestor)?)
+            } else {
+                None
+            };
+        let common_ancestor_prev_main_hash =
+            common_ancestor_header.map(|header| header.prev_main_hash);
+        archive
+            .main_ancestors(&rwtxn, blocks_to_apply.head.0.prev_main_hash)
+            .take_while(|ancestor| {
+                Ok(Some(ancestor) != common_ancestor_prev_main_hash.as_ref())
+            })
+            .map(|ancestor| {
+                let block_info =
+                    archive.get_main_block_info(&rwtxn, &ancestor)?;
+                Ok((ancestor, block_info))
+            })
+            .collect()?
+    };
     // Apply blocks until new tip is reached
     for (header, body) in blocks_to_apply.into_iter().rev() {
         let two_way_peg_data = {
             let mut two_way_peg_data = mainchain::TwoWayPegData::default();
-            'fill_2wpd: while let Some((block_hash, _)) =
-                two_way_peg_data_batch.block_info.front()
+            'fill_2wpd: while let Some((block_hash, block_info)) =
+                two_way_peg_data_batch.pop()
             {
-                if !archive.is_main_descendant(
-                    &rwtxn,
-                    *block_hash,
-                    header.prev_main_hash,
-                )? {
+                two_way_peg_data.block_info.replace(block_hash, block_info);
+                if block_hash == header.prev_main_hash {
                     break 'fill_2wpd;
                 }
-                let (block_hash, block_info) =
-                    two_way_peg_data_batch.block_info.pop_front().unwrap();
-                two_way_peg_data.block_info.replace(block_hash, block_info);
             }
             two_way_peg_data
         };
         let () = connect_tip_(
             &mut rwtxn,
             archive,
-            // cusf_mainchain,
             mempool,
             state,
             &header,
             &body,
             &two_way_peg_data,
-        )
-        .await?;
+        )?;
         let new_tip_hash = state.try_get_tip(&rwtxn)?.unwrap();
         let bmm_verification =
             archive.get_best_main_verification(&rwtxn, new_tip_hash)?;
@@ -400,10 +396,9 @@ where
 }
 
 #[derive(Clone)]
-struct NetTaskContext<MainchainTransport> {
+struct NetTaskContext {
     env: sneed::Env,
     archive: Archive,
-    cusf_mainchain: mainchain::ValidatorClient<MainchainTransport>,
     mainchain_task: MainchainTaskHandle,
     mempool: MemPool,
     net: Net,
@@ -419,8 +414,8 @@ struct NetTaskContext<MainchainTransport> {
 type NewTipReadyMessage =
     (Tip, Option<SocketAddr>, Option<oneshot::Sender<bool>>);
 
-struct NetTask<MainchainTransport> {
-    ctxt: NetTaskContext<MainchainTransport>,
+struct NetTask {
+    ctxt: NetTaskContext,
     /// Receive a request to forward to the mainchain task, with the address of
     /// the peer connection that caused the request, and the peer state ID of
     /// the request
@@ -449,12 +444,9 @@ struct NetTask<MainchainTransport> {
     peer_info_rx: PeerInfoRx,
 }
 
-impl<MainchainTransport> NetTask<MainchainTransport>
-where
-    MainchainTransport: proto::Transport,
-{
+impl NetTask {
     async fn handle_response(
-        ctxt: &NetTaskContext<MainchainTransport>,
+        ctxt: &NetTaskContext,
         // Attempt to switch to a descendant tip once a body has been
         // stored, if all other ancestor bodies are available.
         // Each descendant tip maps to the peers that sent that tip.
@@ -789,7 +781,7 @@ where
         }
     }
 
-    async fn run(mut self) -> Result<(), Error> {
+    async fn run(self) -> Result<(), Error> {
         tracing::debug!("starting net task");
         #[derive(Debug)]
         enum MailboxItem {
@@ -899,7 +891,7 @@ where
                 MailboxItem::MainchainTaskResponse(response) => {
                     let request = (&response).into();
                     match response {
-                        mainchain_task::Response::AncestorHeaders(
+                        mainchain_task::Response::AncestorInfos(
                             _block_hash,
                             res,
                         ) => {
@@ -924,42 +916,18 @@ where
                                     .push_internal_message(message, addr);
                             }
                         }
-                        mainchain_task::Response::VerifyBmm(
-                            _block_hash,
-                            res,
-                        ) => {
-                            let Some(sources) =
-                                mainchain_task_request_sources.remove(&request)
-                            else {
-                                continue;
-                            };
-                            let res = res.map_err(Arc::new);
-                            for (addr, peer_state_id) in sources {
-                                let message = match res {
-                                    Ok(bmm_verification_res) => PeerConnectionMessage::BmmVerification {
-                                        res: bmm_verification_res,
-                                        peer_state_id,
-                                    },
-                                    Err(ref err) => PeerConnectionMessage::BmmVerificationError(anyhow::Error::from(err.clone()))
-                                };
-                                let _: bool = self
-                                    .ctxt
-                                    .net
-                                    .push_internal_message(message, addr);
-                            }
-                        }
                     }
                 }
                 MailboxItem::NewTipReady(new_tip, _addr, resp_tx) => {
-                    let reorg_applied = reorg_to_tip(
-                        &self.ctxt.env,
-                        &self.ctxt.archive,
-                        &mut self.ctxt.cusf_mainchain,
-                        &self.ctxt.mempool,
-                        &self.ctxt.state,
-                        new_tip,
-                    )
-                    .await?;
+                    let reorg_applied = task::block_in_place(|| {
+                        reorg_to_tip(
+                            &self.ctxt.env,
+                            &self.ctxt.archive,
+                            &self.ctxt.mempool,
+                            &self.ctxt.state,
+                            new_tip,
+                        )
+                    })?;
                     if let Some(resp_tx) = resp_tx {
                         let () = resp_tx
                             .send(reorg_applied)
@@ -983,25 +951,12 @@ where
                             tracing::error!(%addr, err = format!("{err:#}"), "Peer connection error");
                             let () = self.ctxt.net.remove_active_peer(addr);
                         }
-                        PeerConnectionInfo::NeedBmmVerification {
-                            main_hash,
-                            peer_state_id,
-                        } => {
-                            let request =
-                                mainchain_task::Request::VerifyBmm(main_hash);
-                            let () = self
-                                .forward_mainchain_task_request_tx
-                                .unbounded_send((request, addr, peer_state_id))
-                                .map_err(|_| {
-                                    Error::ForwardMainchainTaskRequest
-                                })?;
-                        }
                         PeerConnectionInfo::NeedMainchainAncestors {
                             main_hash,
                             peer_state_id,
                         } => {
                             let request =
-                                mainchain_task::Request::AncestorHeaders(
+                                mainchain_task::Request::AncestorInfos(
                                     main_hash,
                                 );
                             let () = self
@@ -1080,25 +1035,20 @@ pub(super) struct NetTaskHandle {
 
 impl NetTaskHandle {
     #[allow(clippy::too_many_arguments)]
-    pub fn new<MainchainTransport>(
-        local_pool: LocalPoolHandle,
+    pub fn new(
+        runtime: &tokio::runtime::Runtime,
         env: sneed::Env,
         archive: Archive,
-        cusf_mainchain: mainchain::ValidatorClient<MainchainTransport>,
         mainchain_task: MainchainTaskHandle,
         mainchain_task_response_rx: UnboundedReceiver<mainchain_task::Response>,
         mempool: MemPool,
         net: Net,
         peer_info_rx: PeerInfoRx,
         state: State,
-    ) -> Self
-    where
-        MainchainTransport: proto::Transport + Send + 'static,
-    {
+    ) -> Self {
         let ctxt = NetTaskContext {
             env,
             archive,
-            cusf_mainchain,
             mainchain_task,
             mempool,
             net,
@@ -1118,7 +1068,7 @@ impl NetTaskHandle {
             new_tip_ready_rx,
             peer_info_rx,
         };
-        let task = local_pool.spawn_pinned(|| async {
+        let task = runtime.spawn(async {
             if let Err(err) = task.run().await {
                 let err = anyhow::Error::from(err);
                 tracing::error!("Net task error: {err:#}");

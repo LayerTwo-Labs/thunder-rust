@@ -247,11 +247,6 @@ pub enum Request {
 #[derive(Debug)]
 pub enum Info {
     Error(ConnectionError),
-    /// Need BMM verification for the specified tip
-    NeedBmmVerification {
-        main_hash: bitcoin::BlockHash,
-        peer_state_id: PeerStateId,
-    },
     /// Need Mainchain ancestors for the specified tip
     NeedMainchainAncestors {
         main_hash: bitcoin::BlockHash,

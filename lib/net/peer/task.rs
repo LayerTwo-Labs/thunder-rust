@@ -455,7 +455,6 @@ impl ConnectionTask {
 
     /// * Request any missing mainchain headers
     /// * Check claimed work
-    /// * Request BMM commitments if necessary
     /// * Check that BMM commitment matches peer tip
     /// * Check if peer tip is better, requesting headers if necessary
     /// * If peer tip is better:
@@ -496,13 +495,13 @@ impl ConnectionTask {
                 total_work,
             })
         };
-        // Check claimed work and request mainchain headers and BMM commitments
-        // if necessary
+        // Check claimed work, request mainchain headers if necessary, verify
+        // BMM
         {
             let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
             match ctxt.archive.try_get_main_header_info(
                 &rotxn,
-                peer_tip_info.tip.main_block_hash,
+                &peer_tip_info.tip.main_block_hash,
             )? {
                 None => {
                     let info = Info::NeedMainchainAncestors {
@@ -524,19 +523,13 @@ impl ConnectionTask {
                         };
                         return Err(ConnectionError::PeerBan(ban_reason));
                     }
-                    let Some(bmm_commitment) =
-                        ctxt.archive.try_get_main_bmm_commitment(
+                    let bmm_commitment = ctxt
+                        .archive
+                        .get_main_block_info(
                             &rotxn,
-                            peer_tip_info.tip.main_block_hash,
+                            &peer_tip_info.tip.main_block_hash,
                         )?
-                    else {
-                        let info = Info::NeedBmmVerification {
-                            main_hash: peer_tip_info.tip.main_block_hash,
-                            peer_state_id: peer_state.into(),
-                        };
-                        info_tx.unbounded_send(info)?;
-                        return Ok(());
-                    };
+                        .bmm_commitment;
                     if bmm_commitment != Some(peer_tip_info.tip.block_hash) {
                         let ban_reason =
                             BanReason::BmmVerificationFailed(peer_tip_info.tip);

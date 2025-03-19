@@ -469,13 +469,21 @@ pub struct Tip {
     Deserialize,
     Eq,
     Hash,
+    Ord,
     PartialEq,
+    PartialOrd,
     Serialize,
 )]
 pub struct Version {
     pub major: u64,
     pub minor: u64,
     pub patch: u64,
+}
+
+impl std::fmt::Display for Version {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
 }
 
 impl From<semver::Version> for Version {
