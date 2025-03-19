@@ -14,7 +14,7 @@ use sneed::{
 
 use crate::types::{
     Accumulator, BlockHash, BmmResult, Body, Header, Tip, VERSION, Version,
-    proto::mainchain::{self, Deposit},
+    proto::mainchain,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -82,11 +82,6 @@ pub struct Archive {
         SerdeBincode<HashMap<bitcoin::BlockHash, BmmResult>>,
     >,
     bodies: DatabaseUnique<SerdeBincode<BlockHash>, SerdeBincode<Body>>,
-    /// Deposits by mainchain block, sorted first-to-last in each block
-    deposits: DatabaseUnique<
-        SerdeBincode<bitcoin::BlockHash>,
-        SerdeBincode<Vec<Deposit>>,
-    >,
     /// Ancestors, indexed exponentially such that the nth element in a vector
     /// corresponds to the ancestor 2^(i+1) blocks before.
     /// eg.
@@ -145,7 +140,7 @@ pub struct Archive {
 }
 
 impl Archive {
-    pub const NUM_DBS: u32 = 15;
+    pub const NUM_DBS: u32 = 14;
 
     pub fn new(env: &sneed::Env) -> Result<Self, Error> {
         let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
@@ -161,8 +156,8 @@ impl Archive {
                         patch: 0,
                     } =>
             {
-                // `main_bmm_commitments` was removed in 0.12.0, and replaced
-                // with `main_block_infos`
+                // `deposits` and `main_bmm_commitments` were removed in
+                // 0.12.0, and `main_block_infos` was added
                 return Err(Error::IncompatibleVersion {
                     version: db_version,
                     db_path: env.path().to_path_buf(),
@@ -183,8 +178,6 @@ impl Archive {
             DatabaseUnique::create(env, &mut rwtxn, "bmm_results")
                 .map_err(EnvError::from)?;
         let bodies = DatabaseUnique::create(env, &mut rwtxn, "bodies")
-            .map_err(EnvError::from)?;
-        let deposits = DatabaseUnique::create(env, &mut rwtxn, "deposits")
             .map_err(EnvError::from)?;
         let exponential_ancestors =
             DatabaseUnique::create(env, &mut rwtxn, "exponential_ancestors")
@@ -241,7 +234,6 @@ impl Archive {
             block_hash_to_height,
             bmm_results,
             bodies,
-            deposits,
             exponential_ancestors,
             exponential_main_ancestors,
             headers,
@@ -347,27 +339,6 @@ impl Archive {
     ) -> Result<Body, Error> {
         self.try_get_body(rotxn, block_hash)?
             .ok_or(Error::NoBody(block_hash))
-    }
-
-    pub fn try_get_deposits(
-        &self,
-        rotxn: &RoTxn,
-        block_hash: bitcoin::BlockHash,
-    ) -> Result<Option<Vec<Deposit>>, Error> {
-        let deposits = self
-            .deposits
-            .try_get(rotxn, &block_hash)
-            .map_err(DbError::from)?;
-        Ok(deposits)
-    }
-
-    pub fn get_deposits(
-        &self,
-        rotxn: &RoTxn,
-        block_hash: bitcoin::BlockHash,
-    ) -> Result<Vec<Deposit>, Error> {
-        self.try_get_deposits(rotxn, block_hash)?
-            .ok_or(Error::NoDepositsInfo(block_hash))
     }
 
     pub fn try_get_header(
@@ -720,20 +691,6 @@ impl Archive {
         }
         self.bodies
             .put(rwtxn, &block_hash, body)
-            .map_err(DbError::from)?;
-        Ok(())
-    }
-
-    /// Store deposit info for a block
-    pub fn put_deposits(
-        &self,
-        rwtxn: &mut RwTxn,
-        block_hash: bitcoin::BlockHash,
-        mut deposits: Vec<Deposit>,
-    ) -> Result<(), Error> {
-        deposits.sort_by_key(|deposit| deposit.tx_index);
-        self.deposits
-            .put(rwtxn, &block_hash, &deposits)
             .map_err(DbError::from)?;
         Ok(())
     }

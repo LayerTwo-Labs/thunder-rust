@@ -9,7 +9,6 @@ use std::{
 use bitcoin::amount::CheckedSum;
 use fallible_iterator::FallibleIterator;
 use futures::{Stream, future::BoxFuture};
-use hashlink::{LinkedHashMap, linked_hash_map};
 use sneed::{Env, EnvError, RwTxnError, db::error::Error as DbError};
 use tokio::sync::Mutex;
 use tonic::transport::Channel;
@@ -90,63 +89,6 @@ impl From<state::Error> for Error {
     fn from(err: state::Error) -> Self {
         Self::State(Box::new(err))
     }
-}
-
-/// Request any missing two way peg data up to the specified block hash.
-/// All ancestor headers must exist in the archive.
-// TODO: deposits only for now
-#[allow(dead_code)]
-async fn request_two_way_peg_data<Transport>(
-    env: &sneed::Env,
-    archive: &Archive,
-    mainchain: &mut mainchain::ValidatorClient<Transport>,
-    block_hash: bitcoin::BlockHash,
-) -> Result<(), Error>
-where
-    Transport: proto::Transport,
-{
-    // last block for which deposit info is known
-    let last_known_deposit_info = {
-        let rotxn = env.read_txn().map_err(EnvError::from)?;
-        #[allow(clippy::let_and_return)]
-        let last_known_deposit_info = archive
-            .main_ancestors(&rotxn, block_hash)
-            .find(|block_hash| {
-                let deposits = archive.try_get_deposits(&rotxn, *block_hash)?;
-                Ok(deposits.is_some())
-            })?;
-        last_known_deposit_info
-    };
-    if last_known_deposit_info == Some(block_hash) {
-        return Ok(());
-    }
-    let two_way_peg_data = mainchain
-        .get_two_way_peg_data(last_known_deposit_info, block_hash)
-        .await?;
-    let mut block_deposits =
-        LinkedHashMap::<_, _>::from_iter(two_way_peg_data.into_deposits());
-    let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
-    let () = archive
-        .main_ancestors(&rwtxn, block_hash)
-        .take_while(|block_hash| {
-            Ok(last_known_deposit_info != Some(*block_hash))
-        })
-        .for_each(|block_hash| {
-            match block_deposits.entry(block_hash) {
-                linked_hash_map::Entry::Occupied(_) => (),
-                linked_hash_map::Entry::Vacant(entry) => {
-                    entry.insert(Vec::new());
-                }
-            };
-            Ok(())
-        })?;
-    block_deposits
-        .into_iter()
-        .try_for_each(|(block_hash, deposits)| {
-            archive.put_deposits(&mut rwtxn, block_hash, deposits)
-        })?;
-    rwtxn.commit().map_err(RwTxnError::from)?;
-    Ok(())
 }
 
 #[derive(Clone)]
