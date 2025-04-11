@@ -123,17 +123,25 @@ where
         .await?;
     let block_hash = header.hash();
     let _fees: bitcoin::Amount = state.validate_block(rwtxn, header, body)?;
-    if tracing::enabled!(tracing::Level::DEBUG) {
+    let orchard_frontier = if tracing::enabled!(tracing::Level::DEBUG) {
         let merkle_root = body.compute_merkle_root();
         let height = state.try_get_height(rwtxn)?;
-        let () = state.connect_block(rwtxn, header, body)?;
+        let orchard_frontier = state.connect_block(rwtxn, header, body)?;
         tracing::debug!(?height, %merkle_root, %block_hash,
-                            "connected body")
+                            "connected body");
+        orchard_frontier
     } else {
-        let () = state.connect_block(rwtxn, header, body)?;
+        state.connect_block(rwtxn, header, body)?
+    };
+    if let Some(orchard_frontier) = orchard_frontier {
+        let () = archive.put_orchard_frontier(
+            rwtxn,
+            block_hash,
+            &orchard_frontier,
+        )?;
     }
-    let () = state.connect_two_way_peg_data(rwtxn, &two_way_peg_data)?;
-    let accumulator = state.get_accumulator(rwtxn)?;
+    let accumulator =
+        state.connect_two_way_peg_data(rwtxn, &two_way_peg_data)?;
     let () = archive.put_header(rwtxn, header)?;
     let () = archive.put_body(rwtxn, block_hash, body)?;
     let () = archive.put_accumulator(rwtxn, block_hash, &accumulator)?;
@@ -228,31 +236,23 @@ where
             .await?
     };
     let () = state.disconnect_two_way_peg_data(rwtxn, &two_way_peg_data)?;
-    let () = state.disconnect_tip(rwtxn, &tip_header, &tip_body)?;
-    // TODO: revert accumulator only necessary because rustreexo does not
-    // support undo yet
-    {
-        match state.try_get_tip(rwtxn)? {
-            Some(new_tip) => {
-                let accumulator = archive.get_accumulator(rwtxn, new_tip)?;
-                let () = state
-                    .utreexo_accumulator
-                    .put(rwtxn, &(), &accumulator)
-                    .map_err(DbError::from)?;
-            }
-            None => {
-                state
-                    .utreexo_accumulator
-                    .delete(rwtxn, &())
-                    .map_err(DbError::from)?;
-            }
-        };
-    }
+    let prev_accumulator =
+        archive.get_accumulator(rwtxn, &tip_header.prev_side_hash)?;
+    let prev_frontier = archive
+        .orchard_frontiers()
+        .try_get(rwtxn, &tip_header.prev_side_hash)
+        .map_err(archive::Error::from)?;
+    let () = state.disconnect_tip(
+        rwtxn,
+        &tip_header,
+        &tip_body,
+        &prev_accumulator,
+        prev_frontier.as_ref(),
+    )?;
     for transaction in tip_body.authorized_transactions().iter().rev() {
         mempool.put(rwtxn, transaction)?;
     }
-    let accumulator = state.get_accumulator(rwtxn)?;
-    mempool.regenerate_proofs(rwtxn, &accumulator)?;
+    mempool.regenerate_proofs(rwtxn, &prev_accumulator)?;
     Ok(())
 }
 

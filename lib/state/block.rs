@@ -8,8 +8,9 @@ use sneed::{RoTxn, RwTxn};
 use crate::{
     state::{Error, State, error},
     types::{
-        AccumulatorDiff, AmountOverflowError, Body, GetValue as _, Header,
-        InPoint, OutPoint, PointedOutput, SpentOutput, Transaction, orchard,
+        Accumulator, AccumulatorDiff, AmountOverflowError, Body, GetValue as _,
+        Header, InPoint, OutPoint, PointedOutput, SpentOutput, Transaction,
+        orchard,
     },
     wallet::Authorization,
 };
@@ -37,10 +38,7 @@ pub fn validate(
     if body_size > State::body_size_limit(height) {
         return Err(Error::BodyTooLarge);
     }
-    let mut accumulator = state
-        .utreexo_accumulator
-        .try_get(rotxn, &())?
-        .unwrap_or_default();
+    let mut accumulator = state.utreexo_accumulator.get(rotxn, &())?;
     let mut accumulator_diff = AccumulatorDiff::default();
     let mut coinbase_value = bitcoin::Amount::ZERO;
     let merkle_root = body.compute_merkle_root();
@@ -200,12 +198,14 @@ fn connect_transaction(
     Ok(())
 }
 
+/// Returns data that must be archived in order to disconnect to the new tip.
+/// Returns `Ok(Some(_))` if connecting a block changed the orchard frontier.
 pub fn connect(
     state: &State,
     rwtxn: &mut RwTxn,
     header: &Header,
     body: &Body,
-) -> Result<(), Error> {
+) -> Result<Option<orchard::Frontier>, Error> {
     let tip_hash = state.try_get_tip(rwtxn)?;
     if tip_hash != header.prev_side_hash {
         let err = error::InvalidHeader::PrevSideHash {
@@ -222,10 +222,7 @@ pub fn connect(
         };
         return Err(err);
     }
-    let mut accumulator = state
-        .utreexo_accumulator
-        .try_get(rwtxn, &())?
-        .unwrap_or_default();
+    let mut accumulator = state.utreexo_accumulator.get(rwtxn, &())?;
     let mut accumulator_diff = AccumulatorDiff::default();
     let mut frontier = state
         .orchard
@@ -260,17 +257,27 @@ pub fn connect(
     let () = accumulator.apply_diff(accumulator_diff)?;
     state.utreexo_accumulator.put(rwtxn, &(), &accumulator)?;
     let () = state.orchard.put_frontier(rwtxn, &frontier)?;
-    let _: bool = state.orchard.put_historical_root(rwtxn, frontier.root())?;
-    Ok(())
+    let root_changed: bool = state.orchard.put_historical_root(
+        rwtxn,
+        block_hash,
+        frontier.root(),
+    )?;
+    let res = if root_changed { Some(frontier) } else { None };
+    Ok(res)
 }
 
-/// Disconnect the orchard components of a transaction
+/// Disconnect the orchard components of a transaction.
+/// The note commitments merkle frontier is not reverted, and must be restored
+/// from a checkpoint.
 fn disconnect_orchard(
-    _state: &State,
-    _rwtxn: &mut RwTxn,
-    _transaction: &Transaction,
+    state: &State,
+    rwtxn: &mut RwTxn,
+    bundle: &orchard::Bundle<orchard::Authorized>,
 ) -> Result<(), error::Orchard> {
-    // FIXME: update frontier, etc.
+    // Delete used nullifiers
+    for nullifier in bundle.nullifiers() {
+        let _: bool = state.orchard.delete_nullifier(rwtxn, nullifier)?;
+    }
     Ok(())
 }
 
@@ -280,8 +287,10 @@ fn disconnect_transaction(
     transaction: &Transaction,
     accumulator_diff: &mut AccumulatorDiff,
 ) -> Result<(), Error> {
+    if let Some(orchard_bundle) = transaction.orchard_bundle.as_ref() {
+        let () = disconnect_orchard(state, rwtxn, orchard_bundle)?;
+    }
     let txid = transaction.txid();
-    let () = disconnect_orchard(state, rwtxn, transaction)?;
     // delete UTXOs, last-to-first
     transaction.outputs.iter().enumerate().rev().try_for_each(
         |(vout, output)| {
@@ -325,6 +334,8 @@ pub fn disconnect_tip(
     rwtxn: &mut RwTxn,
     header: &Header,
     body: &Body,
+    prev_accumulator: &Accumulator,
+    prev_note_commitments_merkle_frontier: Option<&orchard::Frontier>,
 ) -> Result<(), Error> {
     let tip_hash = state.tip.try_get(rwtxn, &())?.ok_or(Error::NoTip)?;
     if tip_hash != header.hash() {
@@ -342,10 +353,7 @@ pub fn disconnect_tip(
         };
         return Err(err);
     }
-    let mut accumulator = state
-        .utreexo_accumulator
-        .try_get(rwtxn, &())?
-        .unwrap_or_default();
+    let mut accumulator = state.utreexo_accumulator.get(rwtxn, &())?;
     tracing::debug!("Got acc");
     let mut accumulator_diff = AccumulatorDiff::default();
     // revert txs, last-to-first
@@ -388,6 +396,14 @@ pub fn disconnect_tip(
         }
     }
     let () = accumulator.apply_diff(accumulator_diff)?;
-    state.utreexo_accumulator.put(rwtxn, &(), &accumulator)?;
+    // Accumulator is restored from archive, instead of computed during
+    // disconnect
+    state
+        .utreexo_accumulator
+        .put(rwtxn, &(), prev_accumulator)?;
+    if let Some(frontier) = prev_note_commitments_merkle_frontier {
+        state.orchard.put_frontier(rwtxn, frontier)?;
+    }
+    let _: bool = state.orchard.delete_historical_root(rwtxn, tip_hash)?;
     Ok(())
 }

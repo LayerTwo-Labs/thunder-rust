@@ -364,7 +364,7 @@ where
 
     pub fn try_get_accumulator(
         &self,
-        block_hash: BlockHash,
+        block_hash: &Option<BlockHash>,
     ) -> Result<Option<Accumulator>, Error> {
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         Ok(self.archive.try_get_accumulator(&rotxn, block_hash)?)
@@ -372,7 +372,7 @@ where
 
     pub fn get_accumulator(
         &self,
-        block_hash: BlockHash,
+        block_hash: &Option<BlockHash>,
     ) -> Result<Accumulator, Error> {
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         Ok(self.archive.get_accumulator(&rotxn, block_hash)?)

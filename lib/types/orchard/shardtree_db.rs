@@ -311,12 +311,15 @@ pub enum CreateShardTreeDbError {
 pub struct ShardTreeDb<Tag> {
     /// MUST always contain a value.
     cap: DatabaseUnique<UnitKey, SerdeBincode<Tree>, Tag>,
-    checkpoints:
-        DatabaseUnique<SerdeBincode<BlockHash>, SerdeBincode<Checkpoint>, Tag>,
+    checkpoints: DatabaseUnique<
+        SerdeBincode<Option<BlockHash>>,
+        SerdeBincode<Checkpoint>,
+        Tag,
+    >,
     /// Each position may correspond to multiple checkpoints.
     position_to_checkpoint_id: DatabaseDup<
         SerdeBincode<Option<PositionWrapper>>,
-        SerdeBincode<BlockHash>,
+        SerdeBincode<Option<BlockHash>>,
         Tag,
     >,
     shards: DatabaseUnique<SerdeBincode<Address>, SerdeBincode<Tree>, Tag>,
@@ -352,6 +355,14 @@ impl<Tag> ShardTreeDb<Tag> {
             rwtxn,
             &db_name("position_to_checkpoint_id"),
         )?;
+        if !checkpoints.contains_key(rwtxn, &None)? {
+            checkpoints.put(
+                rwtxn,
+                &None,
+                &Checkpoint(shardtree::store::Checkpoint::tree_empty()),
+            )?;
+            position_to_checkpoint_id.put(rwtxn, &None, &None)?;
+        }
         let shards = DatabaseUnique::create(env, rwtxn, &db_name("shards"))?;
         Ok(Self {
             cap,
@@ -490,7 +501,7 @@ impl<'a, Tag> ShardTreeStore<'a, Tag> {
 impl<'a, Tag> shardtree::store::ShardStore for ShardTreeStore<'a, Tag> {
     type H = MerkleHashOrchard;
 
-    type CheckpointId = BlockHash;
+    type CheckpointId = Option<BlockHash>;
 
     type Error = StoreError;
 

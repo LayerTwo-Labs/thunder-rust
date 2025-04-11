@@ -142,6 +142,10 @@ pub enum Error {
     OrchardOverflow(#[from] orchard::OverflowError),
     #[error("Orchard ShardTree error")]
     OrchardShardTree(#[from] orchard::ShardTreeError),
+    #[error(
+        "Failed to truncate orchard shard tree to checkpoint `{checkpoint:?}`"
+    )]
+    OrchardShardTreeTruncate { checkpoint: Option<BlockHash> },
     #[error("Orchard ShardTreeStore error")]
     OrchardShardTreeStore(#[from] orchard::ShardTreeStoreError),
     #[error("Orchard spend error")]
@@ -173,6 +177,9 @@ type Env = sneed::Env<WalletEnv>;
 type RoTxn<'a> = sneed::RoTxn<'a, WalletEnv>;
 pub type RwTxn<'a> = sneed::RwTxn<'a, WalletEnv>;
 
+/// Note with position
+type NotePosition = (orchard::Note, orchard::PositionWrapper);
+
 #[derive(Clone)]
 pub struct Wallet {
     env: sneed::Env<WalletEnv>,
@@ -199,10 +206,10 @@ pub struct Wallet {
     orchard_note_commitments: ShardTreeDb<WalletEnv>,
     orchard_notes: DatabaseUnique<
         SerdeBincode<orchard::Nullifier>,
-        SerdeBincode<(orchard::Note, orchard::PositionWrapper)>,
+        SerdeBincode<NotePosition>,
     >,
     orchard_spent_notes:
-        DatabaseUnique<SerdeBincode<(Txid, u32)>, SerdeBincode<orchard::Note>>,
+        DatabaseUnique<SerdeBincode<(Txid, u32)>, SerdeBincode<NotePosition>>,
     utxos: DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<Output>>,
     stxos: DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<SpentOutput>>,
     /// Block that the wallet was last synced to.
@@ -976,11 +983,12 @@ impl Wallet {
                 orchard_bundle.recover_outputs_with_ovks(&ovks);
             for (idx, _, note, _, _memo) in decrypted_spent_notes {
                 let nf = *orchard_bundle.actions()[idx].nullifier();
+                let (_note, position) = self.orchard_notes.get(&rwtxn, &nf)?;
                 self.orchard_notes.delete(&mut rwtxn, &nf)?;
                 self.orchard_spent_notes.put(
                     &mut rwtxn,
                     &(txid, idx as u32),
-                    &note,
+                    &(note, position),
                 )?;
             }
             for (idx, cmx) in
@@ -1000,21 +1008,70 @@ impl Wallet {
         }
         let block_hash = header.hash();
         let () = self.put_tip(&mut rwtxn, &block_hash)?;
-        let _: bool = shard_tree.checkpoint(block_hash)?;
+        let _: bool = shard_tree.checkpoint(Some(block_hash))?;
         rwtxn = self.put_shard_tree(rwtxn, db_txn, shard_tree)?.unwrap();
         Ok(rwtxn)
     }
 
     /// Disconnects ONLY the orchard effects from a block.
+    /// Does not delete memos.
     /// Updates the wallet tip.
     pub fn disconnect_orchard_block<'a>(
         &self,
-        _rwtxn: RwTxn<'a>,
-        _header: &Header,
-        _body: &Body,
+        mut rwtxn: RwTxn<'a>,
+        header: &Header,
+        body: &Body,
     ) -> Result<RwTxn<'a>, Error> {
-        // FIXME: implement
-        todo!()
+        assert_eq!(self.try_get_tip(&rwtxn)?, Some(header.hash()));
+        assert_eq!(body.compute_merkle_root(), header.merkle_root);
+        let fvk = self.get_orchard_full_viewing_key(&rwtxn)?;
+        let ivks = self.get_orchard_incoming_viewing_keys(&rwtxn)?;
+        let ovks = self.get_orchard_outgoing_viewing_keys(&rwtxn)?;
+        for tx in body.transactions.iter().rev() {
+            let Some(orchard_bundle) = tx.orchard_bundle.as_ref() else {
+                continue;
+            };
+            let txid = tx.txid();
+            let decrypted_notes =
+                orchard_bundle.decrypt_outputs_with_keys(&ivks);
+            for (_, _, note, _, _) in decrypted_notes.into_iter().rev() {
+                let nullifier = note.nullifier(&fvk);
+                self.orchard_notes.delete(&mut rwtxn, &nullifier)?;
+            }
+            let decrypted_spent_notes =
+                orchard_bundle.recover_outputs_with_ovks(&ovks);
+            for (idx, _, note, _, _memo) in
+                decrypted_spent_notes.into_iter().rev()
+            {
+                let nf = *orchard_bundle.actions()[idx].nullifier();
+                let (_, position) = self
+                    .orchard_spent_notes
+                    .get(&rwtxn, &(txid, idx as u32))?;
+                let _: bool = self
+                    .orchard_spent_notes
+                    .delete(&mut rwtxn, &(txid, idx as u32))?;
+                self.orchard_notes.put(&mut rwtxn, &nf, &(note, position))?;
+            }
+        }
+        let prev_tip = header.prev_side_hash;
+        if let Some(prev_tip) = prev_tip {
+            self.tip.put(&mut rwtxn, &(), &prev_tip)?;
+        } else {
+            self.tip.delete(&mut rwtxn, &())?;
+        };
+        let (mut shard_tree, db_txn, rwtxn) =
+            self.get_shard_tree(ShardTreeDbTxn::Rw(rwtxn))?;
+        if !shard_tree.truncate_to_checkpoint(&prev_tip)? {
+            return Err(Error::OrchardShardTreeTruncate {
+                checkpoint: prev_tip,
+            });
+        }
+        let rwtxn = match rwtxn {
+            ShardTreeDbTxn::Ro(_) => panic!("impossible"),
+            ShardTreeDbTxn::Rw(rw) => rw,
+        };
+        let rwtxn = self.put_shard_tree(rwtxn, db_txn, shard_tree)?.unwrap();
+        Ok(rwtxn)
     }
 
     pub fn put_utxos(

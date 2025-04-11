@@ -127,6 +127,13 @@ impl State {
         let orchard = Orchard::new(env, &mut rwtxn)?;
         let utreexo_accumulator =
             DatabaseUnique::create(env, &mut rwtxn, "utreexo_accumulator")?;
+        if !utreexo_accumulator.contains_key(&rwtxn, &())? {
+            utreexo_accumulator.put(
+                &mut rwtxn,
+                &(),
+                &Accumulator::default(),
+            )?;
+        }
         let version = DatabaseUnique::create(env, &mut rwtxn, "state_version")?;
         if version.try_get(&rwtxn, &())?.is_none() {
             version.put(&mut rwtxn, &(), &*VERSION)?;
@@ -456,12 +463,15 @@ impl State {
         block::validate(self, rotxn, header, body)
     }
 
+    /// Returns data that must be archived in order to disconnect to the new
+    /// tip.
+    /// Returns `Ok(Some(_))` if connecting a block changed the orchard frontier.
     pub fn connect_block(
         &self,
         rwtxn: &mut RwTxn,
         header: &Header,
         body: &Body,
-    ) -> Result<(), Error> {
+    ) -> Result<Option<types::orchard::Frontier>, Error> {
         block::connect(self, rwtxn, header, body)
     }
 
@@ -470,15 +480,28 @@ impl State {
         rwtxn: &mut RwTxn,
         header: &Header,
         body: &Body,
+        prev_accumulator: &Accumulator,
+        prev_note_commitments_merkle_frontier: Option<
+            &types::orchard::Frontier,
+        >,
     ) -> Result<(), Error> {
-        block::disconnect_tip(self, rwtxn, header, body)
+        block::disconnect_tip(
+            self,
+            rwtxn,
+            header,
+            body,
+            prev_accumulator,
+            prev_note_commitments_merkle_frontier,
+        )
     }
 
+    /// Returns data that must be archived in order to disconnect to the new
+    /// tip.
     pub fn connect_two_way_peg_data(
         &self,
         rwtxn: &mut RwTxn,
         two_way_peg_data: &TwoWayPegData,
-    ) -> Result<(), Error> {
+    ) -> Result<Accumulator, Error> {
         two_way_peg_data::connect(self, rwtxn, two_way_peg_data)
     }
 

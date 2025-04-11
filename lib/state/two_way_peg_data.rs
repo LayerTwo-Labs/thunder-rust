@@ -11,9 +11,10 @@ use crate::{
         rollback::RollBack,
     },
     types::{
-        AccumulatorDiff, AggregatedWithdrawal, AmountOverflowError, InPoint,
-        M6id, OutPoint, Output, OutputContent, PointedOutput, SpentOutput,
-        WithdrawalBundle, WithdrawalBundleEvent, WithdrawalBundleStatus, hash,
+        Accumulator, AccumulatorDiff, AggregatedWithdrawal,
+        AmountOverflowError, InPoint, M6id, OutPoint, Output, OutputContent,
+        PointedOutput, SpentOutput, WithdrawalBundle, WithdrawalBundleEvent,
+        WithdrawalBundleStatus, hash,
         proto::mainchain::{BlockEvent, TwoWayPegData},
     },
 };
@@ -407,18 +408,16 @@ fn connect_event(
     Ok(())
 }
 
+/// Returns data that must be archived in order to disconnect to the new
+/// tip.
 pub fn connect(
     state: &State,
     rwtxn: &mut RwTxn,
     two_way_peg_data: &TwoWayPegData,
-) -> Result<(), Error> {
+) -> Result<Accumulator, Error> {
     let block_height = state.try_get_height(rwtxn)?.ok_or(Error::NoTip)?;
     tracing::trace!(%block_height, "Connecting 2WPD...");
-    let mut accumulator = state
-        .utreexo_accumulator
-        .try_get(rwtxn, &())
-        .map_err(DbError::from)?
-        .unwrap_or_default();
+    let mut accumulator = state.utreexo_accumulator.get(rwtxn, &())?;
     let mut accumulator_diff = AccumulatorDiff::default();
     let mut latest_deposit_block_hash = None;
     let mut latest_withdrawal_bundle_event_block_hash = None;
@@ -503,7 +502,7 @@ pub fn connect(
         .utreexo_accumulator
         .put(rwtxn, &(), &accumulator)
         .map_err(DbError::from)?;
-    Ok(())
+    Ok(accumulator)
 }
 
 fn disconnect_withdrawal_bundle_submitted(
@@ -788,11 +787,7 @@ pub fn disconnect(
     let block_height = state
         .try_get_height(rwtxn)?
         .expect("Height should not be None");
-    let mut accumulator = state
-        .utreexo_accumulator
-        .try_get(rwtxn, &())
-        .map_err(DbError::from)?
-        .unwrap_or_default();
+    let mut accumulator = state.utreexo_accumulator.get(rwtxn, &())?;
     let mut accumulator_diff = AccumulatorDiff::default();
     let mut latest_deposit_block_hash = None;
     let mut latest_withdrawal_bundle_event_block_hash = None;

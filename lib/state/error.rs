@@ -48,6 +48,7 @@ pub enum Orchard {
 #[transitive(from(db::Clear, db::Error))]
 #[transitive(from(db::Delete, db::Error))]
 #[transitive(from(db::Error, sneed::Error))]
+#[transitive(from(db::Get, db::Error))]
 #[transitive(from(db::Iter, db::Error))]
 #[transitive(from(db::IterInit, db::Error))]
 #[transitive(from(db::IterItem, db::Error))]

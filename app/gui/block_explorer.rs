@@ -102,7 +102,7 @@ impl BlockExplorer {
 
                 if let Some(app) = app
                     && let Ok(Some(acc)) =
-                        app.node.try_get_accumulator(header.hash())
+                        app.node.try_get_accumulator(&Some(header.hash()))
                 {
                     ui.monospace_selectable_multiline(format!(
                         "Utreexo accumulator: \n{}",

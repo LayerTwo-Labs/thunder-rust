@@ -7,16 +7,25 @@ use bitcoin::{self, hashes::Hash as _};
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use heed::types::SerdeBincode;
 use sneed::{
-    DatabaseUnique, EnvError, RoTxn, RwTxn, UnitKey,
-    db::error::Error as DbError, rwtxn::Error as RwTxnError,
+    DatabaseUnique, DbError, EnvError, RoDatabaseUnique, RoTxn, RwTxn,
+    RwTxnError, UnitKey, db, env,
 };
 
 use crate::types::{
     Accumulator, BlockHash, BmmResult, Body, Header, Tip, VERSION, Version,
+    orchard,
     proto::mainchain::{self, Deposit},
 };
 
-#[derive(Debug, thiserror::Error)]
+#[allow(clippy::duplicated_attributes)]
+#[derive(Debug, thiserror::Error, transitive::Transitive)]
+#[transitive(
+    from(db::error::Get, DbError),
+    from(db::error::Put, DbError),
+    from(db::error::TryGet, DbError),
+    from(env::error::CreateDb, EnvError),
+    from(env::error::WriteTxn, EnvError)
+)]
 pub enum Error {
     #[error(transparent)]
     Db(#[from] DbError),
@@ -61,8 +70,11 @@ pub enum Error {
 
 #[derive(Clone)]
 pub struct Archive {
-    accumulators:
-        DatabaseUnique<SerdeBincode<BlockHash>, SerdeBincode<Accumulator>>,
+    /// Utreexo accumulators for blocks that have been successfully applied.
+    accumulators: DatabaseUnique<
+        SerdeBincode<Option<BlockHash>>,
+        SerdeBincode<Accumulator>,
+    >,
     block_hash_to_height:
         DatabaseUnique<SerdeBincode<BlockHash>, SerdeBincode<u32>>,
     /// BMM results for each header.
@@ -125,6 +137,13 @@ pub struct Archive {
         SerdeBincode<bitcoin::BlockHash>,
         SerdeBincode<HashSet<bitcoin::BlockHash>>,
     >,
+    /// Orchard note commitment merkle frontiers for blocks that have been
+    /// successfully applied. Frontiers are only stored for blocks that change
+    /// the frontier.
+    orchard_frontiers: DatabaseUnique<
+        SerdeBincode<Option<BlockHash>>,
+        SerdeBincode<orchard::Frontier>,
+    >,
     /// Successor blocks. ALL known block hashes MUST be present.
     successors: DatabaseUnique<
         SerdeBincode<Option<BlockHash>>,
@@ -140,83 +159,65 @@ pub struct Archive {
 }
 
 impl Archive {
-    pub const NUM_DBS: u32 = 15;
+    pub const NUM_DBS: u32 = 16;
 
     pub fn new(env: &sneed::Env) -> Result<Self, Error> {
-        let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
+        let mut rwtxn = env.write_txn()?;
         let accumulators =
-            DatabaseUnique::create(env, &mut rwtxn, "accumulators")
-                .map_err(EnvError::from)?;
+            DatabaseUnique::create(env, &mut rwtxn, "accumulators")?;
+        if !accumulators.contains_key(&rwtxn, &None)? {
+            accumulators.put(&mut rwtxn, &None, &Accumulator::default())?
+        }
         let block_hash_to_height =
-            DatabaseUnique::create(env, &mut rwtxn, "hash_to_height")
-                .map_err(EnvError::from)?;
+            DatabaseUnique::create(env, &mut rwtxn, "hash_to_height")?;
         let bmm_results =
-            DatabaseUnique::create(env, &mut rwtxn, "bmm_results")
-                .map_err(EnvError::from)?;
-        let bodies = DatabaseUnique::create(env, &mut rwtxn, "bodies")
-            .map_err(EnvError::from)?;
-        let deposits = DatabaseUnique::create(env, &mut rwtxn, "deposits")
-            .map_err(EnvError::from)?;
+            DatabaseUnique::create(env, &mut rwtxn, "bmm_results")?;
+        let bodies = DatabaseUnique::create(env, &mut rwtxn, "bodies")?;
+        let deposits = DatabaseUnique::create(env, &mut rwtxn, "deposits")?;
         let exponential_ancestors =
-            DatabaseUnique::create(env, &mut rwtxn, "exponential_ancestors")
-                .map_err(EnvError::from)?;
+            DatabaseUnique::create(env, &mut rwtxn, "exponential_ancestors")?;
         let exponential_main_ancestors = DatabaseUnique::create(
             env,
             &mut rwtxn,
             "exponential_main_ancestors",
-        )
-        .map_err(EnvError::from)?;
-        let headers = DatabaseUnique::create(env, &mut rwtxn, "headers")
-            .map_err(EnvError::from)?;
+        )?;
+        let headers = DatabaseUnique::create(env, &mut rwtxn, "headers")?;
         let main_block_hash_to_height =
-            DatabaseUnique::create(env, &mut rwtxn, "main_hash_to_height")
-                .map_err(EnvError::from)?;
+            DatabaseUnique::create(env, &mut rwtxn, "main_hash_to_height")?;
         let main_bmm_commitments =
-            DatabaseUnique::create(env, &mut rwtxn, "main_bmm_commitments")
-                .map_err(EnvError::from)?;
+            DatabaseUnique::create(env, &mut rwtxn, "main_bmm_commitments")?;
         let main_header_infos =
-            DatabaseUnique::create(env, &mut rwtxn, "main_header_infos")
-                .map_err(EnvError::from)?;
+            DatabaseUnique::create(env, &mut rwtxn, "main_header_infos")?;
         let main_successors =
-            DatabaseUnique::create(env, &mut rwtxn, "main_successors")
-                .map_err(EnvError::from)?;
+            DatabaseUnique::create(env, &mut rwtxn, "main_successors")?;
         if main_successors
-            .try_get(&rwtxn, &bitcoin::BlockHash::all_zeros())
-            .map_err(DbError::from)?
+            .try_get(&rwtxn, &bitcoin::BlockHash::all_zeros())?
             .is_none()
         {
-            main_successors
-                .put(
-                    &mut rwtxn,
-                    &bitcoin::BlockHash::all_zeros(),
-                    &HashSet::new(),
-                )
-                .map_err(DbError::from)?;
+            main_successors.put(
+                &mut rwtxn,
+                &bitcoin::BlockHash::all_zeros(),
+                &HashSet::new(),
+            )?;
         }
-        let successors = DatabaseUnique::create(env, &mut rwtxn, "successors")
-            .map_err(EnvError::from)?;
-        if successors
-            .try_get(&rwtxn, &None)
-            .map_err(DbError::from)?
-            .is_none()
-        {
-            successors
-                .put(&mut rwtxn, &None, &HashSet::new())
-                .map_err(DbError::from)?;
+        let orchard_frontiers =
+            DatabaseUnique::create(env, &mut rwtxn, "orchard_frontiers")?;
+        if orchard_frontiers.try_get(&rwtxn, &None)?.is_none() {
+            orchard_frontiers.put(
+                &mut rwtxn,
+                &None,
+                &orchard::Frontier::empty(),
+            )?;
         }
-        let total_work = DatabaseUnique::create(env, &mut rwtxn, "total_work")
-            .map_err(EnvError::from)?;
+        let successors = DatabaseUnique::create(env, &mut rwtxn, "successors")?;
+        if successors.try_get(&rwtxn, &None)?.is_none() {
+            successors.put(&mut rwtxn, &None, &HashSet::new())?;
+        }
+        let total_work = DatabaseUnique::create(env, &mut rwtxn, "total_work")?;
         let version =
-            DatabaseUnique::create(env, &mut rwtxn, "archive_version")
-                .map_err(EnvError::from)?;
-        if version
-            .try_get(&rwtxn, &())
-            .map_err(DbError::from)?
-            .is_none()
-        {
-            version
-                .put(&mut rwtxn, &(), &*VERSION)
-                .map_err(DbError::from)?;
+            DatabaseUnique::create(env, &mut rwtxn, "archive_version")?;
+        if version.try_get(&rwtxn, &())?.is_none() {
+            version.put(&mut rwtxn, &(), &*VERSION)?;
         }
         rwtxn.commit().map_err(RwTxnError::from)?;
         Ok(Self {
@@ -232,31 +233,38 @@ impl Archive {
             main_block_hash_to_height,
             main_header_infos,
             main_successors,
+            orchard_frontiers,
             successors,
             total_work,
             _version: version,
         })
     }
 
+    pub fn orchard_frontiers(
+        &self,
+    ) -> &RoDatabaseUnique<
+        SerdeBincode<Option<BlockHash>>,
+        SerdeBincode<orchard::Frontier>,
+    > {
+        &self.orchard_frontiers
+    }
+
     pub fn try_get_accumulator(
         &self,
         rotxn: &RoTxn,
-        block_hash: BlockHash,
+        block_hash: &Option<BlockHash>,
     ) -> Result<Option<Accumulator>, Error> {
-        let accumulator = self
-            .accumulators
-            .try_get(rotxn, &block_hash)
-            .map_err(DbError::from)?;
+        let accumulator = self.accumulators.try_get(rotxn, block_hash)?;
         Ok(accumulator)
     }
 
     pub fn get_accumulator(
         &self,
         rotxn: &RoTxn,
-        block_hash: BlockHash,
+        block_hash: &Option<BlockHash>,
     ) -> Result<Accumulator, Error> {
         self.try_get_accumulator(rotxn, block_hash)?
-            .ok_or(Error::NoAccumulator(block_hash))
+            .ok_or_else(|| Error::NoAccumulator(block_hash.unwrap()))
     }
 
     pub fn try_get_height(
@@ -285,8 +293,7 @@ impl Archive {
     ) -> Result<HashMap<bitcoin::BlockHash, BmmResult>, Error> {
         let results = self
             .bmm_results
-            .try_get(rotxn, &block_hash)
-            .map_err(DbError::from)?
+            .try_get(rotxn, &block_hash)?
             .unwrap_or_default();
         Ok(results)
     }
@@ -316,10 +323,7 @@ impl Archive {
         rotxn: &RoTxn,
         block_hash: BlockHash,
     ) -> Result<Option<Body>, Error> {
-        let body = self
-            .bodies
-            .try_get(rotxn, &block_hash)
-            .map_err(DbError::from)?;
+        let body = self.bodies.try_get(rotxn, &block_hash)?;
         Ok(body)
     }
 
@@ -337,10 +341,7 @@ impl Archive {
         rotxn: &RoTxn,
         block_hash: bitcoin::BlockHash,
     ) -> Result<Option<Vec<Deposit>>, Error> {
-        let deposits = self
-            .deposits
-            .try_get(rotxn, &block_hash)
-            .map_err(DbError::from)?;
+        let deposits = self.deposits.try_get(rotxn, &block_hash)?;
         Ok(deposits)
     }
 
@@ -358,10 +359,7 @@ impl Archive {
         rotxn: &RoTxn,
         block_hash: BlockHash,
     ) -> Result<Option<Header>, Error> {
-        let header = self
-            .headers
-            .try_get(rotxn, &block_hash)
-            .map_err(DbError::from)?;
+        let header = self.headers.try_get(rotxn, &block_hash)?;
         Ok(header)
     }
 
@@ -379,10 +377,8 @@ impl Archive {
         rotxn: &RoTxn,
         main_hash: bitcoin::BlockHash,
     ) -> Result<Option<Option<BlockHash>>, Error> {
-        let commitments = self
-            .main_bmm_commitments
-            .try_get(rotxn, &main_hash)
-            .map_err(DbError::from)?;
+        let commitments =
+            self.main_bmm_commitments.try_get(rotxn, &main_hash)?;
         Ok(commitments)
     }
 
@@ -423,10 +419,7 @@ impl Archive {
         rotxn: &RoTxn,
         block_hash: bitcoin::BlockHash,
     ) -> Result<Option<mainchain::BlockHeaderInfo>, Error> {
-        let header_info = self
-            .main_header_infos
-            .try_get(rotxn, &block_hash)
-            .map_err(DbError::from)?;
+        let header_info = self.main_header_infos.try_get(rotxn, &block_hash)?;
         Ok(header_info)
     }
 
@@ -444,10 +437,7 @@ impl Archive {
         rotxn: &RoTxn,
         block_hash: bitcoin::BlockHash,
     ) -> Result<Option<HashSet<bitcoin::BlockHash>>, Error> {
-        let successors = self
-            .main_successors
-            .try_get(rotxn, &block_hash)
-            .map_err(DbError::from)?;
+        let successors = self.main_successors.try_get(rotxn, &block_hash)?;
         Ok(successors)
     }
 
@@ -466,10 +456,7 @@ impl Archive {
         rotxn: &RoTxn,
         block_hash: Option<BlockHash>,
     ) -> Result<Option<HashSet<BlockHash>>, Error> {
-        let successors = self
-            .successors
-            .try_get(rotxn, &block_hash)
-            .map_err(DbError::from)?;
+        let successors = self.successors.try_get(rotxn, &block_hash)?;
         Ok(successors)
     }
 
@@ -491,10 +478,7 @@ impl Archive {
         rotxn: &RoTxn,
         block_hash: bitcoin::BlockHash,
     ) -> Result<Option<bitcoin::Work>, Error> {
-        let total_work = self
-            .total_work
-            .try_get(rotxn, &block_hash)
-            .map_err(DbError::from)?;
+        let total_work = self.total_work.try_get(rotxn, &block_hash)?;
         Ok(total_work)
     }
 
@@ -563,8 +547,7 @@ impl Archive {
                 let exp_ancestor_index = u32::ilog2(n) - 1;
                 block_hash = self
                     .exponential_ancestors
-                    .get(rotxn, &block_hash)
-                    .map_err(DbError::from)?[exp_ancestor_index as usize];
+                    .get(rotxn, &block_hash)?[exp_ancestor_index as usize];
                 n -= 2 << exp_ancestor_index;
             }
         }
@@ -596,8 +579,7 @@ impl Archive {
                 let exp_ancestor_index = u32::ilog2(n) - 1;
                 block_hash = self
                     .exponential_main_ancestors
-                    .get(rotxn, &block_hash)
-                    .map_err(DbError::from)?[exp_ancestor_index as usize];
+                    .get(rotxn, &block_hash)?[exp_ancestor_index as usize];
                 n -= 2 << exp_ancestor_index;
             }
         }
@@ -611,10 +593,7 @@ impl Archive {
         block_hash: BlockHash,
     ) -> Result<Vec<BlockHash>, Error> {
         let header = self.get_header(rotxn, block_hash)?;
-        let mut res = self
-            .exponential_ancestors
-            .get(rotxn, &block_hash)
-            .map_err(DbError::from)?;
+        let mut res = self.exponential_ancestors.get(rotxn, &block_hash)?;
         if let Some(parent) = header.prev_side_hash {
             res.reverse();
             res.push(parent);
@@ -677,7 +656,7 @@ impl Archive {
         Ok(res)
     }
 
-    /// Store a block body. The header must already exist.
+    /// Store an accumulator for a connected block.
     pub fn put_accumulator(
         &self,
         rwtxn: &mut RwTxn,
@@ -685,8 +664,7 @@ impl Archive {
         accumulator: &Accumulator,
     ) -> Result<(), Error> {
         self.accumulators
-            .put(rwtxn, &block_hash, accumulator)
-            .map_err(DbError::from)?;
+            .put(rwtxn, &Some(block_hash), accumulator)?;
         Ok(())
     }
 
@@ -701,9 +679,7 @@ impl Archive {
         if header.merkle_root != body.compute_merkle_root() {
             return Err(Error::InvalidMerkleRoot);
         }
-        self.bodies
-            .put(rwtxn, &block_hash, body)
-            .map_err(DbError::from)?;
+        self.bodies.put(rwtxn, &block_hash, body)?;
         Ok(())
     }
 
@@ -715,9 +691,7 @@ impl Archive {
         mut deposits: Vec<Deposit>,
     ) -> Result<(), Error> {
         deposits.sort_by_key(|deposit| deposit.tx_index);
-        self.deposits
-            .put(rwtxn, &block_hash, &deposits)
-            .map_err(DbError::from)?;
+        self.deposits.put(rwtxn, &block_hash, &deposits)?;
         Ok(())
     }
 
@@ -741,29 +715,25 @@ impl Archive {
             }
         };
         let block_hash = header.hash();
-        self.block_hash_to_height
-            .put(rwtxn, &block_hash, &height)
-            .map_err(DbError::from)?;
-        self.headers
-            .put(rwtxn, &block_hash, header)
-            .map_err(DbError::from)?;
+        self.block_hash_to_height.put(rwtxn, &block_hash, &height)?;
+        self.headers.put(rwtxn, &block_hash, header)?;
         // Add to successors for predecessor
         {
             let mut pred_successors =
                 self.get_successors(rwtxn, header.prev_side_hash)?;
             pred_successors.insert(block_hash);
-            self.successors
-                .put(rwtxn, &header.prev_side_hash, &pred_successors)
-                .map_err(DbError::from)?;
+            self.successors.put(
+                rwtxn,
+                &header.prev_side_hash,
+                &pred_successors,
+            )?;
         }
         // Store successors
         {
             let successors = self
                 .try_get_successors(rwtxn, Some(block_hash))?
                 .unwrap_or_default();
-            self.successors
-                .put(rwtxn, &Some(block_hash), &successors)
-                .map_err(DbError::from)?;
+            self.successors.put(rwtxn, &Some(block_hash), &successors)?;
         }
         // populate exponential ancestors
         let mut exponential_ancestors = Vec::<BlockHash>::new();
@@ -785,9 +755,11 @@ impl Archive {
                 next_exponential_ancestor_depth *= 2;
             }
         }
-        self.exponential_ancestors
-            .put(rwtxn, &block_hash, &exponential_ancestors)
-            .map_err(DbError::from)?;
+        self.exponential_ancestors.put(
+            rwtxn,
+            &block_hash,
+            &exponential_ancestors,
+        )?;
         // Populate BMM verifications
         {
             let mut bmm_results = self.get_bmm_results(rwtxn, block_hash)?;
@@ -850,9 +822,7 @@ impl Archive {
                     continue;
                 }
             }
-            self.bmm_results
-                .put(rwtxn, &block_hash, &bmm_results)
-                .map_err(DbError::from)?;
+            self.bmm_results.put(rwtxn, &block_hash, &bmm_results)?;
         }
         Ok(())
     }
@@ -873,8 +843,7 @@ impl Archive {
             )?;
         }
         self.main_bmm_commitments
-            .put(rwtxn, &main_hash, &commitment)
-            .map_err(DbError::from)?;
+            .put(rwtxn, &main_hash, &commitment)?;
         let Some(commitment) = commitment else {
             return Ok(());
         };
@@ -911,9 +880,7 @@ impl Archive {
         };
         let mut bmm_results = self.get_bmm_results(rwtxn, commitment)?;
         bmm_results.insert(main_hash, bmm_result);
-        self.bmm_results
-            .put(rwtxn, &commitment, &bmm_results)
-            .map_err(DbError::from)?;
+        self.bmm_results.put(rwtxn, &commitment, &bmm_results)?;
         Ok(())
     }
 
@@ -942,31 +909,27 @@ impl Archive {
                 header_info.work
             };
         self.main_block_hash_to_height
-            .put(rwtxn, &block_hash, &height)
-            .map_err(DbError::from)?;
+            .put(rwtxn, &block_hash, &height)?;
         self.main_header_infos
-            .put(rwtxn, &block_hash, header_info)
-            .map_err(DbError::from)?;
-        self.total_work
-            .put(rwtxn, &block_hash, &total_work)
-            .map_err(DbError::from)?;
+            .put(rwtxn, &block_hash, header_info)?;
+        self.total_work.put(rwtxn, &block_hash, &total_work)?;
         // Add to successors for predecessor
         {
             let mut pred_successors =
                 self.get_main_successors(rwtxn, header_info.prev_block_hash)?;
             pred_successors.insert(block_hash);
-            self.main_successors
-                .put(rwtxn, &header_info.prev_block_hash, &pred_successors)
-                .map_err(DbError::from)?;
+            self.main_successors.put(
+                rwtxn,
+                &header_info.prev_block_hash,
+                &pred_successors,
+            )?;
         }
         // Store successors
         {
             let successors = self
                 .try_get_main_successors(rwtxn, block_hash)?
                 .unwrap_or_default();
-            self.main_successors
-                .put(rwtxn, &block_hash, &successors)
-                .map_err(DbError::from)?;
+            self.main_successors.put(rwtxn, &block_hash, &successors)?;
         }
         // populate exponential ancestors
         let mut exponential_ancestors = Vec::<bitcoin::BlockHash>::new();
@@ -988,9 +951,23 @@ impl Archive {
                 next_exponential_ancestor_depth *= 2;
             }
         }
-        self.exponential_main_ancestors
-            .put(rwtxn, &block_hash, &exponential_ancestors)
-            .map_err(DbError::from)?;
+        self.exponential_main_ancestors.put(
+            rwtxn,
+            &block_hash,
+            &exponential_ancestors,
+        )?;
+        Ok(())
+    }
+
+    pub fn put_orchard_frontier(
+        &self,
+        rwtxn: &mut RwTxn,
+        block_hash: BlockHash,
+        frontier: &orchard::Frontier,
+    ) -> Result<(), Error> {
+        let () =
+            self.orchard_frontiers
+                .put(rwtxn, &Some(block_hash), frontier)?;
         Ok(())
     }
 
