@@ -14,8 +14,8 @@ use bip300301_enforcer_integration_tests::{
 use futures::{
     FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture,
 };
-use thunder::types::OutPoint;
-use thunder_app_rpc_api::RpcClient as _;
+use thunder_orchard::types::OutPoint;
+use thunder_orchard_app_rpc_api::RpcClient as _;
 use tokio::time::sleep;
 use tracing::Instrument as _;
 
@@ -56,14 +56,14 @@ async fn unknown_withdrawal_task(
     let mut enforcer_post_setup = setup(&bin_paths, res_tx.clone()).await?;
     let mut sidechain_withdrawer = PostSetup::setup(
         Init {
-            thunder_app: bin_paths.thunder.clone(),
+            thunder_orchard_app: bin_paths.thunder_orchard.clone(),
             data_dir_suffix: Some("withdrawer".to_owned()),
         },
         &enforcer_post_setup,
         res_tx.clone(),
     )
     .await?;
-    tracing::info!("Setup thunder withdrawer node successfully");
+    tracing::info!("Setup thunder-orchard withdrawer node successfully");
     let withdrawer_deposit_address =
         sidechain_withdrawer.get_deposit_address().await?;
     let () = deposit(
@@ -87,14 +87,14 @@ async fn unknown_withdrawal_task(
     // New sidechain node, starting from scratch
     let mut sidechain_successor = PostSetup::setup(
         Init {
-            thunder_app: bin_paths.thunder,
+            thunder_orchard_app: bin_paths.thunder_orchard,
             data_dir_suffix: Some("successor".to_owned()),
         },
         &enforcer_post_setup,
         res_tx,
     )
     .await?;
-    tracing::info!("Setup thunder successor node successfully");
+    tracing::info!("Setup thunder-orchard successor node successfully");
     tracing::debug!("BMM 1 block");
     sidechain_successor
         .bmm_single(&mut enforcer_post_setup)

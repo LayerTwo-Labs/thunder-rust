@@ -1,5 +1,5 @@
 use eframe::egui;
-use thunder::types::GetValue;
+use thunder_orchard::types::GetValue;
 
 use crate::app::App;
 

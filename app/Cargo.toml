@@ -1,5 +1,5 @@
 [package]
-name = "thunder_app"
+name = "thunder_orchard_app"
 authors.workspace = true
 edition.workspace = true
 license-file.workspace = true
@@ -26,9 +26,9 @@ serde = { workspace = true, features = ["derive"] }
 shlex = "1.3.0"
 strum = { workspace = true }
 thiserror = { workspace = true }
-thunder = { path = "../lib" }
-thunder_app_cli = { path = "../cli" }
-thunder_app_rpc_api = { path = "../rpc-api" }
+thunder_orchard = { path = "../lib" }
+thunder_orchard_app_cli = { path = "../cli" }
+thunder_orchard_app_rpc_api = { path = "../rpc-api" }
 tiny-bip39 = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-util = { workspace = true, features = ["rt"] }
@@ -49,5 +49,5 @@ uuid = { workspace = true }
 workspace = true
 
 [[bin]]
-name = "thunder_app"
+name = "thunder_orchard_app"
 path = "main.rs"

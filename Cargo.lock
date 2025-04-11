@@ -6647,7 +6647,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "thunder"
+name = "thunder_orchard"
 version = "0.11.7"
 dependencies = [
  "anyhow",
@@ -6703,7 +6703,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "thunder_app"
+name = "thunder_orchard_app"
 version = "0.11.7"
 dependencies = [
  "anyhow",
@@ -6725,9 +6725,9 @@ dependencies = [
  "shlex",
  "strum 0.26.3",
  "thiserror 2.0.12",
- "thunder",
- "thunder_app_cli",
- "thunder_app_rpc_api",
+ "thunder_orchard",
+ "thunder_orchard_app_cli",
+ "thunder_orchard_app_rpc_api",
  "tiny-bip39",
  "tokio",
  "tokio-util",
@@ -6745,7 +6745,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "thunder_app_cli"
+name = "thunder_orchard_app_cli"
 version = "0.11.7"
 dependencies = [
  "anyhow",
@@ -6754,8 +6754,8 @@ dependencies = [
  "http 1.3.1",
  "jsonrpsee",
  "serde_json",
- "thunder",
- "thunder_app_rpc_api",
+ "thunder_orchard",
+ "thunder_orchard_app_rpc_api",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -6765,7 +6765,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "thunder_app_rpc_api"
+name = "thunder_orchard_app_rpc_api"
 version = "0.11.7"
 dependencies = [
  "bitcoin",
@@ -6773,12 +6773,12 @@ dependencies = [
  "l2l-openapi",
  "serde",
  "serde_json",
- "thunder",
+ "thunder_orchard",
  "utoipa",
 ]
 
 [[package]]
-name = "thunder_integration_tests"
+name = "thunder_orchard_integration_tests"
 version = "0.11.7"
 dependencies = [
  "anyhow",
@@ -6792,8 +6792,8 @@ dependencies = [
  "libtest-mimic",
  "reserve-port",
  "thiserror 2.0.12",
- "thunder",
- "thunder_app_rpc_api",
+ "thunder_orchard",
+ "thunder_orchard_app_rpc_api",
  "tokio",
  "tracing",
  "tracing-indicatif",

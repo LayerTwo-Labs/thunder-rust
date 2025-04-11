@@ -115,7 +115,7 @@ jobs:
           export BITCOIND='../bitcoin-patched-bins/bitcoind'
           export BITCOIN_CLI='../bitcoin-patched-bins/bitcoin-cli'
           export ELECTRS='../electrs/target/release/electrs'
-          export THUNDER_APP='target/debug/thunder_app'
+          export THUNDER_ORCHARD_APP='target/debug/thunder_orchard_app'
           cargo run --example integration_tests
 
   build-release:
@@ -167,37 +167,37 @@ jobs:
 
       - name: 'Set environment variables: version number and output filenames'
         run: |
-          THUNDER_APP_VERSION=$(cargo metadata --format-version 1 | \
-            jq -er '.packages | map(select(.name == "thunder_app") | .version) | .[0]')
-          THUNDER_APP_FILENAME="thunder-${THUNDER_APP_VERSION}-${{ matrix.name }}${{ matrix.binary-suffix }}"
-          THUNDER_CLI_FILENAME="thunder-cli-${THUNDER_APP_VERSION}-${{ matrix.name }}${{ matrix.binary-suffix }}"
-          echo "THUNDER_APP_VERSION=$THUNDER_APP_VERSION" >> "$GITHUB_ENV"
-          echo "THUNDER_APP_FILENAME=$THUNDER_APP_FILENAME" >> "$GITHUB_ENV"
-          echo "THUNDER_CLI_FILENAME=$THUNDER_CLI_FILENAME" >> "$GITHUB_ENV"
+          THUNDER_ORCHARD_APP_VERSION=$(cargo metadata --format-version 1 | \
+            jq -er '.packages | map(select(.name == "thunder_orchard_app") | .version) | .[0]')
+          THUNDER_ORCHARD_APP_FILENAME="thunder-orchard-${THUNDER_ORCHARD_APP_VERSION}-${{ matrix.name }}${{ matrix.binary-suffix }}"
+          THUNDER_ORCHARD_CLI_FILENAME="thunder-orchard-cli-${THUNDER_ORCHARD_APP_VERSION}-${{ matrix.name }}${{ matrix.binary-suffix }}"
+          echo "THUNDER_ORCHARD_APP_VERSION=$THUNDER_ORCHARD_APP_VERSION" >> "$GITHUB_ENV"
+          echo "THUNDER_ORCHARD_APP_FILENAME=$THUNDER_ORCHARD_APP_FILENAME" >> "$GITHUB_ENV"
+          echo "THUNDER_ORCHARD_CLI_FILENAME=$THUNDER_ORCHARD_CLI_FILENAME" >> "$GITHUB_ENV"
 
       - name: 'Set filenames for release binaries'
         run: |
           pushd "target/${{ matrix.name }}/release/"
-          ln -fs "thunder_app${{ matrix.binary-suffix }}" "${THUNDER_APP_FILENAME}"
-          ln -fs "thunder_app_cli${{ matrix.binary-suffix }}" "${THUNDER_CLI_FILENAME}"
+          ln -fs "thunder_orchard_app${{ matrix.binary-suffix }}" "${THUNDER_ORCHARD_APP_FILENAME}"
+          ln -fs "thunder_orchard_app_cli${{ matrix.binary-suffix }}" "${THUNDER_ORCHARD_CLI_FILENAME}"
           popd
 
-      - name: 'Upload Artifacts (thunder)'
+      - name: 'Upload Artifacts (thunder-orchard)'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.THUNDER_APP_FILENAME }}
+          name: ${{ env.THUNDER_ORCHARD_APP_FILENAME }}
           if-no-files-found: error
           path: |
-            target/${{ matrix.name }}/release/${{ env.THUNDER_APP_FILENAME }}
-            target/${{ matrix.name }}/release/${{ env.THUNDER_CLI_FILENAME }}
+            target/${{ matrix.name }}/release/${{ env.THUNDER_ORCHARD_APP_FILENAME }}
+            target/${{ matrix.name }}/release/${{ env.THUNDER_ORCHARD_CLI_FILENAME }}
 
       - name: Release
         uses: softprops/action-gh-release@v2.0.2
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
-            target/${{ matrix.name }}/release/${{ env.THUNDER_APP_FILENAME }}
-            target/${{ matrix.name }}/release/${{ env.THUNDER_CLI_FILENAME }}
+            target/${{ matrix.name }}/release/${{ env.THUNDER_ORCHARD_APP_FILENAME }}
+            target/${{ matrix.name }}/release/${{ env.THUNDER_ORCHARD_CLI_FILENAME }}
           fail_on_unmatched_files: true
 
   upload-releases-to-releases-drivechain-info:
@@ -214,21 +214,21 @@ jobs:
       - name: Create zip files for releases.drivechain.info
         run: |
           shopt -s extglob
-          mv thunder-+([0-9]).+([0-9]).+([0-9])-x86_64-apple-darwin thunder-latest-x86_64-apple-darwin
-          mv thunder-cli-+([0-9]).+([0-9]).+([0-9])-x86_64-apple-darwin thunder-cli-latest-x86_64-apple-darwin
-          zip L2-S9-Thunder-latest-x86_64-apple-darwin.zip \
-            thunder-latest-x86_64-apple-darwin \
-            thunder-cli-latest-x86_64-apple-darwin
-          mv thunder-+([0-9]).+([0-9]).+([0-9])-x86_64-pc-windows-gnu.exe thunder-latest-x86_64-pc-windows-gnu.exe
-          mv thunder-cli-+([0-9]).+([0-9]).+([0-9])-x86_64-pc-windows-gnu.exe thunder-cli-latest-x86_64-pc-windows-gnu.exe
-          zip L2-S9-Thunder-latest-x86_64-pc-windows-gnu.zip \
-            thunder-latest-x86_64-pc-windows-gnu.exe \
-            thunder-cli-latest-x86_64-pc-windows-gnu.exe
-          mv thunder-+([0-9]).+([0-9]).+([0-9])-x86_64-unknown-linux-gnu thunder-latest-x86_64-unknown-linux-gnu
-          mv thunder-cli-+([0-9]).+([0-9]).+([0-9])-x86_64-unknown-linux-gnu thunder-cli-latest-x86_64-unknown-linux-gnu
-          zip L2-S9-Thunder-latest-x86_64-unknown-linux-gnu.zip \
-            thunder-latest-x86_64-unknown-linux-gnu \
-            thunder-cli-latest-x86_64-unknown-linux-gnu
+          mv thunder-orchard-+([0-9]).+([0-9]).+([0-9])-x86_64-apple-darwin thunder-orchard-latest-x86_64-apple-darwin
+          mv thunder-orchard-cli-+([0-9]).+([0-9]).+([0-9])-x86_64-apple-darwin thunder-orchard-cli-latest-x86_64-apple-darwin
+          zip L2-S9-Thunder-Orchard-latest-x86_64-apple-darwin.zip \
+            thunder-orchard-latest-x86_64-apple-darwin \
+            thunder-orchard-cli-latest-x86_64-apple-darwin
+          mv thunder-orchard-+([0-9]).+([0-9]).+([0-9])-x86_64-pc-windows-gnu.exe thunder-orchard-latest-x86_64-pc-windows-gnu.exe
+          mv thunder-orchard-cli-+([0-9]).+([0-9]).+([0-9])-x86_64-pc-windows-gnu.exe thunder-orchard-cli-latest-x86_64-pc-windows-gnu.exe
+          zip L2-S9-Thunder-Orchard-latest-x86_64-pc-windows-gnu.zip \
+            thunder-orchard-latest-x86_64-pc-windows-gnu.exe \
+            thunder-orchard-cli-latest-x86_64-pc-windows-gnu.exe
+          mv thunder-orchard-+([0-9]).+([0-9]).+([0-9])-x86_64-unknown-linux-gnu thunder-orchard-latest-x86_64-unknown-linux-gnu
+          mv thunder-orchard-cli-+([0-9]).+([0-9]).+([0-9])-x86_64-unknown-linux-gnu thunder-orchard-cli-latest-x86_64-unknown-linux-gnu
+          zip L2-S9-Thunder-Orchard-latest-x86_64-unknown-linux-gnu.zip \
+            thunder-orchard-latest-x86_64-unknown-linux-gnu \
+            thunder-orchard-cli-latest-x86_64-unknown-linux-gnu
 
       - name: Upload release assets to releases.drivechain.info
         uses: cross-the-world/ssh-scp-ssh-pipelines@latest
@@ -238,4 +238,4 @@ jobs:
           pass: ${{ secrets.RELEASES_SERVER_PW }}
           port: 22
           scp: |
-            'L2-S9-Thunder-latest-*.zip' => '/var/www/html/'
+            'L2-S9-Thunder-Orchard-latest-*.zip' => '/var/www/html/'

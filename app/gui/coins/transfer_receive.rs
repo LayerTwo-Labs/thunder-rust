@@ -1,5 +1,5 @@
 use eframe::egui::{self, Button};
-use thunder::types::{Address, ShieldedAddress, TransparentAddress};
+use thunder_orchard::types::{Address, ShieldedAddress, TransparentAddress};
 
 use crate::{app::App, gui::util::UiExt};
 
@@ -124,7 +124,7 @@ impl Addresses {
                 let mut rwtxn = app.wallet.env().write_txn()?;
                 let res = app.wallet.get_new_orchard_address(&mut rwtxn)?;
                 rwtxn.commit()?;
-                Ok::<_, thunder::wallet::Error>(res)
+                Ok::<_, thunder_orchard::wallet::Error>(res)
             })()
             .map_err(anyhow::Error::from)
         }
@@ -146,7 +146,7 @@ impl Addresses {
                 let mut rwtxn = app.wallet.env().write_txn()?;
                 let res = app.wallet.get_new_transparent_address(&mut rwtxn)?;
                 rwtxn.commit()?;
-                Ok::<_, thunder::wallet::Error>(res)
+                Ok::<_, thunder_orchard::wallet::Error>(res)
             })()
             .map_err(anyhow::Error::from)
         }
@@ -173,7 +173,7 @@ impl Receive {
                 transparent: transparent.map_err(anyhow::Error::from),
             };
             rwtxn.commit()?;
-            Ok::<_, thunder::wallet::Error>(addresses)
+            Ok::<_, thunder_orchard::wallet::Error>(addresses)
         })()
         .map_err(anyhow::Error::from)
         .inspect_err(|err| tracing::error!("{err:#}"));

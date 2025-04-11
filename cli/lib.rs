@@ -4,8 +4,8 @@ use clap::{Parser, Subcommand};
 use http::HeaderMap;
 use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder};
 
-use thunder::types::{ShieldedAddress, TransparentAddress, Txid};
-use thunder_app_rpc_api::RpcClient;
+use thunder_orchard::types::{ShieldedAddress, TransparentAddress, Txid};
+use thunder_orchard_app_rpc_api::RpcClient;
 use tracing_subscriber::layer::SubscriberExt as _;
 
 #[derive(Clone, Debug, Subcommand)]
@@ -33,11 +33,11 @@ pub enum Command {
     GetBestSidechainBlockHash,
     /// Get the block with specified block hash, if it exists
     GetBlock {
-        block_hash: thunder::types::BlockHash,
+        block_hash: thunder_orchard::types::BlockHash,
     },
     /// Get mainchain blocks that commit to a specified block hash
     GetBmmInclusions {
-        block_hash: thunder::types::BlockHash,
+        block_hash: thunder_orchard::types::BlockHash,
     },
     /// Get a new shielded address
     GetNewShieldedAddress,
@@ -230,7 +230,7 @@ where
         }
         Command::OpenApiSchema => {
             let openapi =
-                <thunder_app_rpc_api::RpcDoc as utoipa::OpenApi>::openapi();
+                <thunder_orchard_app_rpc_api::RpcDoc as utoipa::OpenApi>::openapi();
             openapi.to_pretty_json()?
         }
         Command::RemoveFromMempool { txid } => {

@@ -51,7 +51,7 @@ impl Deposit {
                 let mut rwtxn = app.wallet.env().write_txn()?;
                 let res = app.wallet.get_new_transparent_address(&mut rwtxn)?;
                 rwtxn.commit()?;
-                Ok::<_, thunder::wallet::Error>(res)
+                Ok::<_, thunder_orchard::wallet::Error>(res)
             })()
             .expect("should not happen");
             if let Err(err) = app.deposit(

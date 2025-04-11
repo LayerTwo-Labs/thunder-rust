@@ -82,7 +82,8 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
     let () = set_tracing_subscriber(tracing::Level::DEBUG)?;
     let rt_handle = tokio::runtime::Handle::current();
     // Read env vars
-    if let Some(env_filepath) = std::env::var_os("THUNDER_INTEGRATION_TEST_ENV")
+    if let Some(env_filepath) =
+        std::env::var_os("THUNDER_ORCHARD_INTEGRATION_TEST_ENV")
     {
         let env_filepath: &std::path::Path = env_filepath.as_ref();
         tracing::info!("Adding env vars from `{}`", env_filepath.display());

@@ -1,5 +1,5 @@
 [package]
-name = "thunder_app_rpc_api"
+name = "thunder_orchard_app_rpc_api"
 authors.workspace = true
 edition.workspace = true
 license-file.workspace = true
@@ -10,7 +10,7 @@ version.workspace = true
 bitcoin = { workspace = true, features = ["serde"] }
 jsonrpsee = { workspace = true, features = ["client", "macros", "server"] }
 l2l-openapi = { workspace = true }
-thunder = { path = "../lib" }
+thunder_orchard = { path = "../lib" }
 serde_json = { workspace = true }
 utoipa = { workspace = true }
 serde.workspace = true
@@ -19,5 +19,5 @@ serde.workspace = true
 workspace = true
 
 [lib]
-name = "thunder_app_rpc_api"
+name = "thunder_orchard_app_rpc_api"
 path = "lib.rs"

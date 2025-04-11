@@ -1,5 +1,5 @@
 [package]
-name = "thunder_app_cli"
+name = "thunder_orchard_app_cli"
 authors.workspace = true
 edition.workspace = true
 license-file.workspace = true
@@ -13,8 +13,8 @@ clap = { version = "4.5.4", features = ["derive"] }
 http = { workspace = true }
 jsonrpsee = { workspace = true, features = ["http-client"] }
 serde_json = { workspace = true }
-thunder = { path = "../lib" }
-thunder_app_rpc_api = { path = "../rpc-api" }
+thunder_orchard = { path = "../lib" }
+thunder_orchard_app_rpc_api = { path = "../rpc-api" }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -26,9 +26,9 @@ uuid = { workspace = true }
 workspace = true
 
 [lib]
-name = "thunder_app_cli_lib"
+name = "thunder_orchard_app_cli_lib"
 path = "lib.rs"
 
 [[bin]]
-name = "thunder_app_cli"
+name = "thunder_orchard_app_cli"
 path = "main.rs"

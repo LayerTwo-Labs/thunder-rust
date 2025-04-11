@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use eframe::egui;
-use thunder::types::{
+use thunder_orchard::types::{
     GetValue, OutPoint, Output, PointedOutput, Transaction, hash, orchard,
 };
 

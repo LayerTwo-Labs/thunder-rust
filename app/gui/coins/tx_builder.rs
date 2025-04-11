@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use eframe::egui;
 
-use thunder::types::{GetValue, Transaction, orchard};
+use thunder_orchard::types::{GetValue, Transaction, orchard};
 
 use super::{
     tx_creator::TxCreator,

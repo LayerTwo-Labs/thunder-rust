@@ -4,12 +4,12 @@ use std::net::SocketAddr;
 
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use l2l_openapi::open_api;
-use thunder::{
+use thunder_orchard::{
     net::Peer,
     types::{
         MerkleRoot, OutPoint, Output, OutputContent, PointedOutput,
         ShieldedAddress, TransparentAddress, Txid, WithdrawalBundle,
-        schema as thunder_schema,
+        schema as thunder_orchard_schema,
     },
     wallet::Balance,
 };
@@ -18,8 +18,8 @@ mod schema;
 
 #[open_api(ref_schemas[
     MerkleRoot, OutPoint, Output, OutputContent, TransparentAddress, Txid,
-    schema::BitcoinTxid, thunder_schema::BitcoinAddr,
-    thunder_schema::BitcoinOutPoint,
+    schema::BitcoinTxid, thunder_orchard_schema::BitcoinAddr,
+    thunder_orchard_schema::BitcoinOutPoint,
 ])]
 #[rpc(client, server)]
 pub trait Rpc {
@@ -34,7 +34,7 @@ pub trait Rpc {
     async fn connect_peer(
         &self,
         #[open_api_method_arg(schema(
-            PartialSchema = "thunder_schema::SocketAddr"
+            PartialSchema = "thunder_orchard_schema::SocketAddr"
         ))]
         addr: SocketAddr,
     ) -> RpcResult<()>;
@@ -64,36 +64,36 @@ pub trait Rpc {
     #[method(name = "get_block")]
     async fn get_block(
         &self,
-        block_hash: thunder::types::BlockHash,
-    ) -> RpcResult<Option<thunder::types::Block>>;
+        block_hash: thunder_orchard::types::BlockHash,
+    ) -> RpcResult<Option<thunder_orchard::types::Block>>;
 
     /// Get mainchain blocks that commit to a specified block hash
     #[open_api_method(output_schema(
-        PartialSchema = "thunder_schema::BitcoinBlockHash"
+        PartialSchema = "thunder_orchard_schema::BitcoinBlockHash"
     ))]
     #[method(name = "get_bmm_inclusions")]
     async fn get_bmm_inclusions(
         &self,
-        block_hash: thunder::types::BlockHash,
+        block_hash: thunder_orchard::types::BlockHash,
     ) -> RpcResult<Vec<bitcoin::BlockHash>>;
 
-    /// Get the best mainchain block hash known by Thunder
+    /// Get the best mainchain block hash known by Thunder-Orchard
     #[open_api_method(output_schema(
-        PartialSchema = "schema::Optional<thunder_schema::BitcoinBlockHash>"
+        PartialSchema = "schema::Optional<thunder_orchard_schema::BitcoinBlockHash>"
     ))]
     #[method(name = "get_best_mainchain_block_hash")]
     async fn get_best_mainchain_block_hash(
         &self,
     ) -> RpcResult<Option<bitcoin::BlockHash>>;
 
-    /// Get the best sidechain block hash known by Thunder
+    /// Get the best sidechain block hash known by Thunder-Orchard
     #[open_api_method(output_schema(
-        PartialSchema = "schema::Optional<thunder::types::BlockHash>"
+        PartialSchema = "schema::Optional<thunder_orchard::types::BlockHash>"
     ))]
     #[method(name = "get_best_sidechain_block_hash")]
     async fn get_best_sidechain_block_hash(
         &self,
-    ) -> RpcResult<Option<thunder::types::BlockHash>>;
+    ) -> RpcResult<Option<thunder_orchard::types::BlockHash>>;
 
     /// Get a new shielded address
     #[method(name = "get_new_shielded_address")]
@@ -109,7 +109,7 @@ pub trait Rpc {
     #[method(name = "get_shielded_wallet_addresses")]
     async fn get_shielded_wallet_addresses(
         &self,
-    ) -> RpcResult<Vec<thunder::types::orchard::Address>>;
+    ) -> RpcResult<Vec<thunder_orchard::types::orchard::Address>>;
 
     /// Get transparent wallet addresses, sorted by base58 encoding
     #[method(name = "get_transparent_wallet_addresses")]
@@ -206,7 +206,7 @@ pub trait Rpc {
     async fn withdraw(
         &self,
         #[open_api_method_arg(schema(
-            PartialSchema = "thunder::types::schema::BitcoinAddr"
+            PartialSchema = "thunder_orchard::types::schema::BitcoinAddr"
         ))]
         mainchain_address: bitcoin::Address<
             bitcoin::address::NetworkUnchecked,

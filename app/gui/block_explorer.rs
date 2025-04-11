@@ -1,7 +1,7 @@
 use bitcoin::Amount;
 use eframe::egui;
 use human_size::{Byte, Kibibyte, Mebibyte, SpecificSize};
-use thunder::{
+use thunder_orchard::{
     state::State,
     types::{Body, GetValue, Header},
 };

@@ -1,5 +1,5 @@
 [package]
-name = "thunder_integration_tests"
+name = "thunder_orchard_integration_tests"
 authors.workspace = true
 edition.workspace = true
 license-file.workspace = true
@@ -18,8 +18,8 @@ jsonrpsee = { workspace = true }
 libtest-mimic = "0.8.1"
 reserve-port = "2.0.1"
 thiserror = { workspace = true }
-thunder = { path = "../lib" }
-thunder_app_rpc_api = { path = "../rpc-api" }
+thunder_orchard = { path = "../lib" }
+thunder_orchard_app_rpc_api = { path = "../rpc-api" }
 tracing = { workspace = true }
 tracing-indicatif = "0.3.8"
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

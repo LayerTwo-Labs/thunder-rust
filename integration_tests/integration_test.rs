@@ -18,7 +18,7 @@ fn deposit_withdraw_roundtrip(
         bip300301_enforcer_integration_tests::integration_test::deposit_withdraw_roundtrip::<PostSetup>(
                 bin_paths.others, Network::Regtest, Mode::Mempool,
                 Init {
-                    thunder_app: bin_paths.thunder,
+                    thunder_orchard_app: bin_paths.thunder_orchard,
                     data_dir_suffix: None,
                 },
             ).await

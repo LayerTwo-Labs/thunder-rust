@@ -1,5 +1,7 @@
 use eframe::egui::{self, Button};
-use thunder::types::{self, Output, OutputContent, Transaction, orchard};
+use thunder_orchard::types::{
+    self, Output, OutputContent, Transaction, orchard,
+};
 
 use crate::app::App;
 
@@ -85,7 +87,7 @@ impl UtxoCreator {
                     let res =
                         app.wallet.get_new_transparent_address(&mut rwtxn)?;
                     rwtxn.commit()?;
-                    Ok::<_, thunder::wallet::Error>(res)
+                    Ok::<_, thunder_orchard::wallet::Error>(res)
                 })()
                 .map(|address| format!("{address}"))
                 .unwrap_or("".into());

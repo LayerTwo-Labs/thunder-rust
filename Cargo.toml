@@ -5,6 +5,7 @@ members = ["app", "cli", "integration_tests", "lib", "rpc-api"]
 [workspace.package]
 authors = [
     "Ash Manning <ash@layertwolabs.com>",
+    "Lain Iwakura <207185553+iwakura-rein@users.noreply.github.com>",
     "Nikita Chashchinskii <nikita.chashchinskii@gmail.com>",
 ]
 edition = "2024"

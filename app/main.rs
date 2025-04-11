@@ -93,8 +93,8 @@ fn set_tracing_subscriber(
             ("", saturating_pred_level(log_level)),
             ("bip300301", log_level),
             ("jsonrpsee_core::tracing", log_level),
-            ("thunder", log_level),
-            ("thunder_app", log_level),
+            ("thunder_orchard", log_level),
+            ("thunder_orchard_app", log_level),
         ]);
         let directives_str =
             match std::env::var(tracing_filter::EnvFilter::DEFAULT_ENV) {
@@ -150,7 +150,7 @@ fn run_egui_app(
     let rpc_addr = url::Url::parse(&format!("http://{}", config.rpc_addr))
         .expect("failed to parse rpc addr");
     eframe::run_native(
-        "Thunder",
+        "Thunder-Orchard",
         native_options,
         Box::new(move |cc| {
             Ok(Box::new(gui::EguiApp::new(

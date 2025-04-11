@@ -12,11 +12,11 @@ use bip300301_enforcer_lib::types::SidechainNumber;
 use futures::{TryFutureExt as _, channel::mpsc, future};
 use reserve_port::ReservedPort;
 use thiserror::Error;
-use thunder::types::{OutputContent, PointedOutput};
-use thunder_app_rpc_api::RpcClient as _;
+use thunder_orchard::types::{OutputContent, PointedOutput};
+use thunder_orchard_app_rpc_api::RpcClient as _;
 use tokio::time::sleep;
 
-use crate::util::ThunderApp;
+use crate::util::ThunderOrchardApp;
 
 #[derive(Debug)]
 pub struct ReservedPorts {
@@ -35,7 +35,7 @@ impl ReservedPorts {
 
 #[derive(Debug)]
 pub struct Init {
-    pub thunder_app: PathBuf,
+    pub thunder_orchard_app: PathBuf,
     pub data_dir_suffix: Option<String>,
 }
 
@@ -49,8 +49,8 @@ pub enum BmmError {
 
 #[derive(Debug, Error)]
 pub enum SetupError {
-    #[error("Failed to create thunder dir")]
-    CreateThunderDir(#[source] std::io::Error),
+    #[error("Failed to create thunder-orchard dir")]
+    CreateThunderOrchardDir(#[source] std::io::Error),
     #[error(transparent)]
     ReservePort(#[from] reserve_port::Error),
     #[error(transparent)]
@@ -81,11 +81,11 @@ pub enum CreateWithdrawalError {
 pub struct PostSetup {
     // MUST occur before temp dirs and reserved ports in order to ensure that processes are dropped
     // before reserved ports are freed and temp dirs are cleared
-    pub _thunder_app_task: AbortOnDrop<()>,
-    /// RPC client for thunder_app
+    pub _thunder_orchard_app_task: AbortOnDrop<()>,
+    /// RPC client for thunder_orchard_app
     pub rpc_client: jsonrpsee::http_client::HttpClient,
     /// Address for receiving deposits
-    pub deposit_address: thunder::types::TransparentAddress,
+    pub deposit_address: thunder_orchard::types::TransparentAddress,
     // MUST occur after tasks in order to ensure that tasks are dropped
     // before reserved ports are freed
     pub reserved_ports: ReservedPorts,
@@ -135,7 +135,7 @@ impl PostSetup {
 
 impl Sidechain for PostSetup {
     const SIDECHAIN_NUMBER: SidechainNumber =
-        SidechainNumber(thunder::types::THIS_SIDECHAIN);
+        SidechainNumber(thunder_orchard::types::THIS_SIDECHAIN);
 
     type Init = Init;
 
@@ -147,16 +147,19 @@ impl Sidechain for PostSetup {
         res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
     ) -> Result<Self, Self::SetupError> {
         let reserved_ports = ReservedPorts::new()?;
-        let thunder_dir = if let Some(suffix) = init.data_dir_suffix {
-            post_setup.out_dir.path().join(format!("thunder-{suffix}"))
+        let thunder_orchard_dir = if let Some(suffix) = init.data_dir_suffix {
+            post_setup
+                .out_dir
+                .path()
+                .join(format!("thunder-orchard-{suffix}"))
         } else {
-            post_setup.out_dir.path().join("thunder")
+            post_setup.out_dir.path().join("thunder-orchard")
         };
-        std::fs::create_dir(&thunder_dir)
-            .map_err(Self::SetupError::CreateThunderDir)?;
-        let thunder_app = ThunderApp {
-            path: init.thunder_app,
-            data_dir: thunder_dir,
+        std::fs::create_dir(&thunder_orchard_dir)
+            .map_err(Self::SetupError::CreateThunderOrchardDir)?;
+        let thunder_orchard_app = ThunderOrchardApp {
+            path: init.thunder_orchard_app,
+            data_dir: thunder_orchard_dir,
             log_level: Some(tracing::Level::TRACE),
             mainchain_grpc_port: post_setup
                 .reserved_ports
@@ -165,14 +168,14 @@ impl Sidechain for PostSetup {
             net_port: reserved_ports.net.port(),
             rpc_port: reserved_ports.rpc.port(),
         };
-        let thunder_app_task = thunder_app
+        let thunder_orchard_app_task = thunder_orchard_app
             .spawn_command_with_args::<String, String, _, _, _>([], [], {
                 let res_tx = res_tx.clone();
                 move |err| {
                     let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
                 }
             });
-        tracing::debug!("Started thunder");
+        tracing::debug!("Started thunder-orchard");
         sleep(Duration::from_secs(1)).await;
         let rpc_client = jsonrpsee::http_client::HttpClient::builder()
             .build(format!("http://127.0.0.1:{}", reserved_ports.rpc.port()))?;
@@ -183,7 +186,7 @@ impl Sidechain for PostSetup {
         tracing::debug!("Generating deposit address");
         let deposit_address = rpc_client.get_new_transparent_address().await?;
         Ok(Self {
-            _thunder_app_task: thunder_app_task,
+            _thunder_orchard_app_task: thunder_orchard_app_task,
             rpc_client,
             deposit_address,
             reserved_ports,
@@ -214,7 +217,7 @@ impl Sidechain for PostSetup {
                     OutputContent::Withdrawal { .. } => false,
                 }
                 && match utxo.outpoint {
-                    thunder::types::OutPoint::Deposit(outpoint) => {
+                    thunder_orchard::types::OutPoint::Deposit(outpoint) => {
                         outpoint.txid == txid
                     }
                     _ => false,
@@ -254,7 +257,7 @@ impl Sidechain for PostSetup {
             )
             .await?;
         let blocks_to_mine = 'blocks_to_mine: {
-            use thunder::state::WITHDRAWAL_BUNDLE_FAILURE_GAP;
+            use thunder_orchard::state::WITHDRAWAL_BUNDLE_FAILURE_GAP;
             let block_count = self.rpc_client.getblockcount().await?;
             let Some(block_height) = block_count.checked_sub(1) else {
                 break 'blocks_to_mine WITHDRAWAL_BUNDLE_FAILURE_GAP;
@@ -272,7 +275,7 @@ impl Sidechain for PostSetup {
             }
         };
         tracing::debug!(
-            "Mining thunder blocks until withdrawal bundle is broadcast"
+            "Mining thunder-orchard blocks until withdrawal bundle is broadcast"
         );
         let () = self.bmm(post_setup, blocks_to_mine).await?;
         let pending_withdrawal_bundle =

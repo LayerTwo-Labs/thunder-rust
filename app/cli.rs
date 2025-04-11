@@ -6,7 +6,7 @@ use std::{
 };
 
 use clap::{Arg, Parser};
-use thunder::types::THIS_SIDECHAIN;
+use thunder_orchard::types::THIS_SIDECHAIN;
 
 const fn ipv4_socket_addr(ipv4_octets: [u8; 4], port: u16) -> SocketAddr {
     let [a, b, c, d] = ipv4_octets;
@@ -20,7 +20,7 @@ static DEFAULT_DATA_DIR: LazyLock<Option<PathBuf>> =
             tracing::warn!("Failed to resolve default data dir");
             None
         }
-        Some(data_dir) => Some(data_dir.join("thunder")),
+        Some(data_dir) => Some(data_dir.join("thunder-orchard")),
     });
 
 const DEFAULT_NET_ADDR: SocketAddr =
@@ -103,8 +103,9 @@ pub(super) struct Cli {
     #[arg(long)]
     headless: bool,
     /// Directory in which to store log files.
-    /// Defaults to `<DATADIR>/logs/v<VERSION>`, where `<DATADIR>` is thunder's data
-    /// directory, and `<VERSION>` is the thunder app version.
+    /// Defaults to `<DATADIR>/logs/v<VERSION>`, where `<DATADIR>` is
+    /// thunder-orchard's data directory, and `<VERSION>` is the
+    /// thunder-orchard app version.
     /// By default, only logs at the WARN level and above are logged to file.
     /// If set to the empty string, logging to file will be disabled.
     #[arg(long)]

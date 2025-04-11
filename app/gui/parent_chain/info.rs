@@ -1,6 +1,6 @@
 use eframe::egui::{self, Button};
 use futures::FutureExt;
-use thunder::types::proto::mainchain;
+use thunder_orchard::types::proto::mainchain;
 
 use crate::{app::App, gui::util::UiExt};
 

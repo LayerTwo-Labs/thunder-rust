@@ -1,6 +1,6 @@
 use eframe::egui;
 use human_size::{Byte, Kibibyte, Mebibyte, SpecificSize};
-use thunder::types::{GetValue, OutPoint};
+use thunder_orchard::types::{GetValue, OutPoint};
 
 use crate::app::App;
 

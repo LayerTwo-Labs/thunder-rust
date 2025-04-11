@@ -11,7 +11,7 @@ use bip300301_enforcer_integration_tests::{
     util::{AbortOnDrop, AsyncTrial},
 };
 use futures::{FutureExt, StreamExt as _, channel::mpsc, future::BoxFuture};
-use thunder_app_rpc_api::RpcClient as _;
+use thunder_orchard_app_rpc_api::RpcClient as _;
 use tokio::time::sleep;
 use tracing::Instrument as _;
 
@@ -21,7 +21,7 @@ use crate::{
 };
 
 #[derive(Debug)]
-struct ThunderNodes {
+struct ThunderOrchardNodes {
     /// Sidechain process that will be sending blocks
     sender: PostSetup,
     /// The sidechain instance that will be syncing blocks
@@ -32,7 +32,7 @@ struct ThunderNodes {
 async fn setup(
     bin_paths: BinPaths,
     res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
-) -> anyhow::Result<(EnforcerPostSetup, ThunderNodes)> {
+) -> anyhow::Result<(EnforcerPostSetup, ThunderOrchardNodes)> {
     let mut enforcer_post_setup = setup_enforcer(
         &bin_paths.others,
         Network::Regtest,
@@ -42,25 +42,25 @@ async fn setup(
     .await?;
     let sidechain_sender = PostSetup::setup(
         Init {
-            thunder_app: bin_paths.thunder.clone(),
+            thunder_orchard_app: bin_paths.thunder_orchard.clone(),
             data_dir_suffix: Some("sender".to_owned()),
         },
         &enforcer_post_setup,
         res_tx.clone(),
     )
     .await?;
-    tracing::info!("Setup thunder send node successfully");
+    tracing::info!("Setup thunder-orchard send node successfully");
     let sidechain_syncer = PostSetup::setup(
         Init {
-            thunder_app: bin_paths.thunder.clone(),
+            thunder_orchard_app: bin_paths.thunder_orchard.clone(),
             data_dir_suffix: Some("syncer".to_owned()),
         },
         &enforcer_post_setup,
         res_tx,
     )
     .await?;
-    tracing::info!("Setup thunder sync node successfully");
-    let thunder_nodes = ThunderNodes {
+    tracing::info!("Setup thunder-orchard sync node successfully");
+    let thunder_orchard_nodes = ThunderOrchardNodes {
         sender: sidechain_sender,
         syncer: sidechain_syncer,
     };
@@ -70,15 +70,15 @@ async fn setup(
     let () = activate_sidechain::<PostSetup>(&mut enforcer_post_setup).await?;
     tracing::info!("Activated sidechain successfully");
     let () = fund_enforcer::<PostSetup>(&mut enforcer_post_setup).await?;
-    Ok((enforcer_post_setup, thunder_nodes))
+    Ok((enforcer_post_setup, thunder_orchard_nodes))
 }
 
-/// Check that a Thunder node is connected to the specified peer
+/// Check that a Thunder-Orchard node is connected to the specified peer
 async fn check_peer_connection(
-    thunder_setup: &PostSetup,
+    thunder_orchard_setup: &PostSetup,
     expected_peer: SocketAddr,
 ) -> anyhow::Result<()> {
-    let peers = thunder_setup
+    let peers = thunder_orchard_setup
         .rpc_client
         .list_peers()
         .await?
@@ -99,46 +99,52 @@ async fn initial_block_download_task(
     bin_paths: BinPaths,
     res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
 ) -> anyhow::Result<()> {
-    let (mut enforcer_post_setup, thunder_nodes) =
+    let (mut enforcer_post_setup, thunder_orchard_nodes) =
         setup(bin_paths, res_tx).await?;
     const BMM_BLOCKS: u32 = 16;
     tracing::info!(blocks = %BMM_BLOCKS, "Attempting BMM");
-    thunder_nodes
+    thunder_orchard_nodes
         .sender
         .bmm(&mut enforcer_post_setup, BMM_BLOCKS)
         .await?;
     // Check that sender has all blocks, and syncer has 0
     {
-        let sender_blocks =
-            thunder_nodes.sender.rpc_client.getblockcount().await?;
+        let sender_blocks = thunder_orchard_nodes
+            .sender
+            .rpc_client
+            .getblockcount()
+            .await?;
         anyhow::ensure!(sender_blocks == BMM_BLOCKS);
-        let syncer_blocks =
-            thunder_nodes.syncer.rpc_client.getblockcount().await?;
+        let syncer_blocks = thunder_orchard_nodes
+            .syncer
+            .rpc_client
+            .getblockcount()
+            .await?;
         anyhow::ensure!(syncer_blocks == 0);
     }
     tracing::info!("Attempting sync");
     tracing::debug!(
-        sender_addr = %thunder_nodes.sender.net_addr(),
-        syncer_addr = %thunder_nodes.syncer.net_addr(),
+        sender_addr = %thunder_orchard_nodes.sender.net_addr(),
+        syncer_addr = %thunder_orchard_nodes.syncer.net_addr(),
         "Connecting syncer to sender");
-    let () = thunder_nodes
+    let () = thunder_orchard_nodes
         .syncer
         .rpc_client
-        .connect_peer(thunder_nodes.sender.net_addr().into())
+        .connect_peer(thunder_orchard_nodes.sender.net_addr().into())
         .await?;
     // Wait for connection to be established
     sleep(std::time::Duration::from_secs(1)).await;
     tracing::debug!("Checking peer connections");
     // Check peer connections
     let () = check_peer_connection(
-        &thunder_nodes.syncer,
-        thunder_nodes.sender.net_addr().into(),
+        &thunder_orchard_nodes.syncer,
+        thunder_orchard_nodes.sender.net_addr().into(),
     )
     .await?;
     tracing::debug!("Syncer has connection to sender");
     let () = check_peer_connection(
-        &thunder_nodes.sender,
-        thunder_nodes.syncer.net_addr().into(),
+        &thunder_orchard_nodes.sender,
+        thunder_orchard_nodes.syncer.net_addr().into(),
     )
     .await?;
     tracing::debug!("Sender has connection to syncer");
@@ -146,15 +152,21 @@ async fn initial_block_download_task(
     sleep(std::time::Duration::from_secs(10)).await;
     // Check that sender and syncer have all blocks
     {
-        let sender_blocks =
-            thunder_nodes.sender.rpc_client.getblockcount().await?;
+        let sender_blocks = thunder_orchard_nodes
+            .sender
+            .rpc_client
+            .getblockcount()
+            .await?;
         anyhow::ensure!(sender_blocks == BMM_BLOCKS);
-        let syncer_blocks =
-            thunder_nodes.syncer.rpc_client.getblockcount().await?;
+        let syncer_blocks = thunder_orchard_nodes
+            .syncer
+            .rpc_client
+            .getblockcount()
+            .await?;
         anyhow::ensure!(syncer_blocks == BMM_BLOCKS);
     }
-    drop(thunder_nodes.syncer);
-    drop(thunder_nodes.sender);
+    drop(thunder_orchard_nodes.syncer);
+    drop(thunder_orchard_nodes.sender);
     tracing::info!("Removing {}", enforcer_post_setup.out_dir.path().display());
     drop(enforcer_post_setup.tasks);
     // Wait for tasks to die

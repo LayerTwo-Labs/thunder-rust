@@ -4,7 +4,7 @@ use fallible_iterator::FallibleIterator as _;
 use futures::{StreamExt, TryFutureExt};
 use parking_lot::RwLock;
 use rustreexo::accumulator::proof::Proof;
-use thunder::{
+use thunder_orchard::{
     miner::{self, Miner},
     node::{self, Node},
     types::{
@@ -27,12 +27,12 @@ use crate::cli::Config;
 
 #[derive(Debug, thiserror::Error, transitive::Transitive)]
 #[transitive(
-    from(thunder::archive::Error, node::Error),
-    from(thunder::state::Error, node::Error)
+    from(thunder_orchard::archive::Error, node::Error),
+    from(thunder_orchard::state::Error, node::Error)
 )]
 pub enum Error {
     #[error("CUSF mainchain proto error")]
-    CusfMainchain(#[from] thunder::types::proto::Error),
+    CusfMainchain(#[from] thunder_orchard::types::proto::Error),
     #[error("io error")]
     Io(#[from] std::io::Error),
     #[error("miner error")]
@@ -114,7 +114,7 @@ fn update_wallet<'a>(
     let utxos = node
         .state()
         .get_utxos_by_addresses(&node_rotxn, &addresses)
-        .map_err(thunder::state::Error::from)?;
+        .map_err(thunder_orchard::state::Error::from)?;
     let outpoints: Vec<_> =
         wallet.get_utxos(&wallet_rwtxn)?.into_keys().collect();
     let spent: Vec<_> = node
@@ -393,7 +393,7 @@ impl App {
             let mut rwtxn = self.wallet.env().write_txn()?;
             let res = self.wallet.get_new_transparent_address(&mut rwtxn)?;
             rwtxn.commit()?;
-            Ok::<_, thunder::wallet::Error>(res)
+            Ok::<_, thunder_orchard::wallet::Error>(res)
         })()?;
         let coinbase = match tx_fees {
             bitcoin::Amount::ZERO => vec![],

@@ -1,5 +1,5 @@
 use clap::Parser;
-use thunder_app_cli_lib::Cli;
+use thunder_orchard_app_cli_lib::Cli;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

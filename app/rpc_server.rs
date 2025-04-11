@@ -6,7 +6,7 @@ use jsonrpsee::{
     server::{RpcServiceBuilder, Server},
     types::ErrorObject,
 };
-use thunder::{
+use thunder_orchard::{
     net::Peer,
     types::{
         PointedOutput, ShieldedAddress, TransparentAddress, Txid,
@@ -14,7 +14,7 @@ use thunder::{
     },
     wallet::Balance,
 };
-use thunder_app_rpc_api::RpcServer;
+use thunder_orchard_app_rpc_api::RpcServer;
 use tower_http::{
     request_id::{
         MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer,
@@ -86,8 +86,8 @@ impl RpcServer for RpcServerImpl {
 
     async fn get_block(
         &self,
-        block_hash: thunder::types::BlockHash,
-    ) -> RpcResult<Option<thunder::types::Block>> {
+        block_hash: thunder_orchard::types::BlockHash,
+    ) -> RpcResult<Option<thunder_orchard::types::Block>> {
         let Some(header) = self
             .app
             .node
@@ -97,19 +97,16 @@ impl RpcServer for RpcServerImpl {
             return Ok(None);
         };
         let body = self.app.node.get_body(block_hash).map_err(custom_err)?;
-        let block = thunder::types::Block { header, body };
+        let block = thunder_orchard::types::Block { header, body };
         Ok(Some(block))
     }
 
     async fn get_best_sidechain_block_hash(
         &self,
-    ) -> RpcResult<Option<thunder::types::BlockHash>> {
-        let rotxn = self
-            .app
-            .node
-            .env()
-            .read_txn()
-            .map_err(|err| custom_err(thunder::node::Error::from(err)))?;
+    ) -> RpcResult<Option<thunder_orchard::types::BlockHash>> {
+        let rotxn = self.app.node.env().read_txn().map_err(|err| {
+            custom_err(thunder_orchard::node::Error::from(err))
+        })?;
         self.app.node.try_get_tip(&rotxn).map_err(custom_err)
     }
 
@@ -117,10 +114,9 @@ impl RpcServer for RpcServerImpl {
         &self,
     ) -> RpcResult<Option<bitcoin::BlockHash>> {
         let Some(sidechain_hash) = ({
-            let rotxn =
-                self.app.node.env().read_txn().map_err(|err| {
-                    custom_err(thunder::node::Error::from(err))
-                })?;
+            let rotxn = self.app.node.env().read_txn().map_err(|err| {
+                custom_err(thunder_orchard::node::Error::from(err))
+            })?;
             self.app.node.try_get_tip(&rotxn).map_err(custom_err)?
         }) else {
             // No sidechain tip, so no best mainchain block hash.
@@ -136,7 +132,7 @@ impl RpcServer for RpcServerImpl {
 
     async fn get_bmm_inclusions(
         &self,
-        block_hash: thunder::types::BlockHash,
+        block_hash: thunder_orchard::types::BlockHash,
     ) -> RpcResult<Vec<bitcoin::BlockHash>> {
         self.app
             .node
@@ -149,7 +145,7 @@ impl RpcServer for RpcServerImpl {
             let mut rwtxn = self.app.wallet.env().write_txn()?;
             let res = self.app.wallet.get_new_orchard_address(&mut rwtxn)?;
             rwtxn.commit()?;
-            Ok::<_, thunder::wallet::Error>(res)
+            Ok::<_, thunder_orchard::wallet::Error>(res)
         })()
         .map_err(custom_err)
     }
@@ -162,7 +158,7 @@ impl RpcServer for RpcServerImpl {
             let res =
                 self.app.wallet.get_new_transparent_address(&mut rwtxn)?;
             rwtxn.commit()?;
-            Ok::<_, thunder::wallet::Error>(res)
+            Ok::<_, thunder_orchard::wallet::Error>(res)
         })()
         .map_err(custom_err)
     }
@@ -171,10 +167,9 @@ impl RpcServer for RpcServerImpl {
         &self,
     ) -> RpcResult<Vec<ShieldedAddress>> {
         let addrs = {
-            let rotxn =
-                self.app.wallet.env().read_txn().map_err(|err| {
-                    custom_err(thunder::wallet::Error::from(err))
-                })?;
+            let rotxn = self.app.wallet.env().read_txn().map_err(|err| {
+                custom_err(thunder_orchard::wallet::Error::from(err))
+            })?;
             self.app
                 .wallet
                 .get_shielded_addresses(&rotxn)
@@ -189,10 +184,9 @@ impl RpcServer for RpcServerImpl {
         &self,
     ) -> RpcResult<Vec<TransparentAddress>> {
         let addrs = {
-            let rotxn =
-                self.app.wallet.env().read_txn().map_err(|err| {
-                    custom_err(thunder::wallet::Error::from(err))
-                })?;
+            let rotxn = self.app.wallet.env().read_txn().map_err(|err| {
+                custom_err(thunder_orchard::wallet::Error::from(err))
+            })?;
             self.app
                 .wallet
                 .get_transparent_addresses(&rotxn)
@@ -205,10 +199,9 @@ impl RpcServer for RpcServerImpl {
 
     async fn get_wallet_utxos(&self) -> RpcResult<Vec<PointedOutput>> {
         let utxos = {
-            let rotxn =
-                self.app.wallet.env().read_txn().map_err(|err| {
-                    custom_err(thunder::wallet::Error::from(err))
-                })?;
+            let rotxn = self.app.wallet.env().read_txn().map_err(|err| {
+                custom_err(thunder_orchard::wallet::Error::from(err))
+            })?;
             self.app.wallet.get_utxos(&rotxn).map_err(custom_err)?
         };
         let utxos = utxos
@@ -271,7 +264,8 @@ impl RpcServer for RpcServerImpl {
     }
 
     async fn openapi_schema(&self) -> RpcResult<utoipa::openapi::OpenApi> {
-        let res = <thunder_app_rpc_api::RpcDoc as utoipa::OpenApi>::openapi();
+        let res =
+            <thunder_orchard_app_rpc_api::RpcDoc as utoipa::OpenApi>::openapi();
         Ok(res)
     }
 

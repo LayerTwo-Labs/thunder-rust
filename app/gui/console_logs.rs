@@ -23,7 +23,7 @@ const SHIFT_ENTER: KeyboardShortcut = KeyboardShortcut {
 #[command(name(""), no_binary_name(true))]
 pub struct ConsoleCommand {
     #[command(subcommand)]
-    command: thunder_app_cli_lib::Command,
+    command: thunder_orchard_app_cli_lib::Command,
 }
 
 pub struct ConsoleLogs {
@@ -67,7 +67,7 @@ impl ConsoleLogs {
                 return;
             }
         };
-        let cli = thunder_app_cli_lib::Cli {
+        let cli = thunder_orchard_app_cli_lib::Cli {
             rpc_url: self.rpc_addr.clone(),
             timeout: None,
             command,

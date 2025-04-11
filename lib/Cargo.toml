@@ -1,5 +1,5 @@
 [package]
-name = "thunder"
+name = "thunder_orchard"
 authors.workspace = true
 edition.workspace = true
 license-file.workspace = true
@@ -74,5 +74,5 @@ features = ["thiserror"]
 workspace = true
 
 [lib]
-name = "thunder"
+name = "thunder_orchard"
 path = "lib.rs"
