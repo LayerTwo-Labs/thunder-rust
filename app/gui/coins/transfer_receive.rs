@@ -1,5 +1,5 @@
 use eframe::egui::{self, Button};
-use thunder::types::Address;
+use thunder::types::{Address, ShieldedAddress, TransparentAddress};
 
 use crate::{app::App, gui::util::UiExt};
 
@@ -17,9 +17,19 @@ fn create_transfer(
     fee: bitcoin::Amount,
 ) -> anyhow::Result<()> {
     let accumulator = app.node.get_tip_accumulator()?;
-    let tx = app
-        .wallet
-        .create_transaction(&accumulator, dest, amount, fee)?;
+    let tx = match dest {
+        Address::Shielded(dest) => app.wallet.create_shielded_transaction(
+            &accumulator,
+            dest,
+            amount,
+            fee,
+            [0u8; 512],
+        )?,
+        Address::Transparent(dest) => {
+            app.wallet
+                .create_transaction(&accumulator, dest, amount, fee)?
+        }
+    };
     app.sign_and_send(tx)?;
     Ok(())
 }
@@ -89,40 +99,98 @@ impl Transfer {
 }
 
 #[derive(Debug)]
-struct Receive {
-    address: Option<anyhow::Result<Address>>,
+struct Addresses {
+    shielded: anyhow::Result<ShieldedAddress>,
+    transparent: anyhow::Result<TransparentAddress>,
 }
 
-impl Receive {
-    fn new(app: Option<&App>) -> Self {
-        let Some(app) = app else {
-            return Self { address: None };
-        };
-        let address = app
-            .wallet
-            .get_new_address()
-            .map_err(anyhow::Error::from)
-            .inspect_err(|err| tracing::error!("{err:#}"));
-        Self {
-            address: Some(address),
-        }
-    }
-
+impl Addresses {
     fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
-        match &self.address {
-            Some(Ok(address)) => {
+        ui.label("Shielded address");
+        match &self.shielded {
+            Ok(address) => {
                 ui.monospace_selectable_singleline(false, address.to_string());
             }
-            Some(Err(err)) => {
+            Err(err) => {
                 ui.monospace_selectable_multiline(format!("{err:#}"));
             }
-            None => (),
         }
         if ui
             .add_enabled(app.is_some(), Button::new("generate"))
             .clicked()
         {
-            *self = Self::new(app)
+            self.shielded = (|| {
+                let app = app.unwrap();
+                let mut rwtxn = app.wallet.env().write_txn()?;
+                let res = app.wallet.get_new_orchard_address(&mut rwtxn)?;
+                rwtxn.commit()?;
+                Ok::<_, thunder::wallet::Error>(res)
+            })()
+            .map_err(anyhow::Error::from)
+        }
+        ui.label("Transparent address");
+        match &self.transparent {
+            Ok(address) => {
+                ui.monospace_selectable_singleline(false, address.to_string());
+            }
+            Err(err) => {
+                ui.monospace_selectable_multiline(format!("{err:#}"));
+            }
+        }
+        if ui
+            .add_enabled(app.is_some(), Button::new("generate"))
+            .clicked()
+        {
+            self.transparent = (|| {
+                let app = app.unwrap();
+                let mut rwtxn = app.wallet.env().write_txn()?;
+                let res = app.wallet.get_new_transparent_address(&mut rwtxn)?;
+                rwtxn.commit()?;
+                Ok::<_, thunder::wallet::Error>(res)
+            })()
+            .map_err(anyhow::Error::from)
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Receive {
+    addresses: Option<anyhow::Result<Addresses>>,
+}
+
+impl Receive {
+    fn new(app: Option<&App>) -> Self {
+        let Some(app) = app else {
+            return Self { addresses: None };
+        };
+        let addresses = (|| {
+            let mut rwtxn = app.wallet.env().write_txn()?;
+            let shielded = app.wallet.get_new_orchard_address(&mut rwtxn);
+            let transparent =
+                app.wallet.get_new_transparent_address(&mut rwtxn);
+            let addresses = Addresses {
+                shielded: shielded.map_err(anyhow::Error::from),
+                transparent: transparent.map_err(anyhow::Error::from),
+            };
+            rwtxn.commit()?;
+            Ok::<_, thunder::wallet::Error>(addresses)
+        })()
+        .map_err(anyhow::Error::from)
+        .inspect_err(|err| tracing::error!("{err:#}"));
+        Self {
+            addresses: Some(addresses),
+        }
+    }
+
+    fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
+        match &mut self.addresses {
+            Some(Ok(addresses)) => {
+                addresses.show(app, ui);
+            }
+            Some(Err(err)) => {
+                ui.monospace_selectable_multiline(format!("{err:#}"));
+            }
+            None => (),
         }
     }
 }

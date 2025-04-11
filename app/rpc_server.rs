@@ -8,7 +8,10 @@ use jsonrpsee::{
 };
 use thunder::{
     net::Peer,
-    types::{Address, PointedOutput, Txid, WithdrawalBundle},
+    types::{
+        PointedOutput, ShieldedAddress, TransparentAddress, Txid,
+        WithdrawalBundle,
+    },
     wallet::Balance,
 };
 use thunder_app_rpc_api::RpcServer;
@@ -44,7 +47,7 @@ impl RpcServer for RpcServerImpl {
 
     async fn create_deposit(
         &self,
-        address: Address,
+        address: TransparentAddress,
         value_sats: u64,
         fee_sats: u64,
     ) -> RpcResult<bitcoin::Txid> {
@@ -67,7 +70,7 @@ impl RpcServer for RpcServerImpl {
 
     async fn format_deposit_address(
         &self,
-        address: Address,
+        address: TransparentAddress,
     ) -> RpcResult<String> {
         let deposit_address = address.format_for_deposit();
         Ok(deposit_address)
@@ -101,15 +104,25 @@ impl RpcServer for RpcServerImpl {
     async fn get_best_sidechain_block_hash(
         &self,
     ) -> RpcResult<Option<thunder::types::BlockHash>> {
-        self.app.node.try_get_tip().map_err(custom_err)
+        let rotxn = self
+            .app
+            .node
+            .env()
+            .read_txn()
+            .map_err(|err| custom_err(thunder::node::Error::from(err)))?;
+        self.app.node.try_get_tip(&rotxn).map_err(custom_err)
     }
 
     async fn get_best_mainchain_block_hash(
         &self,
     ) -> RpcResult<Option<bitcoin::BlockHash>> {
-        let Some(sidechain_hash) =
-            self.app.node.try_get_tip().map_err(custom_err)?
-        else {
+        let Some(sidechain_hash) = ({
+            let rotxn =
+                self.app.node.env().read_txn().map_err(|err| {
+                    custom_err(thunder::node::Error::from(err))
+                })?;
+            self.app.node.try_get_tip(&rotxn).map_err(custom_err)?
+        }) else {
             // No sidechain tip, so no best mainchain block hash.
             return Ok(None);
         };
@@ -131,19 +144,73 @@ impl RpcServer for RpcServerImpl {
             .map_err(custom_err)
     }
 
-    async fn get_new_address(&self) -> RpcResult<Address> {
-        self.app.wallet.get_new_address().map_err(custom_err)
+    async fn get_new_shielded_address(&self) -> RpcResult<ShieldedAddress> {
+        (|| {
+            let mut rwtxn = self.app.wallet.env().write_txn()?;
+            let res = self.app.wallet.get_new_orchard_address(&mut rwtxn)?;
+            rwtxn.commit()?;
+            Ok::<_, thunder::wallet::Error>(res)
+        })()
+        .map_err(custom_err)
     }
 
-    async fn get_wallet_addresses(&self) -> RpcResult<Vec<Address>> {
-        let addrs = self.app.wallet.get_addresses().map_err(custom_err)?;
+    async fn get_new_transparent_address(
+        &self,
+    ) -> RpcResult<TransparentAddress> {
+        (|| {
+            let mut rwtxn = self.app.wallet.env().write_txn()?;
+            let res =
+                self.app.wallet.get_new_transparent_address(&mut rwtxn)?;
+            rwtxn.commit()?;
+            Ok::<_, thunder::wallet::Error>(res)
+        })()
+        .map_err(custom_err)
+    }
+
+    async fn get_shielded_wallet_addresses(
+        &self,
+    ) -> RpcResult<Vec<ShieldedAddress>> {
+        let addrs = {
+            let rotxn =
+                self.app.wallet.env().read_txn().map_err(|err| {
+                    custom_err(thunder::wallet::Error::from(err))
+                })?;
+            self.app
+                .wallet
+                .get_shielded_addresses(&rotxn)
+                .map_err(custom_err)?
+        };
+        let mut res: Vec<_> = addrs.into_iter().collect();
+        res.sort_by_key(|addr| addr.bech32m_encode());
+        Ok(res)
+    }
+
+    async fn get_transparent_wallet_addresses(
+        &self,
+    ) -> RpcResult<Vec<TransparentAddress>> {
+        let addrs = {
+            let rotxn =
+                self.app.wallet.env().read_txn().map_err(|err| {
+                    custom_err(thunder::wallet::Error::from(err))
+                })?;
+            self.app
+                .wallet
+                .get_transparent_addresses(&rotxn)
+                .map_err(custom_err)?
+        };
         let mut res: Vec<_> = addrs.into_iter().collect();
         res.sort_by_key(|addr| addr.as_base58());
         Ok(res)
     }
 
     async fn get_wallet_utxos(&self) -> RpcResult<Vec<PointedOutput>> {
-        let utxos = self.app.wallet.get_utxos().map_err(custom_err)?;
+        let utxos = {
+            let rotxn =
+                self.app.wallet.env().read_txn().map_err(|err| {
+                    custom_err(thunder::wallet::Error::from(err))
+                })?;
+            self.app.wallet.get_utxos(&rotxn).map_err(custom_err)?
+        };
         let utxos = utxos
             .into_iter()
             .map(|(outpoint, output)| PointedOutput { outpoint, output })
@@ -223,6 +290,47 @@ impl RpcServer for RpcServerImpl {
         self.app.wallet.set_seed(&seed_bytes).map_err(custom_err)
     }
 
+    async fn shield(&self, value_sats: u64, fee_sats: u64) -> RpcResult<Txid> {
+        let accumulator =
+            self.app.node.get_tip_accumulator().map_err(custom_err)?;
+        let tx = self
+            .app
+            .wallet
+            .create_shield_transaction(
+                &accumulator,
+                Amount::from_sat(value_sats),
+                Amount::from_sat(fee_sats),
+            )
+            .map_err(custom_err)?;
+        let txid = tx.txid();
+        self.app.sign_and_send(tx).map_err(custom_err)?;
+        Ok(txid)
+    }
+
+    async fn shielded_transfer(
+        &self,
+        dest: ShieldedAddress,
+        value_sats: u64,
+        fee_sats: u64,
+    ) -> RpcResult<Txid> {
+        let accumulator =
+            self.app.node.get_tip_accumulator().map_err(custom_err)?;
+        let tx = self
+            .app
+            .wallet
+            .create_shielded_transaction(
+                &accumulator,
+                dest,
+                Amount::from_sat(value_sats),
+                Amount::from_sat(fee_sats),
+                [0u8; 512],
+            )
+            .map_err(custom_err)?;
+        let txid = tx.txid();
+        self.app.sign_and_send(tx).map_err(custom_err)?;
+        Ok(txid)
+    }
+
     async fn sidechain_wealth_sats(&self) -> RpcResult<u64> {
         let sidechain_wealth =
             self.app.node.get_sidechain_wealth().map_err(custom_err)?;
@@ -233,9 +341,9 @@ impl RpcServer for RpcServerImpl {
         std::process::exit(0);
     }
 
-    async fn transfer(
+    async fn transparent_transfer(
         &self,
-        dest: Address,
+        dest: TransparentAddress,
         value_sats: u64,
         fee_sats: u64,
     ) -> RpcResult<Txid> {
@@ -247,6 +355,27 @@ impl RpcServer for RpcServerImpl {
             .create_transaction(
                 &accumulator,
                 dest,
+                Amount::from_sat(value_sats),
+                Amount::from_sat(fee_sats),
+            )
+            .map_err(custom_err)?;
+        let txid = tx.txid();
+        self.app.sign_and_send(tx).map_err(custom_err)?;
+        Ok(txid)
+    }
+
+    async fn unshield(
+        &self,
+        value_sats: u64,
+        fee_sats: u64,
+    ) -> RpcResult<Txid> {
+        let accumulator =
+            self.app.node.get_tip_accumulator().map_err(custom_err)?;
+        let tx = self
+            .app
+            .wallet
+            .create_unshield_transaction(
+                &accumulator,
                 Amount::from_sat(value_sats),
                 Amount::from_sat(fee_sats),
             )

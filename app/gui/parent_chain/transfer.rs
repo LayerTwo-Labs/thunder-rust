@@ -47,8 +47,15 @@ impl Deposit {
             .clicked()
         {
             let app = app.unwrap();
+            let address = (|| {
+                let mut rwtxn = app.wallet.env().write_txn()?;
+                let res = app.wallet.get_new_transparent_address(&mut rwtxn)?;
+                rwtxn.commit()?;
+                Ok::<_, thunder::wallet::Error>(res)
+            })()
+            .expect("should not happen");
             if let Err(err) = app.deposit(
-                app.wallet.get_new_address().expect("should not happen"),
+                address,
                 amount.expect("should not happen"),
                 fee.expect("should not happen"),
             ) {

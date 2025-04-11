@@ -1,6 +1,6 @@
 use eframe::egui::{self, Button};
 
-use thunder::types::{Transaction, Txid};
+use thunder::types::{Transaction, Txid, orchard};
 
 use crate::app::App;
 
@@ -10,12 +10,26 @@ pub struct TxCreator {
     pub value_out: bitcoin::Amount,
     // if the base tx has changed, need to recompute final tx
     base_txid: Txid,
-    final_tx: Option<Transaction>,
+    final_tx: Option<
+        Transaction<
+            orchard::InProgress<orchard::Unproven, orchard::Unauthorized>,
+        >,
+    >,
 }
 
-fn send_tx(app: &App, tx: &mut Transaction) -> anyhow::Result<()> {
-    app.node.regenerate_proof(tx)?;
-    let () = app.sign_and_send(tx.clone())?;
+fn send_tx(
+    app: &App,
+    tx: &Transaction<
+        orchard::InProgress<orchard::Unproven, orchard::Unauthorized>,
+    >,
+) -> anyhow::Result<()> {
+    let tx = tx.clone().create_proof()?;
+    let mut tx = {
+        let rotxn = app.wallet.env().read_txn()?;
+        app.wallet.authorize_orchard_bundle(&rotxn, tx)?
+    };
+    app.node.regenerate_proof(&mut tx)?;
+    let () = app.sign_and_send(tx)?;
     Ok(())
 }
 
@@ -24,7 +38,9 @@ impl TxCreator {
         &mut self,
         app: Option<&App>,
         ui: &mut egui::Ui,
-        base_tx: &mut Transaction,
+        base_tx: &mut Transaction<
+            orchard::InProgress<orchard::Unproven, orchard::Unauthorized>,
+        >,
     ) -> anyhow::Result<()> {
         // if base txid has changed, store the new txid
         let base_txid = base_tx.txid();

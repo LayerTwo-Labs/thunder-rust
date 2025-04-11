@@ -418,7 +418,7 @@ pub mod mainchain {
         fn try_from(
             output: generated::deposit::Output,
         ) -> Result<Self, Self::Error> {
-            use crate::types::Address;
+            use crate::types::TransparentAddress;
             let generated::deposit::Output {
                 address,
                 value_sats,
@@ -445,17 +445,17 @@ pub mod mainchain {
                                 address_bytes = hex::encode(address_bytes),
                                 "Ignoring invalid deposit address"
                             );
-                            break 'address Address::ALL_ZEROS;
+                            break 'address TransparentAddress::ALL_ZEROS;
                         }
                     };
-                match Address::from_str(address_utf8) {
+                match TransparentAddress::from_str(address_utf8) {
                     Ok(address) => address,
                     Err(_) => {
                         tracing::warn!(
                             address_utf8,
                             "Ignoring invalid deposit address"
                         );
-                        Address::ALL_ZEROS
+                        TransparentAddress::ALL_ZEROS
                     }
                 }
             };
@@ -1177,7 +1177,7 @@ pub mod mainchain {
 
         pub async fn create_deposit_tx(
             &mut self,
-            address: crate::types::Address,
+            address: crate::types::TransparentAddress,
             value_sats: u64,
             fee_sats: u64,
         ) -> Result<Txid, super::Error> {

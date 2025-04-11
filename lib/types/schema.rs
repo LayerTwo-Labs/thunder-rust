@@ -1,5 +1,7 @@
 //! Schemas for OpenAPI
 
+use std::marker::PhantomData;
+
 use utoipa::{
     PartialSchema, ToSchema,
     openapi::{self, RefOr, Schema},
@@ -122,5 +124,23 @@ impl PartialSchema for PeerConnectionState {
 impl ToSchema for PeerConnectionState {
     fn name() -> std::borrow::Cow<'static, str> {
         std::borrow::Cow::Borrowed("net.PeerConnectionState")
+    }
+}
+
+/// Optional `T`
+pub struct Optional<T>(PhantomData<T>);
+
+impl<T> PartialSchema for Optional<T>
+where
+    T: PartialSchema,
+{
+    fn schema() -> openapi::RefOr<openapi::schema::Schema> {
+        openapi::schema::OneOf::builder()
+            .item(
+                openapi::schema::Object::builder()
+                    .schema_type(openapi::schema::Type::Null),
+            )
+            .item(T::schema())
+            .into()
     }
 }

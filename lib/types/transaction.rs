@@ -2,27 +2,24 @@ use std::collections::HashMap;
 
 use bitcoin::amount::CheckedSum;
 use borsh::BorshSerialize;
+use educe::Educe;
 use rustreexo::accumulator::{
     mem_forest::MemForest, node_hash::BitcoinNodeHash, proof::Proof,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use super::{Address, AmountOverflowError, Hash, M6id, MerkleRoot, Txid, hash};
-use crate::authorization::Authorization;
-
-pub trait GetAddress {
-    fn get_address(&self) -> Address;
-}
+use crate::{
+    authorization::Authorization,
+    types::{
+        AmountOverflowError, Hash, M6id, MerkleRoot, TransparentAddress, Txid,
+        hash,
+        orchard::{self, BundleAuthorization},
+    },
+};
 
 pub trait GetValue {
     fn get_value(&self) -> bitcoin::Amount;
-}
-
-impl GetValue for () {
-    fn get_value(&self) -> bitcoin::Amount {
-        bitcoin::Amount::ZERO
-    }
 }
 
 fn borsh_serialize_bitcoin_outpoint<W>(
@@ -320,7 +317,7 @@ pub use content::Content;
     ToSchema,
 )]
 pub struct Output {
-    pub address: Address,
+    pub address: TransparentAddress,
     #[schema(schema_with = Content::schema_ref)]
     pub content: Content,
 }
@@ -353,10 +350,20 @@ impl From<&PointedOutput> for BitcoinNodeHash {
     }
 }
 
-#[derive(
-    BorshSerialize, Clone, Debug, Default, Deserialize, Serialize, ToSchema,
+#[derive(BorshSerialize, Debug, Deserialize, Educe, Serialize, ToSchema)]
+#[educe(
+    Clone(bound(orchard::Bundle<Auth>: Clone)),
+    Default(bound()),
 )]
-pub struct Transaction {
+#[serde(bound(
+    deserialize = "orchard::Bundle<Auth>: Deserialize<'de>",
+    serialize = "orchard::Bundle<Auth>: Serialize",
+))]
+#[schema(bound = "")]
+pub struct Transaction<Auth = orchard::Authorized>
+where
+    Auth: BundleAuthorization,
+{
     #[schema(value_type = Vec<(OutPoint, String)>)]
     pub inputs: Vec<(OutPoint, Hash)>,
     /// Utreexo proof for inputs
@@ -364,11 +371,67 @@ pub struct Transaction {
     #[schema(value_type = crate::types::schema::UtreexoProof)]
     pub proof: Proof,
     pub outputs: Vec<Output>,
+    #[borsh(bound(serialize = "orchard::Bundle<Auth>: BorshSerialize"))]
+    #[schema(schema_with =
+        <crate::types::schema::Optional::<
+            orchard::Bundle<Auth>
+        > as utoipa::PartialSchema>::schema
+    )]
+    pub orchard_bundle: Option<orchard::Bundle<Auth>>,
 }
 
-impl Transaction {
+impl<Auth> Transaction<Auth>
+where
+    Auth: BundleAuthorization,
+{
     pub fn txid(&self) -> Txid {
-        hash(self).into()
+        let Self {
+            inputs,
+            proof: _,
+            outputs,
+            orchard_bundle,
+        } = self;
+        let canonical_bytes: Vec<u8> = {
+            || {
+                let mut bytes = borsh::to_vec(inputs)?;
+                BorshSerialize::serialize(&outputs, &mut bytes)?;
+                if let Some(orchard_bundle) = orchard_bundle {
+                    orchard_bundle.borsh_serialize_without_auth(&mut bytes)?;
+                }
+                std::io::Result::Ok(bytes)
+            }
+        }()
+        .expect("failed to serialize with borsh to compute a hash");
+        Txid(blake3::hash(&canonical_bytes).into())
+    }
+}
+
+impl<S> Transaction<orchard::InProgress<orchard::Unproven, S>>
+where
+    S: orchard::InProgressSignatures,
+{
+    pub fn create_proof(
+        self,
+    ) -> Result<
+        Transaction<orchard::InProgress<orchard::BundleProof, S>>,
+        orchard::BuildError,
+    > {
+        let Self {
+            inputs,
+            proof,
+            outputs,
+            orchard_bundle,
+        } = self;
+        let orchard_bundle = orchard_bundle
+            .map(|bundle| bundle.create_proof(rand::rngs::OsRng))
+            .transpose()?;
+        let res = Transaction {
+            inputs,
+            proof,
+            outputs,
+            orchard_bundle,
+        };
+        Ok(res)
     }
 }
 
@@ -556,12 +619,4 @@ impl Body {
             .checked_sum()
             .ok_or(AmountOverflowError)
     }
-}
-
-pub trait Verify {
-    type Error;
-    fn verify_transaction(
-        transaction: &AuthorizedTransaction,
-    ) -> Result<(), Self::Error>;
-    fn verify_body(body: &Body) -> Result<(), Self::Error>;
 }

@@ -7,10 +7,10 @@ use std::{
 };
 
 use bitcoin::amount::CheckedSum;
-use fallible_iterator::FallibleIterator;
+use fallible_iterator::FallibleIterator as _;
 use futures::{Stream, future::BoxFuture};
 use hashlink::{LinkedHashMap, linked_hash_map};
-use sneed::{Env, EnvError, RwTxnError, db::error::Error as DbError};
+use sneed::{DbError, Env, EnvError, RoTxn, RwTxnError, env};
 use tokio::sync::Mutex;
 use tokio_util::task::LocalPoolHandle;
 use tonic::transport::Channel;
@@ -21,10 +21,10 @@ use crate::{
     net::{self, Net, Peer},
     state::{self, State},
     types::{
-        Accumulator, Address, AmountOverflowError, AmountUnderflowError,
+        Accumulator, AmountOverflowError, AmountUnderflowError,
         AuthorizedTransaction, BlockHash, BmmResult, Body, GetValue, Header,
-        OutPoint, Output, SpentOutput, Tip, Transaction, Txid,
-        WithdrawalBundle,
+        OutPoint, Output, SpentOutput, Tip, Transaction, TransparentAddress,
+        Txid, WithdrawalBundle,
         proto::{self, mainchain},
     },
     util::Watchable,
@@ -37,7 +37,8 @@ use mainchain_task::MainchainTaskHandle;
 
 use self::net_task::NetTaskHandle;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, transitive::Transitive)]
+#[transitive(from(env::error::ReadTxn, EnvError))]
 pub enum Error {
     #[error("address parse error")]
     AddrParse(#[from] std::net::AddrParseError),
@@ -241,6 +242,18 @@ where
         })
     }
 
+    pub fn env(&self) -> &Env {
+        &self.env
+    }
+
+    pub fn archive(&self) -> &Archive {
+        &self.archive
+    }
+
+    pub fn state(&self) -> &State {
+        &self.state
+    }
+
     /// Borrow the CUSF mainchain client, and execute the provided future.
     /// The CUSF mainchain client will be locked while the future is running.
     pub async fn with_cusf_mainchain<F, Output>(&self, f: F) -> Output
@@ -301,15 +314,15 @@ where
 
     pub fn get_spent_utxos(
         &self,
+        rotxn: &RoTxn,
         outpoints: &[OutPoint],
     ) -> Result<Vec<(OutPoint, SpentOutput)>, Error> {
-        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         let mut spent = vec![];
         for outpoint in outpoints {
             if let Some(output) = self
                 .state
                 .stxos
-                .try_get(&rotxn, outpoint)
+                .try_get(rotxn, outpoint)
                 .map_err(DbError::from)?
             {
                 spent.push((*outpoint, output));
@@ -320,7 +333,7 @@ where
 
     pub fn get_utxos_by_addresses(
         &self,
-        addresses: &HashSet<Address>,
+        addresses: &HashSet<TransparentAddress>,
     ) -> Result<HashMap<OutPoint, Output>, Error> {
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         let utxos = self
@@ -330,9 +343,11 @@ where
         Ok(utxos)
     }
 
-    pub fn try_get_tip(&self) -> Result<Option<BlockHash>, Error> {
-        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
-        let tip = self.state.try_get_tip(&rotxn)?;
+    pub fn try_get_tip(
+        &self,
+        rotxn: &RoTxn,
+    ) -> Result<Option<BlockHash>, Error> {
+        let tip = self.state.try_get_tip(rotxn)?;
         Ok(tip)
     }
 

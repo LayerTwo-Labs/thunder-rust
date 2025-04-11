@@ -1,5 +1,5 @@
 use eframe::egui::{self, Button};
-use thunder::types::{self, Output, OutputContent, Transaction};
+use thunder::types::{self, Output, OutputContent, Transaction, orchard};
 
 use crate::app::App;
 
@@ -44,7 +44,9 @@ impl UtxoCreator {
         &mut self,
         app: Option<&App>,
         ui: &mut egui::Ui,
-        tx: &mut Transaction,
+        tx: &mut Transaction<
+            orchard::InProgress<orchard::Unproven, orchard::Unauthorized>,
+        >,
     ) {
         ui.horizontal(|ui| {
             ui.heading("Create");
@@ -77,12 +79,16 @@ impl UtxoCreator {
                 .add_enabled(app.is_some(), Button::new("generate"))
                 .clicked()
             {
-                self.address = app
-                    .unwrap()
-                    .wallet
-                    .get_new_address()
-                    .map(|address| format!("{address}"))
-                    .unwrap_or("".into());
+                self.address = (|| {
+                    let app = app.unwrap();
+                    let mut rwtxn = app.wallet.env().write_txn()?;
+                    let res =
+                        app.wallet.get_new_transparent_address(&mut rwtxn)?;
+                    rwtxn.commit()?;
+                    Ok::<_, thunder::wallet::Error>(res)
+                })()
+                .map(|address| format!("{address}"))
+                .unwrap_or("".into());
             }
         });
         if self.utxo_type == UtxoType::Withdrawal {
@@ -113,7 +119,7 @@ impl UtxoCreator {
         ui.horizontal(|ui| {
             match self.utxo_type {
                 UtxoType::Regular => {
-                    let address: Option<types::Address> =
+                    let address: Option<types::TransparentAddress> =
                         self.address.parse().ok();
                     let value: Option<bitcoin::Amount> =
                         bitcoin::Amount::from_str_in(
@@ -144,7 +150,7 @@ impl UtxoCreator {
                             bitcoin::Denomination::Bitcoin,
                         )
                         .ok();
-                    let address: Option<types::Address> =
+                    let address: Option<types::TransparentAddress> =
                         self.address.parse().ok();
                     let main_address: Option<
                         bitcoin::Address<bitcoin::address::NetworkUnchecked>,

@@ -527,7 +527,7 @@ impl Net {
                     PeerConnectionStatus::Connected => {}
                 }
                 let request = PeerRequest::PushTransaction {
-                    transaction: tx.clone(),
+                    transaction: Box::new(tx.clone()),
                 };
                 if let Err(_send_err) = peer_connection_handle
                     .internal_message_tx

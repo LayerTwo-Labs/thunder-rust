@@ -78,7 +78,7 @@ pub enum ConnectionError {
     #[error("send info error")]
     SendInfo,
     #[error("state error")]
-    State(#[from] state::Error),
+    State(#[source] Box<state::Error>),
     #[error("write error ({stream_id})")]
     Write {
         stream_id: quinn::StreamId,
@@ -95,6 +95,12 @@ impl From<mpsc::TrySendError<Info>> for ConnectionError {
 impl From<mpsc::TrySendError<InternalMessage>> for ConnectionError {
     fn from(_: mpsc::TrySendError<InternalMessage>) -> Self {
         Self::SendInternalMessage
+    }
+}
+
+impl From<state::Error> for ConnectionError {
+    fn from(err: state::Error) -> Self {
+        Self::State(Box::new(err))
     }
 }
 
@@ -198,7 +204,7 @@ pub enum Request {
         peer_state_id: Option<PeerStateId>,
     },
     PushTransaction {
-        transaction: AuthorizedTransaction,
+        transaction: Box<AuthorizedTransaction>,
     },
 }
 
@@ -219,7 +225,7 @@ pub enum Info {
     },
     /// New tip ready (body and header exist in archive, BMM verified)
     NewTipReady(Tip),
-    NewTransaction(AuthorizedTransaction),
+    NewTransaction(Box<AuthorizedTransaction>),
     Response(Box<(Response, Request)>),
 }
 
@@ -1032,7 +1038,7 @@ impl ConnectionTask {
                     Response::TransactionAccepted(txid),
                 )
                 .await?;
-                info_tx.unbounded_send(Info::NewTransaction(tx))?;
+                info_tx.unbounded_send(Info::NewTransaction(Box::new(tx)))?;
                 Ok(())
             }
         }
@@ -1077,7 +1083,7 @@ impl ConnectionTask {
                 peer_state_id: _,
             } => Self::handle_get_headers(ctxt, response_tx, start, end).await,
             Request::PushTransaction { transaction } => {
-                Self::handle_push_tx(ctxt, info_tx, response_tx, transaction)
+                Self::handle_push_tx(ctxt, info_tx, response_tx, *transaction)
                     .await
             }
         }

@@ -4,12 +4,20 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::types::{
-    Address, AuthorizedTransaction, Body, GetAddress, Transaction, Verify,
+    AuthorizedTransaction, Body, Transaction, TransparentAddress, orchard,
 };
 
 pub use ed25519_dalek::{
     Signature, SignatureError, Signer, SigningKey, Verifier, VerifyingKey,
 };
+
+pub fn get_address(verifying_key: &VerifyingKey) -> TransparentAddress {
+    let mut hasher = blake3::Hasher::new();
+    let mut reader = hasher.update(&verifying_key.to_bytes()).finalize_xof();
+    let mut output: [u8; 20] = [0; 20];
+    reader.fill(&mut output);
+    TransparentAddress(output)
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -17,93 +25,37 @@ pub enum Error {
     BorshSerialize(#[from] borsh::io::Error),
     #[error("ed25519_dalek error")]
     DalekError(#[from] SignatureError),
+    #[error("Orchard bundle proof verification error")]
+    OrchardProof(#[from] orchard::BundleProofVerificationError),
+    #[error("Orchard signature verification error")]
+    OrchardSignature(#[from] orchard::SignatureVerificationError),
     #[error(
         "wrong key for address: address = {address},
              hash(verifying_key) = {hash_verifying_key}"
     )]
     WrongKeyForAddress {
-        address: Address,
-        hash_verifying_key: Address,
+        address: TransparentAddress,
+        hash_verifying_key: TransparentAddress,
     },
 }
 
-fn borsh_serialize_verifying_key<W>(
-    vk: &VerifyingKey,
-    writer: &mut W,
-) -> borsh::io::Result<()>
-where
-    W: borsh::io::Write,
-{
-    borsh::BorshSerialize::serialize(&vk.to_bytes(), writer)
-}
-
-fn borsh_serialize_signature<W>(
-    sig: &Signature,
-    writer: &mut W,
-) -> borsh::io::Result<()>
-where
-    W: borsh::io::Write,
-{
-    borsh::BorshSerialize::serialize(&sig.to_bytes(), writer)
-}
-
-#[derive(
-    BorshSerialize,
-    Debug,
-    Clone,
-    Deserialize,
-    Eq,
-    PartialEq,
-    Serialize,
-    ToSchema,
-)]
-pub struct Authorization {
-    #[borsh(serialize_with = "borsh_serialize_verifying_key")]
-    #[schema(value_type = String)]
-    pub verifying_key: VerifyingKey,
-    #[borsh(serialize_with = "borsh_serialize_signature")]
-    #[schema(value_type = String)]
-    pub signature: Signature,
-}
-
-impl GetAddress for Authorization {
-    fn get_address(&self) -> Address {
-        get_address(&self.verifying_key)
-    }
-}
-
-impl Verify for Authorization {
-    type Error = Error;
-    fn verify_transaction(
-        transaction: &AuthorizedTransaction,
-    ) -> Result<(), Self::Error> {
-        verify_authorized_transaction(transaction)?;
-        Ok(())
-    }
-
-    fn verify_body(body: &Body) -> Result<(), Self::Error> {
-        verify_authorizations(body)?;
-        Ok(())
-    }
-}
-
-pub fn get_address(verifying_key: &VerifyingKey) -> Address {
-    let mut hasher = blake3::Hasher::new();
-    let mut reader = hasher.update(&verifying_key.to_bytes()).finalize_xof();
-    let mut output: [u8; 20] = [0; 20];
-    reader.fill(&mut output);
-    Address(output)
-}
-
-struct Package<'a> {
-    messages: Vec<&'a [u8]>,
-    signatures: Vec<Signature>,
-    verifying_keys: Vec<VerifyingKey>,
+// Verify orchard authorization
+fn verify_orchard(transaction: &Transaction) -> Result<(), Error> {
+    if let Some(orchard_bundle) = &transaction.orchard_bundle {
+        let txid = transaction.txid();
+        let bvk = orchard_bundle.binding_validating_key();
+        let binding_sig = orchard_bundle.authorization().binding_signature();
+        let () = bvk.verify(txid.as_slice(), binding_sig)?;
+        let () = orchard_bundle.verify_proof()?;
+    };
+    Ok(())
 }
 
 pub fn verify_authorized_transaction(
     transaction: &AuthorizedTransaction,
 ) -> Result<(), Error> {
+    let () = verify_orchard(&transaction.transaction)?;
+
     let tx_bytes_canonical = borsh::to_vec(&transaction.transaction)?;
     let messages: Vec<_> = std::iter::repeat_n(
         tx_bytes_canonical.as_slice(),
@@ -125,7 +77,15 @@ pub fn verify_authorized_transaction(
     Ok(())
 }
 
+struct Package<'a> {
+    messages: Vec<&'a [u8]>,
+    signatures: Vec<Signature>,
+    verifying_keys: Vec<VerifyingKey>,
+}
+
 pub fn verify_authorizations(body: &Body) -> Result<(), Error> {
+    // TODO: batch orchard verifications
+    let () = body.transactions.par_iter().try_for_each(verify_orchard)?;
     let input_numbers = body
         .transactions
         .iter()
@@ -196,6 +156,90 @@ pub fn verify_authorizations(body: &Body) -> Result<(), Error> {
     Ok(())
 }
 
+fn borsh_serialize_verifying_key<W>(
+    vk: &VerifyingKey,
+    writer: &mut W,
+) -> borsh::io::Result<()>
+where
+    W: borsh::io::Write,
+{
+    borsh::BorshSerialize::serialize(&vk.to_bytes(), writer)
+}
+
+fn borsh_serialize_signature<W>(
+    sig: &Signature,
+    writer: &mut W,
+) -> borsh::io::Result<()>
+where
+    W: borsh::io::Write,
+{
+    borsh::BorshSerialize::serialize(&sig.to_bytes(), writer)
+}
+
+#[derive(
+    BorshSerialize,
+    Debug,
+    Clone,
+    Deserialize,
+    Eq,
+    PartialEq,
+    Serialize,
+    ToSchema,
+)]
+pub struct Authorization {
+    #[borsh(serialize_with = "borsh_serialize_verifying_key")]
+    #[schema(value_type = String)]
+    pub verifying_key: VerifyingKey,
+    #[borsh(serialize_with = "borsh_serialize_signature")]
+    #[schema(value_type = String)]
+    pub signature: Signature,
+}
+
+impl Authorization {
+    pub fn get_address(&self) -> TransparentAddress {
+        get_address(&self.verifying_key)
+    }
+
+    pub fn verify_transaction(
+        transaction: &AuthorizedTransaction,
+    ) -> Result<(), Error> {
+        verify_authorized_transaction(transaction)?;
+        Ok(())
+    }
+
+    pub fn verify_body(body: &Body) -> Result<(), Error> {
+        verify_authorizations(body)?;
+        Ok(())
+    }
+}
+
+pub fn sign_orchard(
+    signing_keys: &[orchard::SpendAuthorizingKey],
+    transaction: Transaction<
+        orchard::InProgress<orchard::BundleProof, orchard::Unauthorized>,
+    >,
+) -> Result<Transaction, orchard::BuildError> {
+    let sighash: [u8; 32] = transaction.txid().0;
+    let Transaction {
+        inputs,
+        proof,
+        outputs,
+        orchard_bundle,
+    } = transaction;
+    let orchard_bundle = orchard_bundle
+        .map(|bundle| {
+            bundle.apply_signatures(rand::rngs::OsRng, sighash, signing_keys)
+        })
+        .transpose()?;
+    let transaction = Transaction {
+        inputs,
+        proof,
+        outputs,
+        orchard_bundle,
+    };
+    Ok(transaction)
+}
+
 pub fn sign(
     signing_key: &SigningKey,
     transaction: &Transaction,
@@ -205,7 +249,7 @@ pub fn sign(
 }
 
 pub fn authorize(
-    addresses_signing_keys: &[(Address, &SigningKey)],
+    addresses_signing_keys: &[(TransparentAddress, &SigningKey)],
     transaction: Transaction,
 ) -> Result<AuthorizedTransaction, Error> {
     let mut authorizations: Vec<Authorization> =

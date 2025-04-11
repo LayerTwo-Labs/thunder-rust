@@ -8,17 +8,16 @@ use serde::{Deserialize, Serialize};
 use sneed::{
     DatabaseUnique, RoTxn, RwTxn, UnitKey,
     db::error::{self as db_error, Error as DbError},
-    env::Error as EnvError,
     rwtxn::Error as RwTxnError,
 };
 
 use crate::{
     authorization::Authorization,
     types::{
-        Accumulator, Address, AmountOverflowError, AmountUnderflowError,
-        AuthorizedTransaction, BlockHash, Body, FilledTransaction, GetAddress,
-        GetValue, Header, InPoint, M6id, OutPoint, Output, PointedOutput,
-        SpentOutput, Transaction, VERSION, Verify, Version, WithdrawalBundle,
+        self, Accumulator, AmountOverflowError, AmountUnderflowError,
+        AuthorizedTransaction, BlockHash, Body, FilledTransaction, GetValue,
+        Header, InPoint, M6id, OutPoint, Output, PointedOutput, SpentOutput,
+        Transaction, TransparentAddress, VERSION, Version, WithdrawalBundle,
         WithdrawalBundleStatus, proto::mainchain::TwoWayPegData,
     },
     util::Watchable,
@@ -26,10 +25,12 @@ use crate::{
 
 mod block;
 mod error;
+mod orchard;
 mod rollback;
 mod two_way_peg_data;
 
 pub use error::Error;
+pub use orchard::Orchard;
 use rollback::RollBack;
 
 pub const WITHDRAWAL_BUNDLE_FAILURE_GAP: u32 = 4;
@@ -89,60 +90,46 @@ pub struct State {
         SerdeBincode<u32>,
         SerdeBincode<(bitcoin::BlockHash, u32)>,
     >,
+    /// Orchard DBs
+    pub orchard: Orchard,
     pub utreexo_accumulator: DatabaseUnique<UnitKey, SerdeBincode<Accumulator>>,
     _version: DatabaseUnique<UnitKey, SerdeBincode<Version>>,
 }
 
 impl State {
-    pub const NUM_DBS: u32 = 11;
+    pub const NUM_DBS: u32 = Orchard::NUM_DBS + 11;
 
     pub fn new(env: &sneed::Env) -> Result<Self, Error> {
-        let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
-        let tip = DatabaseUnique::create(env, &mut rwtxn, "tip")
-            .map_err(EnvError::from)?;
-        let height = DatabaseUnique::create(env, &mut rwtxn, "height")
-            .map_err(EnvError::from)?;
-        let utxos = DatabaseUnique::create(env, &mut rwtxn, "utxos")
-            .map_err(EnvError::from)?;
-        let stxos = DatabaseUnique::create(env, &mut rwtxn, "stxos")
-            .map_err(EnvError::from)?;
+        let mut rwtxn = env.write_txn()?;
+        let tip = DatabaseUnique::create(env, &mut rwtxn, "tip")?;
+        let height = DatabaseUnique::create(env, &mut rwtxn, "height")?;
+        let utxos = DatabaseUnique::create(env, &mut rwtxn, "utxos")?;
+        let stxos = DatabaseUnique::create(env, &mut rwtxn, "stxos")?;
         let pending_withdrawal_bundle = DatabaseUnique::create(
             env,
             &mut rwtxn,
             "pending_withdrawal_bundle",
-        )
-        .map_err(EnvError::from)?;
+        )?;
         let latest_failed_withdrawal_bundle = DatabaseUnique::create(
             env,
             &mut rwtxn,
             "latest_failed_withdrawal_bundle",
-        )
-        .map_err(EnvError::from)?;
+        )?;
         let withdrawal_bundles =
-            DatabaseUnique::create(env, &mut rwtxn, "withdrawal_bundles")
-                .map_err(EnvError::from)?;
+            DatabaseUnique::create(env, &mut rwtxn, "withdrawal_bundles")?;
         let deposit_blocks =
-            DatabaseUnique::create(env, &mut rwtxn, "deposit_blocks")
-                .map_err(EnvError::from)?;
+            DatabaseUnique::create(env, &mut rwtxn, "deposit_blocks")?;
         let withdrawal_bundle_event_blocks = DatabaseUnique::create(
             env,
             &mut rwtxn,
             "withdrawal_bundle_event_blocks",
-        )
-        .map_err(EnvError::from)?;
+        )?;
+        let orchard = Orchard::new(env, &mut rwtxn)?;
         let utreexo_accumulator =
-            DatabaseUnique::create(env, &mut rwtxn, "utreexo_accumulator")
-                .map_err(EnvError::from)?;
-        let version = DatabaseUnique::create(env, &mut rwtxn, "state_version")
-            .map_err(EnvError::from)?;
-        if version
-            .try_get(&rwtxn, &())
-            .map_err(DbError::from)?
-            .is_none()
-        {
-            version
-                .put(&mut rwtxn, &(), &*VERSION)
-                .map_err(DbError::from)?;
+            DatabaseUnique::create(env, &mut rwtxn, "utreexo_accumulator")?;
+        let version = DatabaseUnique::create(env, &mut rwtxn, "state_version")?;
+        if version.try_get(&rwtxn, &())?.is_none() {
+            version.put(&mut rwtxn, &(), &*VERSION)?;
         }
         rwtxn.commit().map_err(RwTxnError::from)?;
         Ok(Self {
@@ -155,6 +142,7 @@ impl State {
             withdrawal_bundles,
             deposit_blocks,
             withdrawal_bundle_event_blocks,
+            orchard,
             utreexo_accumulator,
             _version: version,
         })
@@ -184,7 +172,7 @@ impl State {
     pub fn get_utxos_by_addresses(
         &self,
         rotxn: &RoTxn,
-        addresses: &HashSet<Address>,
+        addresses: &HashSet<TransparentAddress>,
     ) -> Result<HashMap<OutPoint, Output>, db_error::Iter> {
         let utxos = self
             .utxos
@@ -216,8 +204,7 @@ impl State {
     pub fn get_accumulator(&self, rotxn: &RoTxn) -> Result<Accumulator, Error> {
         let accumulator = self
             .utreexo_accumulator
-            .try_get(rotxn, &())
-            .map_err(DbError::from)?
+            .try_get(rotxn, &())?
             .unwrap_or_default();
         Ok(accumulator)
     }
@@ -261,11 +248,8 @@ impl State {
     ) -> Result<FilledTransaction, Error> {
         let mut spent_utxos = vec![];
         for (outpoint, _) in &transaction.inputs {
-            let utxo = self
-                .utxos
-                .try_get(txn, outpoint)
-                .map_err(DbError::from)?
-                .ok_or(Error::NoUtxo {
+            let utxo =
+                self.utxos.try_get(txn, outpoint)?.ok_or(Error::NoUtxo {
                     outpoint: *outpoint,
                 })?;
             spent_utxos.push(utxo);
@@ -281,10 +265,7 @@ impl State {
         &self,
         txn: &RoTxn,
     ) -> Result<Option<(WithdrawalBundle, u32)>, Error> {
-        Ok(self
-            .pending_withdrawal_bundle
-            .try_get(txn, &())
-            .map_err(DbError::from)?)
+        Ok(self.pending_withdrawal_bundle.try_get(txn, &())?)
     }
 
     pub fn validate_filled_transaction(
@@ -302,6 +283,20 @@ impl State {
             value_out = value_out
                 .checked_add(output.get_value())
                 .ok_or(AmountOverflowError)?;
+        }
+        if let Some(orchard_bundle) =
+            transaction.transaction.orchard_bundle.as_ref()
+        {
+            let value_balance = orchard_bundle.value_balance();
+            if value_balance.is_positive() {
+                value_in = value_in
+                    .checked_add(value_balance.unsigned_abs())
+                    .ok_or(AmountOverflowError)?;
+            } else {
+                value_out = value_out
+                    .checked_add(value_balance.unsigned_abs())
+                    .ok_or(AmountOverflowError)?;
+            }
         }
         if value_out > value_in {
             return Err(Error::NotEnoughValueIn);
@@ -325,6 +320,25 @@ impl State {
         {
             if authorization.get_address() != spent_utxo.address {
                 return Err(Error::WrongPubKeyForAddress);
+            }
+        }
+        // Check anchor
+        if let Some(orchard_bundle) =
+            transaction.transaction.orchard_bundle.as_ref()
+        {
+            let anchor = *orchard_bundle.anchor();
+            // The empty anchor is only allowed if no spends exist
+            if anchor == types::orchard::Anchor::empty_tree()
+                && orchard_bundle.flags().spends_enabled()
+            {
+                return Err(error::Orchard::EmptyAnchor.into());
+            }
+            if !self
+                .orchard
+                .historical_roots()
+                .contains_key(rotxn, &anchor)?
+            {
+                return Err(error::Orchard::InvalidAnchor { anchor }.into());
             }
         }
         if Authorization::verify_transaction(transaction).is_err() {
@@ -373,8 +387,7 @@ impl State {
     ) -> Result<Option<bitcoin::BlockHash>, Error> {
         let block_hash = self
             .deposit_blocks
-            .last(rotxn)
-            .map_err(DbError::from)?
+            .last(rotxn)?
             .map(|(_, (block_hash, _))| block_hash);
         Ok(block_hash)
     }
@@ -385,8 +398,7 @@ impl State {
     ) -> Result<Option<bitcoin::BlockHash>, Error> {
         let block_hash = self
             .withdrawal_bundle_event_blocks
-            .last(rotxn)
-            .map_err(DbError::from)?
+            .last(rotxn)?
             .map(|(_, (block_hash, _))| block_hash);
         Ok(block_hash)
     }
@@ -398,8 +410,7 @@ impl State {
     ) -> Result<bitcoin::Amount, Error> {
         let mut total_deposit_utxo_value = bitcoin::Amount::ZERO;
         self.utxos
-            .iter(rotxn)
-            .map_err(DbError::from)?
+            .iter(rotxn)?
             .map_err(|err| DbError::from(err).into())
             .for_each(|(outpoint, output)| {
                 if let OutPoint::Deposit(_) = outpoint {
@@ -412,8 +423,7 @@ impl State {
         let mut total_deposit_stxo_value = bitcoin::Amount::ZERO;
         let mut total_withdrawal_stxo_value = bitcoin::Amount::ZERO;
         self.stxos
-            .iter(rotxn)
-            .map_err(DbError::from)?
+            .iter(rotxn)?
             .map_err(|err| DbError::from(err).into())
             .for_each(|(outpoint, spent_output)| {
                 if let OutPoint::Deposit(_) = outpoint {

@@ -3,12 +3,14 @@ use strum::{EnumIter, IntoEnumIterator};
 
 use crate::app::App;
 
+mod shield_unshield;
 mod transfer_receive;
 mod tx_builder;
 mod tx_creator;
 mod utxo_creator;
 mod utxo_selector;
 
+use shield_unshield::ShieldUnshield;
 use transfer_receive::TransferReceive;
 use tx_builder::TxBuilder;
 
@@ -17,11 +19,14 @@ enum Tab {
     #[default]
     #[strum(to_string = "Transfer & Receive")]
     TransferReceive,
+    #[strum(to_string = "Shield & Unshield")]
+    ShieldUnshield,
     #[strum(to_string = "Transaction Builder")]
     TransactionBuilder,
 }
 
 pub struct Coins {
+    shield_unshield: ShieldUnshield,
     transfer_receive: TransferReceive,
     tab: Tab,
     tx_builder: TxBuilder,
@@ -30,6 +35,7 @@ pub struct Coins {
 impl Coins {
     pub fn new(app: Option<&App>) -> Self {
         Self {
+            shield_unshield: ShieldUnshield::default(),
             transfer_receive: TransferReceive::new(app),
             tab: Tab::default(),
             tx_builder: TxBuilder::default(),
@@ -46,6 +52,9 @@ impl Coins {
             });
         });
         egui::CentralPanel::default().show(ui.ctx(), |ui| match self.tab {
+            Tab::ShieldUnshield => {
+                let () = self.shield_unshield.show(app, ui);
+            }
             Tab::TransferReceive => {
                 let () = self.transfer_receive.show(app, ui);
             }

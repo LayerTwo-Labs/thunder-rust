@@ -108,7 +108,7 @@ impl BottomPanel {
         match initialized.wallet_updated.poll_next() {
             Some(Poll::Ready(())) => {
                 self.balance = match initialized.app.wallet.get_balance() {
-                    Ok(balance) => Some(Some(balance.total)),
+                    Ok(balance) => Some(Some(balance.total())),
                     Err(err) => {
                         let err = anyhow::Error::from(err);
                         tracing::error!("Failed to update balance: {err:#}");

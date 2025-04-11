@@ -15,16 +15,17 @@ use utoipa::ToSchema;
 
 mod address;
 pub mod hashes;
+pub mod orchard;
 pub mod proto;
 pub mod schema;
 mod transaction;
 
-pub use address::Address;
+pub use address::{Address, ShieldedAddress, TransparentAddress};
 pub use hashes::{BlockHash, Hash, M6id, MerkleRoot, Txid, hash};
 pub use transaction::{
     AuthorizedTransaction, Body, Content as OutputContent, FilledTransaction,
-    GetAddress, GetValue, InPoint, OutPoint, Output, PointedOutput,
-    SpentOutput, Transaction, Verify,
+    GetValue, InPoint, OutPoint, Output, PointedOutput, SpentOutput,
+    Transaction,
 };
 
 pub const THIS_SIDECHAIN: u8 = 9;

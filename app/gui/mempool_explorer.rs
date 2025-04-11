@@ -15,7 +15,10 @@ impl MemPoolExplorer {
             .and_then(|app| app.node.get_all_transactions().ok())
             .unwrap_or_default();
         let utxos = app
-            .and_then(|app| app.wallet.get_utxos().ok())
+            .and_then(|app| {
+                let rotxn = app.wallet.env().read_txn().ok()?;
+                app.wallet.get_utxos(&rotxn).ok()
+            })
             .unwrap_or_default();
         egui::SidePanel::left("transaction_picker")
             .resizable(false)
@@ -32,13 +35,13 @@ impl MemPoolExplorer {
                         for (index, transaction) in
                             transactions.iter().enumerate()
                         {
-                            let value_out: bitcoin::Amount = transaction
+                            let mut value_out: bitcoin::Amount = transaction
                                 .transaction
                                 .outputs
                                 .iter()
                                 .map(GetValue::get_value)
                                 .sum();
-                            let value_in: bitcoin::Amount = transaction
+                            let mut value_in: bitcoin::Amount = transaction
                                 .transaction
                                 .inputs
                                 .iter()
@@ -47,6 +50,17 @@ impl MemPoolExplorer {
                                 })
                                 .sum::<Option<bitcoin::Amount>>()
                                 .unwrap_or(bitcoin::Amount::ZERO);
+                            if let Some(orchard_bundle) =
+                                transaction.transaction.orchard_bundle.as_ref()
+                            {
+                                let value_balance =
+                                    orchard_bundle.value_balance();
+                                if value_balance.is_positive() {
+                                    value_in += value_balance.unsigned_abs();
+                                } else {
+                                    value_out += value_balance.unsigned_abs();
+                                }
+                            };
                             let txid =
                                 &format!("{}", transaction.transaction.txid())
                                     [0..8];

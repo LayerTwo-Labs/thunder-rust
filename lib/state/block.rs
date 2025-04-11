@@ -3,14 +3,13 @@
 use std::collections::HashSet;
 
 use rustreexo::accumulator::node_hash::BitcoinNodeHash;
-use sneed::{RoTxn, RwTxn, db::error::Error as DbError};
+use sneed::{RoTxn, RwTxn};
 
 use crate::{
     state::{Error, State, error},
     types::{
-        AccumulatorDiff, AmountOverflowError, Body, GetAddress as _,
-        GetValue as _, Header, InPoint, OutPoint, PointedOutput, SpentOutput,
-        Verify as _,
+        AccumulatorDiff, AmountOverflowError, Body, GetValue as _, Header,
+        InPoint, OutPoint, PointedOutput, SpentOutput, Transaction, orchard,
     },
     wallet::Authorization,
 };
@@ -40,8 +39,7 @@ pub fn validate(
     }
     let mut accumulator = state
         .utreexo_accumulator
-        .try_get(rotxn, &())
-        .map_err(DbError::from)?
+        .try_get(rotxn, &())?
         .unwrap_or_default();
     let mut accumulator_diff = AccumulatorDiff::default();
     let mut coinbase_value = bitcoin::Amount::ZERO;
@@ -133,6 +131,75 @@ pub fn validate(
     Ok(total_fees)
 }
 
+/// Connect the orchard components of a transaction
+fn connect_orchard(
+    state: &State,
+    rwtxn: &mut RwTxn,
+    bundle: &orchard::Bundle<orchard::Authorized>,
+    frontier: &mut orchard::Frontier,
+) -> Result<(), error::Orchard> {
+    // Update frontier
+    {
+        for cmx in bundle.extracted_note_commitments() {
+            if !frontier.append(cmx) {
+                return Err(error::Orchard::AppendCommitment);
+            }
+        }
+    }
+    // Store nullifiers
+    for nullifier in bundle.nullifiers() {
+        if state.orchard.nullifiers().contains_key(rwtxn, nullifier)? {
+            return Err(error::Orchard::NullifierDoubleSpent {
+                nullifier: *nullifier,
+            });
+        }
+        state.orchard.put_nullifier(rwtxn, nullifier)?;
+    }
+    Ok(())
+}
+
+fn connect_transaction(
+    state: &State,
+    rwtxn: &mut RwTxn,
+    transaction: &Transaction,
+    accumulator_diff: &mut AccumulatorDiff,
+    frontier: &mut orchard::Frontier,
+) -> Result<(), Error> {
+    let txid = transaction.txid();
+    for (vin, (outpoint, utxo_hash)) in transaction.inputs.iter().enumerate() {
+        let spent_output =
+            state.utxos.try_get(rwtxn, outpoint)?.ok_or(Error::NoUtxo {
+                outpoint: *outpoint,
+            })?;
+        accumulator_diff.remove(utxo_hash.into());
+        state.utxos.delete(rwtxn, outpoint)?;
+        let spent_output = SpentOutput {
+            output: spent_output,
+            inpoint: InPoint::Regular {
+                txid,
+                vin: vin as u32,
+            },
+        };
+        state.stxos.put(rwtxn, outpoint, &spent_output)?;
+    }
+    for (vout, output) in transaction.outputs.iter().enumerate() {
+        let outpoint = OutPoint::Regular {
+            txid,
+            vout: vout as u32,
+        };
+        let pointed_output = PointedOutput {
+            outpoint,
+            output: output.clone(),
+        };
+        accumulator_diff.insert((&pointed_output).into());
+        state.utxos.put(rwtxn, &outpoint, output)?;
+    }
+    if let Some(orchard_bundle) = transaction.orchard_bundle.as_ref() {
+        let () = connect_orchard(state, rwtxn, orchard_bundle, frontier)?;
+    }
+    Ok(())
+}
+
 pub fn connect(
     state: &State,
     rwtxn: &mut RwTxn,
@@ -157,10 +224,14 @@ pub fn connect(
     }
     let mut accumulator = state
         .utreexo_accumulator
-        .try_get(rwtxn, &())
-        .map_err(DbError::from)?
+        .try_get(rwtxn, &())?
         .unwrap_or_default();
     let mut accumulator_diff = AccumulatorDiff::default();
+    let mut frontier = state
+        .orchard
+        .frontier()
+        .get(rwtxn, &())
+        .map_err(error::Orchard::from)?;
     for (vout, output) in body.coinbase.iter().enumerate() {
         let outpoint = OutPoint::Coinbase {
             merkle_root,
@@ -171,38 +242,49 @@ pub fn connect(
             output: output.clone(),
         };
         accumulator_diff.insert((&pointed_output).into());
-        state
-            .utxos
-            .put(rwtxn, &outpoint, output)
-            .map_err(DbError::from)?;
+        state.utxos.put(rwtxn, &outpoint, output)?;
     }
     for transaction in &body.transactions {
-        let txid = transaction.txid();
-        for (vin, (outpoint, utxo_hash)) in
-            transaction.inputs.iter().enumerate()
-        {
-            let spent_output = state
-                .utxos
-                .try_get(rwtxn, outpoint)
-                .map_err(DbError::from)?
-                .ok_or(Error::NoUtxo {
-                    outpoint: *outpoint,
-                })?;
-            accumulator_diff.remove(utxo_hash.into());
-            state.utxos.delete(rwtxn, outpoint).map_err(DbError::from)?;
-            let spent_output = SpentOutput {
-                output: spent_output,
-                inpoint: InPoint::Regular {
-                    txid,
-                    vin: vin as u32,
-                },
-            };
-            state
-                .stxos
-                .put(rwtxn, outpoint, &spent_output)
-                .map_err(DbError::from)?;
-        }
-        for (vout, output) in transaction.outputs.iter().enumerate() {
+        let () = connect_transaction(
+            state,
+            rwtxn,
+            transaction,
+            &mut accumulator_diff,
+            &mut frontier,
+        )?;
+    }
+    let block_hash = header.hash();
+    let height = state.try_get_height(rwtxn)?.map_or(0, |height| height + 1);
+    state.tip.put(rwtxn, &(), &block_hash)?;
+    state.height.put(rwtxn, &(), &height)?;
+    let () = accumulator.apply_diff(accumulator_diff)?;
+    state.utreexo_accumulator.put(rwtxn, &(), &accumulator)?;
+    let () = state.orchard.put_frontier(rwtxn, &frontier)?;
+    let _: bool = state.orchard.put_historical_root(rwtxn, frontier.root())?;
+    Ok(())
+}
+
+/// Disconnect the orchard components of a transaction
+fn disconnect_orchard(
+    _state: &State,
+    _rwtxn: &mut RwTxn,
+    _transaction: &Transaction,
+) -> Result<(), error::Orchard> {
+    // FIXME: update frontier, etc.
+    Ok(())
+}
+
+fn disconnect_transaction(
+    state: &State,
+    rwtxn: &mut RwTxn,
+    transaction: &Transaction,
+    accumulator_diff: &mut AccumulatorDiff,
+) -> Result<(), Error> {
+    let txid = transaction.txid();
+    let () = disconnect_orchard(state, rwtxn, transaction)?;
+    // delete UTXOs, last-to-first
+    transaction.outputs.iter().enumerate().rev().try_for_each(
+        |(vout, output)| {
             let outpoint = OutPoint::Regular {
                 txid,
                 vout: vout as u32,
@@ -211,29 +293,31 @@ pub fn connect(
                 outpoint,
                 output: output.clone(),
             };
-            accumulator_diff.insert((&pointed_output).into());
-            state
-                .utxos
-                .put(rwtxn, &outpoint, output)
-                .map_err(DbError::from)?;
-        }
-    }
-    let block_hash = header.hash();
-    let height = state.try_get_height(rwtxn)?.map_or(0, |height| height + 1);
-    state
-        .tip
-        .put(rwtxn, &(), &block_hash)
-        .map_err(DbError::from)?;
-    state
-        .height
-        .put(rwtxn, &(), &height)
-        .map_err(DbError::from)?;
-    let () = accumulator.apply_diff(accumulator_diff)?;
-    state
-        .utreexo_accumulator
-        .put(rwtxn, &(), &accumulator)
-        .map_err(DbError::from)?;
-    Ok(())
+            accumulator_diff.remove((&pointed_output).into());
+            if state.utxos.delete(rwtxn, &outpoint)? {
+                Ok(())
+            } else {
+                Err(Error::NoUtxo { outpoint })
+            }
+        },
+    )?;
+    // unspend STXOs, last-to-first
+    transaction
+        .inputs
+        .iter()
+        .rev()
+        .try_for_each(|(outpoint, utxo_hash)| {
+            if let Some(spent_output) = state.stxos.try_get(rwtxn, outpoint)? {
+                accumulator_diff.insert(utxo_hash.into());
+                state.stxos.delete(rwtxn, outpoint)?;
+                state.utxos.put(rwtxn, outpoint, &spent_output.output)?;
+                Ok(())
+            } else {
+                Err(Error::NoStxo {
+                    outpoint: *outpoint,
+                })
+            }
+        })
 }
 
 pub fn disconnect_tip(
@@ -242,11 +326,7 @@ pub fn disconnect_tip(
     header: &Header,
     body: &Body,
 ) -> Result<(), Error> {
-    let tip_hash = state
-        .tip
-        .try_get(rwtxn, &())
-        .map_err(DbError::from)?
-        .ok_or(Error::NoTip)?;
+    let tip_hash = state.tip.try_get(rwtxn, &())?.ok_or(Error::NoTip)?;
     if tip_hash != header.hash() {
         let err = error::InvalidHeader::BlockHash {
             expected: tip_hash,
@@ -264,63 +344,13 @@ pub fn disconnect_tip(
     }
     let mut accumulator = state
         .utreexo_accumulator
-        .try_get(rwtxn, &())
-        .map_err(DbError::from)?
+        .try_get(rwtxn, &())?
         .unwrap_or_default();
     tracing::debug!("Got acc");
     let mut accumulator_diff = AccumulatorDiff::default();
     // revert txs, last-to-first
     body.transactions.iter().rev().try_for_each(|tx| {
-        let txid = tx.txid();
-        // delete UTXOs, last-to-first
-        tx.outputs.iter().enumerate().rev().try_for_each(
-            |(vout, output)| {
-                let outpoint = OutPoint::Regular {
-                    txid,
-                    vout: vout as u32,
-                };
-                let pointed_output = PointedOutput {
-                    outpoint,
-                    output: output.clone(),
-                };
-                accumulator_diff.remove((&pointed_output).into());
-                if state
-                    .utxos
-                    .delete(rwtxn, &outpoint)
-                    .map_err(DbError::from)?
-                {
-                    Ok(())
-                } else {
-                    Err(Error::NoUtxo { outpoint })
-                }
-            },
-        )?;
-        // unspend STXOs, last-to-first
-        tx.inputs
-            .iter()
-            .rev()
-            .try_for_each(|(outpoint, utxo_hash)| {
-                if let Some(spent_output) = state
-                    .stxos
-                    .try_get(rwtxn, outpoint)
-                    .map_err(DbError::from)?
-                {
-                    accumulator_diff.insert(utxo_hash.into());
-                    state
-                        .stxos
-                        .delete(rwtxn, outpoint)
-                        .map_err(DbError::from)?;
-                    state
-                        .utxos
-                        .put(rwtxn, outpoint, &spent_output.output)
-                        .map_err(DbError::from)?;
-                    Ok(())
-                } else {
-                    Err(Error::NoStxo {
-                        outpoint: *outpoint,
-                    })
-                }
-            })
+        disconnect_transaction(state, rwtxn, tx, &mut accumulator_diff)
     })?;
     // delete coinbase UTXOs, last-to-first
     body.coinbase
@@ -337,11 +367,7 @@ pub fn disconnect_tip(
                 output: output.clone(),
             };
             accumulator_diff.remove((&pointed_output).into());
-            if state
-                .utxos
-                .delete(rwtxn, &outpoint)
-                .map_err(DbError::from)?
-            {
+            if state.utxos.delete(rwtxn, &outpoint)? {
                 Ok(())
             } else {
                 Err(Error::NoUtxo { outpoint })
@@ -352,25 +378,16 @@ pub fn disconnect_tip(
         .expect("Height should not be None");
     match (header.prev_side_hash, height) {
         (None, 0) => {
-            state.tip.delete(rwtxn, &()).map_err(DbError::from)?;
-            state.height.delete(rwtxn, &()).map_err(DbError::from)?;
+            state.tip.delete(rwtxn, &())?;
+            state.height.delete(rwtxn, &())?;
         }
         (None, _) | (_, 0) => return Err(Error::NoTip),
         (Some(prev_side_hash), height) => {
-            state
-                .tip
-                .put(rwtxn, &(), &prev_side_hash)
-                .map_err(DbError::from)?;
-            state
-                .height
-                .put(rwtxn, &(), &(height - 1))
-                .map_err(DbError::from)?;
+            state.tip.put(rwtxn, &(), &prev_side_hash)?;
+            state.height.put(rwtxn, &(), &(height - 1))?;
         }
     }
     let () = accumulator.apply_diff(accumulator_diff)?;
-    state
-        .utreexo_accumulator
-        .put(rwtxn, &(), &accumulator)
-        .map_err(DbError::from)?;
+    state.utreexo_accumulator.put(rwtxn, &(), &accumulator)?;
     Ok(())
 }

@@ -7,8 +7,9 @@ use l2l_openapi::open_api;
 use thunder::{
     net::Peer,
     types::{
-        Address, MerkleRoot, OutPoint, Output, OutputContent, PointedOutput,
-        Txid, WithdrawalBundle, schema as thunder_schema,
+        MerkleRoot, OutPoint, Output, OutputContent, PointedOutput,
+        ShieldedAddress, TransparentAddress, Txid, WithdrawalBundle,
+        schema as thunder_schema,
     },
     wallet::Balance,
 };
@@ -16,7 +17,7 @@ use thunder::{
 mod schema;
 
 #[open_api(ref_schemas[
-    Address, MerkleRoot, OutPoint, Output, OutputContent, Txid,
+    MerkleRoot, OutPoint, Output, OutputContent, TransparentAddress, Txid,
     schema::BitcoinTxid, thunder_schema::BitcoinAddr,
     thunder_schema::BitcoinOutPoint,
 ])]
@@ -43,7 +44,7 @@ pub trait Rpc {
     #[method(name = "create_deposit")]
     async fn create_deposit(
         &self,
-        address: Address,
+        address: TransparentAddress,
         value_sats: u64,
         fee_sats: u64,
     ) -> RpcResult<bitcoin::Txid>;
@@ -52,7 +53,7 @@ pub trait Rpc {
     #[method(name = "format_deposit_address")]
     async fn format_deposit_address(
         &self,
-        address: Address,
+        address: TransparentAddress,
     ) -> RpcResult<String>;
 
     /// Generate a mnemonic seed phrase
@@ -94,13 +95,27 @@ pub trait Rpc {
         &self,
     ) -> RpcResult<Option<thunder::types::BlockHash>>;
 
-    /// Get a new address
-    #[method(name = "get_new_address")]
-    async fn get_new_address(&self) -> RpcResult<Address>;
+    /// Get a new shielded address
+    #[method(name = "get_new_shielded_address")]
+    async fn get_new_shielded_address(&self) -> RpcResult<ShieldedAddress>;
 
-    /// Get wallet addresses, sorted by base58 encoding
-    #[method(name = "get_wallet_addresses")]
-    async fn get_wallet_addresses(&self) -> RpcResult<Vec<Address>>;
+    /// Get a new transparent address
+    #[method(name = "get_new_transparent_address")]
+    async fn get_new_transparent_address(
+        &self,
+    ) -> RpcResult<TransparentAddress>;
+
+    /// Get shielded wallet addresses, sorted by bech32m encoding
+    #[method(name = "get_shielded_wallet_addresses")]
+    async fn get_shielded_wallet_addresses(
+        &self,
+    ) -> RpcResult<Vec<thunder::types::orchard::Address>>;
+
+    /// Get transparent wallet addresses, sorted by base58 encoding
+    #[method(name = "get_transparent_wallet_addresses")]
+    async fn get_transparent_wallet_addresses(
+        &self,
+    ) -> RpcResult<Vec<TransparentAddress>>;
 
     /// Get wallet UTXOs
     #[method(name = "get_wallet_utxos")]
@@ -151,6 +166,19 @@ pub trait Rpc {
     #[method(name = "set_seed_from_mnemonic")]
     async fn set_seed_from_mnemonic(&self, mnemonic: String) -> RpcResult<()>;
 
+    /// Shield transparent funds
+    #[method(name = "shield")]
+    async fn shield(&self, value_sats: u64, fee_sats: u64) -> RpcResult<Txid>;
+
+    /// Transfer shielded funds to the specified address
+    #[method(name = "shielded_transfer")]
+    async fn shielded_transfer(
+        &self,
+        dest: ShieldedAddress,
+        value_sats: u64,
+        fee_sats: u64,
+    ) -> RpcResult<Txid>;
+
     /// Get total sidechain wealth
     #[method(name = "sidechain_wealth")]
     async fn sidechain_wealth_sats(&self) -> RpcResult<u64>;
@@ -159,14 +187,19 @@ pub trait Rpc {
     #[method(name = "stop")]
     async fn stop(&self);
 
-    /// Transfer funds to the specified address
-    #[method(name = "transfer")]
-    async fn transfer(
+    /// Transfer transparent funds to the specified address
+    #[method(name = "transparent_transfer")]
+    async fn transparent_transfer(
         &self,
-        dest: Address,
+        dest: TransparentAddress,
         value_sats: u64,
         fee_sats: u64,
     ) -> RpcResult<Txid>;
+
+    /// Unshield shielded funds
+    #[method(name = "unshield")]
+    async fn unshield(&self, value_sats: u64, fee_sats: u64)
+    -> RpcResult<Txid>;
 
     /// Initiate a withdrawal to the specified mainchain address
     #[method(name = "withdraw")]

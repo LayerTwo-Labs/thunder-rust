@@ -961,7 +961,7 @@ where
                             let () = self
                                 .ctxt
                                 .net
-                                .push_tx(HashSet::from_iter([addr]), new_tx);
+                                .push_tx(HashSet::from_iter([addr]), *new_tx);
                         }
                         PeerConnectionInfo::Response(boxed) => {
                             let (resp, req) = *boxed;

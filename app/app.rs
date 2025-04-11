@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
+use fallible_iterator::FallibleIterator as _;
 use futures::{StreamExt, TryFutureExt};
 use parking_lot::RwLock;
 use rustreexo::accumulator::proof::Proof;
@@ -7,7 +8,7 @@ use thunder::{
     miner::{self, Miner},
     node::{self, Node},
     types::{
-        self, Address, OutPoint, Output, Transaction,
+        self, OutPoint, Output, Transaction, TransparentAddress,
         proto::mainchain::{
             self,
             generated::{validator_service_server, wallet_service_server},
@@ -24,7 +25,11 @@ use tonic_health::{
 
 use crate::cli::Config;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, transitive::Transitive)]
+#[transitive(
+    from(thunder::archive::Error, node::Error),
+    from(thunder::state::Error, node::Error)
+)]
 pub enum Error {
     #[error("CUSF mainchain proto error")]
     CusfMainchain(#[from] thunder::types::proto::Error),
@@ -44,7 +49,7 @@ pub enum Error {
         source: Box<tonic::Status>,
     },
     #[error("wallet error")]
-    Wallet(#[from] wallet::Error),
+    Wallet(#[source] Box<wallet::Error>),
 }
 
 impl From<node::Error> for Error {
@@ -53,21 +58,75 @@ impl From<node::Error> for Error {
     }
 }
 
-fn update_wallet(node: &Node, wallet: &Wallet) -> Result<(), Error> {
+impl From<wallet::Error> for Error {
+    fn from(err: wallet::Error) -> Self {
+        Self::Wallet(Box::new(err))
+    }
+}
+
+fn update_wallet<'a>(
+    node: &Node,
+    wallet: &Wallet,
+    mut wallet_rwtxn: wallet::RwTxn<'a>,
+) -> Result<wallet::RwTxn<'a>, Error> {
     tracing::trace!("starting wallet update");
-    let addresses = wallet.get_addresses()?;
-    let utxos = node.get_utxos_by_addresses(&addresses)?;
-    let outpoints: Vec<_> = wallet.get_utxos()?.into_keys().collect();
+    let node_env = node.env();
+    let node_rotxn = node_env.read_txn().map_err(node::Error::from)?;
+    let node_tip = node.try_get_tip(&node_rotxn)?;
+    let mut wallet_tip = wallet.try_get_tip(&wallet_rwtxn)?;
+
+    // Disconnect orchard blocks until common ancestor is reached
+    let common_ancestor = match (node_tip, wallet_tip) {
+        (Some(node_tip), Some(wallet_tip)) => node
+            .archive()
+            .last_common_ancestor(&node_rotxn, node_tip, wallet_tip)?,
+        (Some(_), None) | (None, Some(_)) | (None, None) => None,
+    };
+    while wallet_tip != common_ancestor {
+        // If wallet_tip is `None`, then common_ancestor must also be `None`
+        let block_hash = wallet_tip.expect(
+            "Wallet tip should be Some(_) if common ancestor is Some(_)",
+        );
+        let header = node.archive().get_header(&node_rotxn, block_hash)?;
+        let body = node.archive().get_body(&node_rotxn, block_hash)?;
+        wallet_rwtxn =
+            wallet.disconnect_orchard_block(wallet_rwtxn, &header, &body)?;
+        wallet_tip = header.prev_side_hash;
+    }
+
+    // Connect orchard blocks
+    let blocks_to_connect: Vec<_> = if let Some(node_tip) = node_tip {
+        node.archive()
+            .ancestors(&node_rotxn, node_tip)
+            .take_while(|ancestor| Ok(Some(*ancestor) != common_ancestor))
+            .collect()?
+    } else {
+        Vec::new()
+    };
+    for block_hash in blocks_to_connect.into_iter().rev() {
+        let header = node.archive().get_header(&node_rotxn, block_hash)?;
+        let body = node.archive().get_body(&node_rotxn, block_hash)?;
+        wallet_rwtxn =
+            wallet.connect_orchard_block(wallet_rwtxn, &header, &body)?;
+    }
+
+    let addresses = wallet.get_transparent_addresses(&wallet_rwtxn)?;
+    let utxos = node
+        .state()
+        .get_utxos_by_addresses(&node_rotxn, &addresses)
+        .map_err(thunder::state::Error::from)?;
+    let outpoints: Vec<_> =
+        wallet.get_utxos(&wallet_rwtxn)?.into_keys().collect();
     let spent: Vec<_> = node
-        .get_spent_utxos(&outpoints)?
+        .get_spent_utxos(&node_rotxn, &outpoints)?
         .into_iter()
         .map(|(outpoint, spent_output)| (outpoint, spent_output.inpoint))
         .collect();
-    wallet.put_utxos(&utxos)?;
-    wallet.spend_utxos(&spent)?;
-
+    drop(node_rotxn);
+    let () = wallet.put_utxos(&mut wallet_rwtxn, &utxos)?;
+    let () = wallet.spend_utxos(&mut wallet_rwtxn, &spent)?;
     tracing::debug!("finished wallet update");
-    Ok(())
+    Ok(wallet_rwtxn)
 }
 
 /// Update utxos & wallet
@@ -77,8 +136,11 @@ fn update(
     wallet: &Wallet,
 ) -> Result<(), Error> {
     tracing::trace!("Updating wallet");
-    let () = update_wallet(node, wallet)?;
-    *utxos = wallet.get_utxos()?;
+    let mut wallet_rwtxn =
+        wallet.env().write_txn().map_err(wallet::Error::from)?;
+    wallet_rwtxn = update_wallet(node, wallet, wallet_rwtxn)?;
+    *utxos = wallet.get_utxos(&wallet_rwtxn)?;
+    wallet_rwtxn.commit().map_err(wallet::Error::from)?;
     tracing::trace!("Updated wallet");
     Ok(())
 }
@@ -242,7 +304,11 @@ impl App {
             local_pool.clone(),
         )?;
         let utxos = {
-            let mut utxos = wallet.get_utxos()?;
+            let mut utxos = {
+                let wallet_rotxn =
+                    wallet.env().read_txn().map_err(wallet::Error::from)?;
+                wallet.get_utxos(&wallet_rotxn)?
+            };
             let transactions = node.get_all_transactions()?;
             for transaction in &transactions {
                 for (outpoint, _) in &transaction.transaction.inputs {
@@ -266,6 +332,7 @@ impl App {
                 inputs: vec![],
                 proof: Proof::default(),
                 outputs: vec![],
+                orchard_bundle: None,
             })),
             runtime: Arc::new(runtime),
             local_pool,
@@ -322,10 +389,16 @@ impl App {
         };
         const NUM_TRANSACTIONS: usize = 1000;
         let (txs, tx_fees) = self.node.get_transactions(NUM_TRANSACTIONS)?;
+        let address = (|| {
+            let mut rwtxn = self.wallet.env().write_txn()?;
+            let res = self.wallet.get_new_transparent_address(&mut rwtxn)?;
+            rwtxn.commit()?;
+            Ok::<_, thunder::wallet::Error>(res)
+        })()?;
         let coinbase = match tx_fees {
             bitcoin::Amount::ZERO => vec![],
             _ => vec![types::Output {
-                address: self.wallet.get_new_address()?,
+                address,
                 content: types::OutputContent::Value(tx_fees),
             }],
         };
@@ -402,7 +475,7 @@ impl App {
 
     pub fn deposit(
         &self,
-        address: Address,
+        address: TransparentAddress,
         amount: bitcoin::Amount,
         fee: bitcoin::Amount,
     ) -> Result<bitcoin::Txid, Error> {

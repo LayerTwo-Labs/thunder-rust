@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use eframe::egui;
 
-use thunder::types::{GetValue, Transaction};
+use thunder::types::{GetValue, Transaction, orchard};
 
 use super::{
     tx_creator::TxCreator,
@@ -14,7 +14,9 @@ use crate::app::App;
 #[derive(Debug, Default)]
 pub struct TxBuilder {
     // regular tx without extra data or special inputs/outputs
-    base_tx: Transaction,
+    base_tx: Transaction<
+        orchard::InProgress<orchard::Unproven, orchard::Unauthorized>,
+    >,
     tx_creator: TxCreator,
     utxo_creator: UtxoCreator,
     utxo_selector: UtxoSelector,

@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 use http::HeaderMap;
 use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder};
 
-use thunder::types::{Address, Txid};
+use thunder::types::{ShieldedAddress, TransparentAddress, Txid};
 use thunder_app_rpc_api::RpcClient;
 use tracing_subscriber::layer::SubscriberExt as _;
 
@@ -17,14 +17,14 @@ pub enum Command {
     ConnectPeer { addr: SocketAddr },
     /// Deposit to address
     CreateDeposit {
-        address: Address,
+        address: TransparentAddress,
         #[arg(long)]
         value_sats: u64,
         #[arg(long)]
         fee_sats: u64,
     },
     /// Format a deposit address
-    FormatDepositAddress { address: Address },
+    FormatDepositAddress { address: TransparentAddress },
     /// Generate a mnemonic seed phrase
     GenerateMnemonic,
     /// Get the best mainchain block hash
@@ -39,10 +39,14 @@ pub enum Command {
     GetBmmInclusions {
         block_hash: thunder::types::BlockHash,
     },
-    /// Get a new address
-    GetNewAddress,
-    /// Get wallet addresses, sorted by base58 encoding
-    GetWalletAddresses,
+    /// Get a new shielded address
+    GetNewShieldedAddress,
+    /// Get a new transparent address
+    GetNewTransparentAddress,
+    /// Get shielded wallet addresses, sorted by bech32m encoding
+    GetShieldedWalletAddresses,
+    /// Get transparent wallet addresses, sorted by base58 encoding
+    GetTransparentWalletAddresses,
     /// Get wallet UTXOs
     GetWalletUtxos,
     /// Get the current block count
@@ -67,13 +71,35 @@ pub enum Command {
     RemoveFromMempool { txid: Txid },
     /// Set the wallet seed from a mnemonic seed phrase
     SetSeedFromMnemonic { mnemonic: String },
+    /// Shield transparent funds
+    Shield {
+        #[arg(long)]
+        value_sats: u64,
+        #[arg(long)]
+        fee_sats: u64,
+    },
+    /// Transfer shielded funds to the specified address
+    ShieldedTransfer {
+        dest: ShieldedAddress,
+        #[arg(long)]
+        value_sats: u64,
+        #[arg(long)]
+        fee_sats: u64,
+    },
     /// Get total sidechain wealth
     SidechainWealth,
     /// Stop the node
     Stop,
-    /// Transfer funds to the specified address
-    Transfer {
-        dest: Address,
+    /// Transfer transparent funds to the specified address
+    TransparentTransfer {
+        dest: TransparentAddress,
+        #[arg(long)]
+        value_sats: u64,
+        #[arg(long)]
+        fee_sats: u64,
+    },
+    /// Unshield shielded funds
+    Unshield {
         #[arg(long)]
         value_sats: u64,
         #[arg(long)]
@@ -155,12 +181,21 @@ where
             serde_json::to_string_pretty(&bmm_inclusions)?
         }
         Command::GenerateMnemonic => rpc_client.generate_mnemonic().await?,
-        Command::GetNewAddress => {
-            let address = rpc_client.get_new_address().await?;
+        Command::GetNewShieldedAddress => {
+            let address = rpc_client.get_new_shielded_address().await?;
             format!("{address}")
         }
-        Command::GetWalletAddresses => {
-            let addresses = rpc_client.get_wallet_addresses().await?;
+        Command::GetNewTransparentAddress => {
+            let address = rpc_client.get_new_transparent_address().await?;
+            format!("{address}")
+        }
+        Command::GetShieldedWalletAddresses => {
+            let addresses = rpc_client.get_shielded_wallet_addresses().await?;
+            serde_json::to_string_pretty(&addresses)?
+        }
+        Command::GetTransparentWalletAddresses => {
+            let addresses =
+                rpc_client.get_transparent_wallet_addresses().await?;
             serde_json::to_string_pretty(&addresses)?
         }
         Command::GetWalletUtxos => {
@@ -206,6 +241,23 @@ where
             let () = rpc_client.set_seed_from_mnemonic(mnemonic).await?;
             String::default()
         }
+        Command::Shield {
+            value_sats,
+            fee_sats,
+        } => {
+            let txid = rpc_client.shield(value_sats, fee_sats).await?;
+            format!("{txid}")
+        }
+        Command::ShieldedTransfer {
+            dest,
+            value_sats,
+            fee_sats,
+        } => {
+            let txid = rpc_client
+                .shielded_transfer(dest, value_sats, fee_sats)
+                .await?;
+            format!("{txid}")
+        }
         Command::SidechainWealth => {
             let sidechain_wealth = rpc_client.sidechain_wealth_sats().await?;
             format!("{sidechain_wealth}")
@@ -214,12 +266,21 @@ where
             let () = rpc_client.stop().await?;
             String::default()
         }
-        Command::Transfer {
+        Command::TransparentTransfer {
             dest,
             value_sats,
             fee_sats,
         } => {
-            let txid = rpc_client.transfer(dest, value_sats, fee_sats).await?;
+            let txid = rpc_client
+                .transparent_transfer(dest, value_sats, fee_sats)
+                .await?;
+            format!("{txid}")
+        }
+        Command::Unshield {
+            value_sats,
+            fee_sats,
+        } => {
+            let txid = rpc_client.unshield(value_sats, fee_sats).await?;
             format!("{txid}")
         }
         Command::Withdraw {

@@ -85,7 +85,7 @@ pub struct PostSetup {
     /// RPC client for thunder_app
     pub rpc_client: jsonrpsee::http_client::HttpClient,
     /// Address for receiving deposits
-    pub deposit_address: thunder::types::Address,
+    pub deposit_address: thunder::types::TransparentAddress,
     // MUST occur after tasks in order to ensure that tasks are dropped
     // before reserved ports are freed
     pub reserved_ports: ReservedPorts,
@@ -181,7 +181,7 @@ impl Sidechain for PostSetup {
         tracing::debug!("Setting mnemonic seed phrase");
         let () = rpc_client.set_seed_from_mnemonic(mnemonic).await?;
         tracing::debug!("Generating deposit address");
-        let deposit_address = rpc_client.get_new_address().await?;
+        let deposit_address = rpc_client.get_new_transparent_address().await?;
         Ok(Self {
             _thunder_app_task: thunder_app_task,
             rpc_client,

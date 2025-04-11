@@ -18,30 +18,34 @@ bincode = { workspace = true }
 bitcoin = { workspace = true, features = ["serde"] }
 blake3 = "1.4.1"
 borsh = { version = "1.3.1", features = ["derive"] }
-byteorder = "1.4.3"
+bytemuck = "1.22.0"
 bytes = "1.4.0"
 ed25519-dalek = { version = "2.1.1", features = ["batch", "serde"] }
-ed25519-dalek-bip32 = "0.3.0"
-fallible-iterator = "0.3.0"
+fallible-iterator = { workspace = true }
 futures = "0.3.30"
+halo2_proofs = { version = "0.3.0", default-features = false }
 hashlink = { version = "0.10.0", features = ["serde_impl"] }
 heed = "0.21.0"
 hex = { version = "0.4.3", features = ["serde"] }
+incrementalmerkletree = "0.8.2"
 jsonrpsee = { workspace = true }
 nonempty = { version = "0.11.0", features = ["serialize"] }
-parking_lot = { workspace = true }
+orchard = "0.11.0"
+parking_lot = { workspace = true, features = ["arc_lock"]}
 prost = { workspace = true }
 prost-types = "0.13.3"
 quinn = "0.11.6"
+rand = "0.8.5"
 rayon = "1.7.0"
 rcgen = "0.13.2"
 rustls = { version = "0.23.21", default-features = false, features = ["ring"] }
 rustreexo = { workspace = true, features = ["with-serde"] }
 semver = { version = "1.0.25", features = ["serde"] }
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
-serde_with = { version = "3.4.0" }
-sneed = { version = "0.0.11", features = ["observe"] }
+serde_with = { version = "3.4.0", features = ["hex"] }
+shardtree = "0.6.1"
+sneed = { version = "0.0.14", features = ["observe"] }
 strum = { workspace = true }
 thiserror = { workspace = true }
 tiny-bip39 = { workspace = true }
@@ -50,8 +54,21 @@ tokio-stream = { version = "0.1.15", features = ["sync"] }
 tokio-util = { workspace = true, features = ["rt"] }
 tonic = { workspace = true }
 tracing = { workspace = true }
-transitive = "1.0.1"
+transitive = { workspace = true }
 utoipa = { workspace = true, features = ["macros", "non_strict_integers"] }
+zcash_note_encryption = "0.4.1"
+zip32 = "0.2.0"
+
+[dependencies.educe]
+version = "0.6.0"
+default-features = false
+features = ["Clone", "Debug", "Default"]
+
+[dependencies.reddsa]
+version = "0.5.1"
+default-features = false
+features = ["thiserror"]
+
 
 [lints]
 workspace = true

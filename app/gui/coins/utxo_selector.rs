@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use eframe::egui;
 use thunder::types::{
-    GetValue, OutPoint, Output, PointedOutput, Transaction, hash,
+    GetValue, OutPoint, Output, PointedOutput, Transaction, hash, orchard,
 };
 
 use crate::app::App;
@@ -15,7 +15,9 @@ impl UtxoSelector {
         &mut self,
         app: Option<&App>,
         ui: &mut egui::Ui,
-        tx: &mut Transaction,
+        tx: &mut Transaction<
+            orchard::InProgress<orchard::Unproven, orchard::Unauthorized>,
+        >,
     ) {
         ui.heading("Spend UTXO");
         let selected: HashSet<_> =

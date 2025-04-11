@@ -4,7 +4,7 @@ use transitive::Transitive;
 
 use crate::types::{
     AmountOverflowError, AmountUnderflowError, BlockHash, M6id, MerkleRoot,
-    OutPoint, Txid, UtreexoError, WithdrawalBundleError,
+    OutPoint, Txid, UtreexoError, WithdrawalBundleError, orchard,
 };
 
 #[derive(Debug, Error)]
@@ -24,12 +24,35 @@ pub enum InvalidHeader {
 }
 
 #[derive(Debug, Error, Transitive)]
+#[transitive(from(db::Delete, db::Error))]
+#[transitive(from(db::Get, db::Error))]
+#[transitive(from(db::Last, db::Error))]
+#[transitive(from(db::Put, db::Error))]
+#[transitive(from(db::TryGet, db::Error))]
+pub enum Orchard {
+    #[error("Cannot append commitment to frontier: would exceed max depth")]
+    AppendCommitment,
+    #[error(transparent)]
+    Db(#[from] db::Error),
+    #[error("The empty anchor is only allowed if spends are disabled")]
+    EmptyAnchor,
+    #[error("Invalid anchor (`{anchor}`)")]
+    InvalidAnchor { anchor: orchard::Anchor },
+    #[error("Nullifier missing (`{nullifier}`)")]
+    MissingNullifier { nullifier: orchard::Nullifier },
+    #[error("Nullifier double spent (`{nullifier}`)")]
+    NullifierDoubleSpent { nullifier: orchard::Nullifier },
+}
+
+#[derive(Debug, Error, Transitive)]
 #[transitive(from(db::Clear, db::Error))]
 #[transitive(from(db::Delete, db::Error))]
 #[transitive(from(db::Error, sneed::Error))]
+#[transitive(from(db::Iter, db::Error))]
 #[transitive(from(db::IterInit, db::Error))]
 #[transitive(from(db::IterItem, db::Error))]
 #[transitive(from(db::Last, db::Error))]
+#[transitive(from(db::Len, db::Error))]
 #[transitive(from(db::Put, db::Error))]
 #[transitive(from(db::TryGet, db::Error))]
 #[transitive(from(env::CreateDb, env::Error))]
@@ -73,6 +96,8 @@ pub enum Error {
     NoUtxo { outpoint: OutPoint },
     #[error("Withdrawal bundle event block doesn't exist")]
     NoWithdrawalBundleEventBlock,
+    #[error("Orchard error")]
+    Orchard(#[from] Orchard),
     #[error(transparent)]
     Utreexo(#[from] UtreexoError),
     #[error("Utreexo proof verification failed for tx {txid}")]
