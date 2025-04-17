@@ -287,15 +287,14 @@ impl RpcServer for RpcServerImpl {
     async fn shield(&self, value_sats: u64, fee_sats: u64) -> RpcResult<Txid> {
         let accumulator =
             self.app.node.get_tip_accumulator().map_err(custom_err)?;
-        let tx = self
-            .app
-            .wallet
-            .create_shield_transaction(
+        let tx = tokio::task::block_in_place(|| {
+            self.app.wallet.create_shield_transaction(
                 &accumulator,
                 Amount::from_sat(value_sats),
                 Amount::from_sat(fee_sats),
             )
-            .map_err(custom_err)?;
+        })
+        .map_err(custom_err)?;
         let txid = tx.txid();
         self.app.sign_and_send(tx).map_err(custom_err)?;
         Ok(txid)
@@ -309,17 +308,16 @@ impl RpcServer for RpcServerImpl {
     ) -> RpcResult<Txid> {
         let accumulator =
             self.app.node.get_tip_accumulator().map_err(custom_err)?;
-        let tx = self
-            .app
-            .wallet
-            .create_shielded_transaction(
+        let tx = tokio::task::block_in_place(|| {
+            self.app.wallet.create_shielded_transaction(
                 &accumulator,
                 dest,
                 Amount::from_sat(value_sats),
                 Amount::from_sat(fee_sats),
                 [0u8; 512],
             )
-            .map_err(custom_err)?;
+        })
+        .map_err(custom_err)?;
         let txid = tx.txid();
         self.app.sign_and_send(tx).map_err(custom_err)?;
         Ok(txid)
@@ -365,15 +363,14 @@ impl RpcServer for RpcServerImpl {
     ) -> RpcResult<Txid> {
         let accumulator =
             self.app.node.get_tip_accumulator().map_err(custom_err)?;
-        let tx = self
-            .app
-            .wallet
-            .create_unshield_transaction(
+        let tx = tokio::task::block_in_place(|| {
+            self.app.wallet.create_unshield_transaction(
                 &accumulator,
                 Amount::from_sat(value_sats),
                 Amount::from_sat(fee_sats),
             )
-            .map_err(custom_err)?;
+        })
+        .map_err(custom_err)?;
         let txid = tx.txid();
         self.app.sign_and_send(tx).map_err(custom_err)?;
         Ok(txid)

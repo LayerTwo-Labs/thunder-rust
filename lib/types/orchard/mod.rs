@@ -439,7 +439,7 @@ pub struct TransmittedNoteCiphertext(orchard::note::TransmittedNoteCiphertext);
 
 impl TransmittedNoteCiphertext {
     fn memo_ciphertext(&self) -> [u8; 512] {
-        self.0.enc_ciphertext[52..=543].try_into().unwrap()
+        self.0.enc_ciphertext[32..=543].try_into().unwrap()
     }
 
     /// Additional encrypted data after the memo field
@@ -840,7 +840,8 @@ impl BundleFlags {
     pub const ENABLED: Self = Self(orchard::bundle::Flags::ENABLED);
 
     /// The flag set with spends disabled.
-    pub const SPENDS_DISABLED: Self = Self(orchard::bundle::Flags::ENABLED);
+    pub const SPENDS_DISABLED: Self =
+        Self(orchard::bundle::Flags::SPENDS_DISABLED);
 
     pub fn spends_enabled(&self) -> bool {
         self.0.spends_enabled()
@@ -1765,19 +1766,77 @@ impl Builder {
         self.0.add_output(ovk, recipient.0, value, memo)
     }
 
+    pub fn add_dummy_output<R>(
+        &mut self,
+        rng: &mut R,
+        ovk: Option<OutgoingViewingKey>,
+    ) -> Result<(), OutputError>
+    where
+        R: rand::RngCore,
+    {
+        let dummy_spending_key = 'sk: loop {
+            let random_bytes = rand::Rng::r#gen(rng);
+            match SpendingKey::from_bytes(random_bytes).into_option() {
+                Some(sk) => break 'sk sk,
+                None => continue 'sk,
+            }
+        };
+        let dummy_fvk = FullViewingKey::from(&dummy_spending_key);
+        let dummy_address =
+            Address(dummy_fvk.address_at(0u32, Scope::External));
+        self.add_output(ovk, dummy_address, NoteValue::from_raw(0), [0u8; 512])
+    }
+
+    pub fn spends(&self) -> &Vec<impl orchard::builder::InputView<()>> {
+        self.0.spends()
+    }
+
+    pub fn outputs(&self) -> &Vec<impl orchard::builder::OutputView> {
+        self.0.outputs()
+    }
+
     pub fn value_balance(
         &self,
     ) -> Result<bitcoin::SignedAmount, OverflowError> {
         self.0.value_balance().map(bitcoin::SignedAmount::from_sat)
     }
 
+    /// If an [`OutgoingVerifyingKey`] is provided and fewer than
+    /// `max(2, spends)` outputs exist, then dummy outputs will be added until
+    /// there are `max(2, spends)` outputs. The dummy output notes can be
+    /// decrypted using the provided [`OutgoingVerifyingKey`].
     pub fn build<R>(
-        self,
-        rng: R,
+        mut self,
+        mut rng: R,
+        ovk: Option<OutgoingViewingKey>,
     ) -> Result<Option<(UnauthorizedBundle, BundleMetadata)>, BuildError>
     where
         R: rand::RngCore,
     {
+        if let Some(ovk) = ovk {
+            let min_outputs_needed = std::cmp::max(2, self.spends().len());
+            let dummy_outputs_needed =
+                min_outputs_needed.saturating_sub(self.outputs().len());
+            let mut add_dummy_output = |ovk: OutgoingViewingKey| {
+                self.add_dummy_output(&mut rng, Some(ovk)).map_err(
+                    |OutputError {}|
+                    // Can only occur if outputs are disabled for the bundle
+                    BuildError::OutputsDisabled,
+                )
+            };
+            match dummy_outputs_needed {
+                0 => (),
+                1 => {
+                    let () = add_dummy_output(ovk)?;
+                }
+                _ => {
+                    for _ in 1..dummy_outputs_needed {
+                        let () = add_dummy_output(ovk.clone())?;
+                    }
+                    let () = add_dummy_output(ovk)?;
+                }
+            }
+        }
         let res = self
             .0
             .build(rng)?

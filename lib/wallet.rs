@@ -510,7 +510,7 @@ impl Wallet {
             &mut rand::rngs::OsRng,
         );
         let (commitments_tree, _db_txn, txn) = self.get_shard_tree(txn)?;
-        let anchor = match commitments_tree.root_at_checkpoint_depth(None)? {
+        let anchor = match commitments_tree.root_at_checkpoint_depth(Some(0))? {
             Some(anchor) => anchor.into(),
             None => {
                 assert!(nullifiers.is_empty());
@@ -699,34 +699,25 @@ impl Wallet {
             let flags = orchard::BundleFlags::ENABLED;
             let mut builder = orchard::Builder::new(flags, false, anchor);
             let ovk = fvk.to_ovk(orchard::Scope::Internal);
-            let add_recipient_output = |builder: &mut orchard::Builder| {
-                builder.add_output(
-                    Some(ovk.clone()),
-                    address,
-                    orchard::NoteValue::from_raw(value.to_sat()),
-                    memo,
-                )
-            };
-            let add_change_output = |builder: &mut orchard::Builder| {
-                builder.add_output(
-                    Some(ovk.clone()),
-                    change_addr,
-                    orchard::NoteValue::from_raw(change.to_sat()),
-                    [0u8; 512],
-                )
-            };
-            // Randomize output order
-            if rand::random::<bool>() {
-                let () = add_recipient_output(&mut builder)?;
-                let () = add_change_output(&mut builder)?;
-            } else {
-                let () = add_change_output(&mut builder)?;
-                let () = add_recipient_output(&mut builder)?;
-            }
+            // Add recipient output
+            builder.add_output(
+                Some(ovk.clone()),
+                address,
+                orchard::NoteValue::from_raw(value.to_sat()),
+                memo,
+            )?;
+            // Add change output
+            builder.add_output(
+                Some(ovk.clone()),
+                change_addr,
+                orchard::NoteValue::from_raw(change.to_sat()),
+                [0u8; 512],
+            )?;
             for (note, path) in coins.into_values() {
                 builder.add_spend(fvk.clone(), note, path)?;
             }
-            let Some((bundle, _metadata)) = builder.build(rand::rngs::OsRng)?
+            let Some((bundle, _metadata)) =
+                builder.build(rand::rngs::OsRng, Some(ovk))?
             else {
                 break 'orchard_bundle None;
             };
@@ -796,7 +787,7 @@ impl Wallet {
                     self.get_shard_tree(rwtxn)?;
                 rwtxn = rwtxn_;
                 let anchor = shard_tree
-                    .root_at_checkpoint_depth(None)?
+                    .root_at_checkpoint_depth(Some(0))?
                     .expect("Anchor should exist if notes exist")
                     .into();
                 let merkle_path = shard_tree
@@ -814,12 +805,13 @@ impl Wallet {
             let output_note_value =
                 value + builder.value_balance()?.to_unsigned().unwrap();
             builder.add_output(
-                Some(ovk),
+                Some(ovk.clone()),
                 shielded_addr,
                 orchard::NoteValue::from_raw(output_note_value.to_sat()),
                 [0u8; 512],
             )?;
-            let Some((bundle, _metadata)) = builder.build(rand::rngs::OsRng)?
+            let Some((bundle, _metadata)) =
+                builder.build(rand::rngs::OsRng, Some(ovk))?
             else {
                 break 'orchard_bundle None;
             };
@@ -865,10 +857,11 @@ impl Wallet {
         let orchard_bundle = 'orchard_bundle: {
             let fvk = orchard::FullViewingKey::from(&orchard_spending_key);
             let flags = orchard::BundleFlags::ENABLED;
-            let mut builder = orchard::Builder::new(flags, false, anchor);
+            let mut builder = orchard::Builder::new(flags, true, anchor);
             let ovk = fvk.to_ovk(orchard::Scope::Internal);
+            // Add change output
             builder.add_output(
-                Some(ovk),
+                Some(ovk.clone()),
                 shielded_addr,
                 orchard::NoteValue::from_raw(change.to_sat()),
                 [0u8; 512],
@@ -876,7 +869,8 @@ impl Wallet {
             for (note, path) in coins.into_values() {
                 builder.add_spend(fvk.clone(), note, path)?;
             }
-            let Some((bundle, _metadata)) = builder.build(rand::rngs::OsRng)?
+            let Some((bundle, _metadata)) =
+                builder.build(rand::rngs::OsRng, Some(ovk))?
             else {
                 break 'orchard_bundle None;
             };
@@ -961,54 +955,86 @@ impl Wallet {
                 .max_leaf_position(None)?
                 .map_or_else(|| 0.into(), |pos| pos + 1);
             let txid = tx.txid();
-            let mut decrypted_note_idxs = HashSet::new();
-            let decrypted_notes =
+            let mut decrypted_incoming_note_idxs = HashSet::new();
+            let decrypted_incoming_notes =
                 orchard_bundle.decrypt_outputs_with_keys(&ivks);
-            for (idx, _, note, _, memo) in decrypted_notes {
-                self.orchard_memos.put(
-                    &mut rwtxn,
-                    &(txid, idx as u32),
-                    &memo,
-                )?;
-                let nullifier = note.nullifier(&fvk);
-                let position = next_leaf_position + idx as u64;
-                self.orchard_notes.put(
-                    &mut rwtxn,
-                    &nullifier,
-                    &(note, orchard::PositionWrapper(position)),
-                )?;
-                decrypted_note_idxs.insert(idx);
+            for (idx, _, note, _, memo) in decrypted_incoming_notes {
+                decrypted_incoming_note_idxs.insert(idx);
+                if memo != [0; 512] {
+                    self.orchard_memos.put(
+                        &mut rwtxn,
+                        &(txid, idx as u32),
+                        &memo,
+                    )?;
+                }
+                if note.value() != Amount::ZERO {
+                    let nullifier = note.nullifier(&fvk);
+                    let position = next_leaf_position + idx as u64;
+                    self.orchard_notes.put(
+                        &mut rwtxn,
+                        &nullifier,
+                        &(note, orchard::PositionWrapper(position)),
+                    )?;
+                }
             }
-            let decrypted_spent_notes =
+            let mut decrypted_outgoing_note_idxs = HashSet::new();
+            let decrypted_outgoing_notes =
                 orchard_bundle.recover_outputs_with_ovks(&ovks);
-            for (idx, _, note, _, _memo) in decrypted_spent_notes {
+            for (idx, _, _note, _, _) in decrypted_outgoing_notes {
+                decrypted_outgoing_note_idxs.insert(idx);
                 let nf = *orchard_bundle.actions()[idx].nullifier();
-                let (_note, position) = self.orchard_notes.get(&rwtxn, &nf)?;
+                let Some((spent_note, position)) =
+                    self.orchard_notes.try_get(&rwtxn, &nf)?
+                else {
+                    tracing::warn!(nullifier = ?nf, "Missing spent note");
+                    continue;
+                };
                 self.orchard_notes.delete(&mut rwtxn, &nf)?;
                 self.orchard_spent_notes.put(
                     &mut rwtxn,
                     &(txid, idx as u32),
-                    &(note, position),
+                    &(spent_note, position),
                 )?;
             }
-            for (idx, cmx) in
-                orchard_bundle.extracted_note_commitments().enumerate()
-            {
-                let retention = if decrypted_note_idxs.contains(&idx) {
+            for (idx, action) in orchard_bundle.actions().iter().enumerate() {
+                let retention = if decrypted_incoming_note_idxs.contains(&idx) {
                     incrementalmerkletree::Retention::Marked
                 } else {
-                    // FIXME: is this correct?
+                    // TODO: is this correct?
                     incrementalmerkletree::Retention::Ephemeral
                 };
                 let () = shard_tree.append(
-                    orchard::MerkleHashOrchard::from_cmx(&cmx.0),
+                    orchard::MerkleHashOrchard::from_cmx(&action.cmx().0),
                     retention,
                 )?;
+                if decrypted_outgoing_note_idxs.contains(&idx) {
+                    // Already decrypted
+                    continue;
+                }
+                let nf = action.nullifier();
+                // If the spent note still exists, then the action could not be
+                // decrypted.
+                if let Some((spent_note, position)) =
+                    self.orchard_notes.try_get(&rwtxn, nf)?
+                {
+                    tracing::warn!(nullifier = ?nf, "Failed to decrypt action spending note");
+                    self.orchard_notes.delete(&mut rwtxn, nf)?;
+                    self.orchard_spent_notes.put(
+                        &mut rwtxn,
+                        &(txid, idx as u32),
+                        &(spent_note, position),
+                    )?;
+                }
             }
         }
         let block_hash = header.hash();
         let () = self.put_tip(&mut rwtxn, &block_hash)?;
-        let _: bool = shard_tree.checkpoint(Some(block_hash))?;
+        let checkpoint_id = orchard::shardtree_db::CheckpointId {
+            pos: shard_tree.max_leaf_position(None)?,
+            seq: self.orchard_note_commitments.next_checkpoint_seq(&rwtxn)?,
+            tip: Some(block_hash),
+        };
+        let _: bool = shard_tree.checkpoint(checkpoint_id)?;
         rwtxn = self.put_shard_tree(rwtxn, db_txn, shard_tree)?.unwrap();
         Ok(rwtxn)
     }
@@ -1032,25 +1058,57 @@ impl Wallet {
                 continue;
             };
             let txid = tx.txid();
-            let decrypted_notes =
+            let decrypted_incoming_notes =
                 orchard_bundle.decrypt_outputs_with_keys(&ivks);
-            for (_, _, note, _, _) in decrypted_notes.into_iter().rev() {
+            for (_, _, note, _, _) in decrypted_incoming_notes.into_iter().rev()
+            {
                 let nullifier = note.nullifier(&fvk);
                 self.orchard_notes.delete(&mut rwtxn, &nullifier)?;
             }
-            let decrypted_spent_notes =
+            let mut decrypted_outgoing_note_idxs = HashSet::new();
+            let decrypted_outgoing_notes =
                 orchard_bundle.recover_outputs_with_ovks(&ovks);
             for (idx, _, note, _, _memo) in
-                decrypted_spent_notes.into_iter().rev()
+                decrypted_outgoing_notes.into_iter().rev()
             {
+                decrypted_outgoing_note_idxs.insert(idx);
                 let nf = *orchard_bundle.actions()[idx].nullifier();
-                let (_, position) = self
+                let Some((_, position)) = self
                     .orchard_spent_notes
-                    .get(&rwtxn, &(txid, idx as u32))?;
+                    .try_get(&rwtxn, &(txid, idx as u32))?
+                else {
+                    tracing::warn!(
+                        %txid,
+                        %idx,
+                        value = %note.value(),
+                        "Missing spent note"
+                    );
+                    continue;
+                };
                 let _: bool = self
                     .orchard_spent_notes
                     .delete(&mut rwtxn, &(txid, idx as u32))?;
                 self.orchard_notes.put(&mut rwtxn, &nf, &(note, position))?;
+            }
+            for (idx, action) in
+                orchard_bundle.actions().iter().enumerate().rev()
+            {
+                if decrypted_outgoing_note_idxs.contains(&idx) {
+                    continue;
+                }
+                let nf = action.nullifier();
+                if let Some((spent_note, position)) =
+                    self.orchard_spent_notes
+                        .try_get(&rwtxn, &(txid, idx as u32))?
+                {
+                    self.orchard_spent_notes
+                        .delete(&mut rwtxn, &(txid, idx as u32))?;
+                    self.orchard_notes.put(
+                        &mut rwtxn,
+                        nf,
+                        &(spent_note, position),
+                    )?;
+                }
             }
         }
         let prev_tip = header.prev_side_hash;
@@ -1061,7 +1119,10 @@ impl Wallet {
         };
         let (mut shard_tree, db_txn, rwtxn) =
             self.get_shard_tree(ShardTreeDbTxn::Rw(rwtxn))?;
-        if !shard_tree.truncate_to_checkpoint(&prev_tip)? {
+        let prev_checkpoint_id = self
+            .orchard_note_commitments
+            .get_checkpoint_id(rwtxn.as_ref(), prev_tip)?;
+        if !shard_tree.truncate_to_checkpoint(&prev_checkpoint_id)? {
             return Err(Error::OrchardShardTreeTruncate {
                 checkpoint: prev_tip,
             });
@@ -1104,6 +1165,22 @@ impl Wallet {
                         .checked_add(value)
                         .ok_or(AmountOverflowError)?;
                 }
+                Ok::<_, Error>(())
+            })?;
+        let () = self
+            .orchard_notes
+            .iter(&rotxn)?
+            .map_err(|err| DbError::from(err).into())
+            .for_each(|(_, (note, _))| {
+                let value = note.value();
+                balance.total_shielded = balance
+                    .total_shielded
+                    .checked_add(value)
+                    .ok_or(AmountOverflowError)?;
+                balance.available_shielded = balance
+                    .available_shielded
+                    .checked_add(value)
+                    .ok_or(AmountOverflowError)?;
                 Ok::<_, Error>(())
             })?;
         Ok(balance)

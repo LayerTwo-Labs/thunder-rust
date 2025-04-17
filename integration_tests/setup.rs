@@ -37,6 +37,9 @@ impl ReservedPorts {
 pub struct Init {
     pub thunder_orchard_app: PathBuf,
     pub data_dir_suffix: Option<String>,
+    /// If `Some`, set the request timeout.
+    /// Otherwise, use the default.
+    pub rpc_client_request_timeout: Option<Duration>,
 }
 
 #[derive(Debug, Error)]
@@ -177,8 +180,18 @@ impl Sidechain for PostSetup {
             });
         tracing::debug!("Started thunder-orchard");
         sleep(Duration::from_secs(1)).await;
-        let rpc_client = jsonrpsee::http_client::HttpClient::builder()
-            .build(format!("http://127.0.0.1:{}", reserved_ports.rpc.port()))?;
+        let rpc_client = {
+            let mut builder = jsonrpsee::http_client::HttpClient::builder();
+            if let Some(rpc_client_request_timeout) =
+                init.rpc_client_request_timeout
+            {
+                builder = builder.request_timeout(rpc_client_request_timeout);
+            }
+            builder.build(format!(
+                "http://127.0.0.1:{}",
+                reserved_ports.rpc.port()
+            ))?
+        };
         tracing::debug!("Generating mnemonic seed phrase");
         let mnemonic = rpc_client.generate_mnemonic().await?;
         tracing::debug!("Setting mnemonic seed phrase");

@@ -45,7 +45,7 @@ serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
 serde_with = { version = "3.4.0", features = ["hex"] }
 shardtree = "0.6.1"
-sneed = { version = "0.0.14", features = ["observe"] }
+sneed = { version = "0.0.15", features = ["observe"] }
 strum = { workspace = true }
 thiserror = { workspace = true }
 tiny-bip39 = { workspace = true }

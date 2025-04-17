@@ -43,6 +43,10 @@ impl SidechainNodes {
                 Init {
                     thunder_orchard_app: bin_paths.thunder_orchard.clone(),
                     data_dir_suffix: Some(suffix.to_owned()),
+                    // Orchard transfers can take a while to prove
+                    rpc_client_request_timeout: Some(
+                        std::time::Duration::from_secs(120),
+                    ),
                 },
                 enforcer_post_setup,
                 res_tx.clone(),
@@ -90,6 +94,7 @@ async fn setup(
         SidechainNodes::setup(bin_paths, res_tx, &enforcer_post_setup).await?;
     let alice_deposit_address =
         sidechain_nodes.alice.get_deposit_address().await?;
+    tracing::info!("Creating a deposit to alice's sidechain address");
     let () = deposit(
         &mut enforcer_post_setup,
         &mut sidechain_nodes.alice,
@@ -147,16 +152,24 @@ async fn transfers_task(
         .alice
         .bmm_single(&mut enforcer_post_setup)
         .await?;
+    // Wait for Bob to sync
+    sleep(std::time::Duration::from_secs(5)).await;
+    anyhow::ensure!(
+        sidechain_nodes.alice.rpc_client.getblockcount().await?
+            == sidechain_nodes.bob.rpc_client.getblockcount().await?,
+    );
     // Check balances
     {
         let alice_balance = sidechain_nodes.alice.rpc_client.balance().await?;
         let bob_balance = sidechain_nodes.bob.rpc_client.balance().await?;
-        assert_eq!(
-            alice_balance.total_transparent,
-            DEPOSIT_AMOUNT - TRANSPARENT_TRANSFER_AMOUNT
+        anyhow::ensure!(
+            alice_balance.total_transparent
+                == DEPOSIT_AMOUNT - TRANSPARENT_TRANSFER_AMOUNT
         );
-        assert_eq!(bob_balance.total_shielded, Amount::ZERO);
-        assert_eq!(bob_balance.total_transparent, TRANSPARENT_TRANSFER_AMOUNT);
+        anyhow::ensure!(bob_balance.total_shielded == Amount::ZERO);
+        anyhow::ensure!(
+            bob_balance.total_transparent == TRANSPARENT_TRANSFER_AMOUNT
+        );
     }
     tracing::info!("Shield coins (bob -> bob)");
     let _txid = sidechain_nodes
@@ -164,17 +177,21 @@ async fn transfers_task(
         .rpc_client
         .shield(SHIELD_AMOUNT.to_sat(), 0)
         .await?;
+    // Wait for Alice to receive tx
+    sleep(std::time::Duration::from_secs(10)).await;
     sidechain_nodes
         .alice
         .bmm_single(&mut enforcer_post_setup)
         .await?;
+    // Wait for Bob to sync
+    sleep(std::time::Duration::from_secs(5)).await;
     // Check balances
     {
         let bob_balance = sidechain_nodes.bob.rpc_client.balance().await?;
-        assert_eq!(bob_balance.total_shielded, SHIELD_AMOUNT);
-        assert_eq!(
-            bob_balance.total_transparent,
-            TRANSPARENT_TRANSFER_AMOUNT - SHIELD_AMOUNT
+        anyhow::ensure!(bob_balance.total_shielded == SHIELD_AMOUNT);
+        anyhow::ensure!(
+            bob_balance.total_transparent
+                == TRANSPARENT_TRANSFER_AMOUNT - SHIELD_AMOUNT
         );
     }
     tracing::info!("Shielded transfer (bob -> alice)");
@@ -191,23 +208,30 @@ async fn transfers_task(
             SHIELDED_TRANSFER_FEE.to_sat(),
         )
         .await?;
+    // Wait for Alice to receive tx
+    sleep(std::time::Duration::from_secs(10)).await;
     sidechain_nodes
         .alice
         .bmm_single(&mut enforcer_post_setup)
         .await?;
+    // Wait for Bob to sync
+    sleep(std::time::Duration::from_secs(5)).await;
     // Check balances
     {
         let alice_balance = sidechain_nodes.alice.rpc_client.balance().await?;
         let bob_balance = sidechain_nodes.bob.rpc_client.balance().await?;
-        assert_eq!(alice_balance.total_shielded, SHIELDED_TRANSFER_AMOUNT);
-        assert_eq!(
-            alice_balance.total_transparent,
-            (DEPOSIT_AMOUNT - TRANSPARENT_TRANSFER_AMOUNT)
-                + SHIELDED_TRANSFER_FEE,
+        anyhow::ensure!(
+            alice_balance.total_shielded == SHIELDED_TRANSFER_AMOUNT
         );
-        assert_eq!(
-            bob_balance.total_shielded,
-            SHIELD_AMOUNT - (SHIELDED_TRANSFER_AMOUNT + SHIELDED_TRANSFER_FEE),
+        anyhow::ensure!(
+            alice_balance.total_transparent
+                == (DEPOSIT_AMOUNT - TRANSPARENT_TRANSFER_AMOUNT)
+                    + SHIELDED_TRANSFER_FEE,
+        );
+        anyhow::ensure!(
+            bob_balance.total_shielded
+                == SHIELD_AMOUNT
+                    - (SHIELDED_TRANSFER_AMOUNT + SHIELDED_TRANSFER_FEE),
         );
     }
     tracing::info!("Unshield (alice -> alice)");
@@ -216,18 +240,24 @@ async fn transfers_task(
         .rpc_client
         .unshield(UNSHIELD_AMOUNT.to_sat(), 0)
         .await?;
+    sidechain_nodes
+        .alice
+        .bmm_single(&mut enforcer_post_setup)
+        .await?;
+    // Wait for Alice's wallet to sync
+    sleep(std::time::Duration::from_secs(5)).await;
     // Check balances
     {
         let alice_balance = sidechain_nodes.alice.rpc_client.balance().await?;
-        assert_eq!(
-            alice_balance.total_shielded,
-            SHIELDED_TRANSFER_AMOUNT - UNSHIELD_AMOUNT,
+        anyhow::ensure!(
+            alice_balance.total_shielded
+                == SHIELDED_TRANSFER_AMOUNT - UNSHIELD_AMOUNT,
         );
-        assert_eq!(
-            alice_balance.total_transparent,
-            (DEPOSIT_AMOUNT - TRANSPARENT_TRANSFER_AMOUNT)
-                + SHIELDED_TRANSFER_FEE
-                + UNSHIELD_AMOUNT,
+        anyhow::ensure!(
+            alice_balance.total_transparent
+                == (DEPOSIT_AMOUNT - TRANSPARENT_TRANSFER_AMOUNT)
+                    + SHIELDED_TRANSFER_FEE
+                    + UNSHIELD_AMOUNT,
         );
     }
     // Cleanup
@@ -239,7 +269,7 @@ async fn transfers_task(
         );
         drop(enforcer_post_setup.tasks);
         // Wait for tasks to die
-        sleep(std::time::Duration::from_secs(1)).await;
+        sleep(std::time::Duration::from_secs(5)).await;
         enforcer_post_setup.out_dir.cleanup()?;
     }
     Ok(())

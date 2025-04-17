@@ -5,7 +5,10 @@ use std::{collections::BTreeSet, rc::Weak, sync::Arc};
 use bytemuck::TransparentWrapper;
 use educe::Educe;
 use fallible_iterator::FallibleIterator;
-use heed::types::SerdeBincode;
+use heed::{
+    byteorder::BE,
+    types::{SerdeBincode, U32},
+};
 use incrementalmerkletree::Position;
 use orchard::tree::MerkleHashOrchard;
 use parking_lot::RwLock;
@@ -178,6 +181,7 @@ impl Serialize for Tree {
 
 /// Serde wrapper for [`Position`].
 /// Uses big-endian encoding, so that positions are sorted when used as DB keys
+#[derive(Debug, TransparentWrapper)]
 #[repr(transparent)]
 pub struct PositionWrapper(pub incrementalmerkletree::Position);
 
@@ -311,22 +315,27 @@ pub enum CreateShardTreeDbError {
 pub struct ShardTreeDb<Tag> {
     /// MUST always contain a value.
     cap: DatabaseUnique<UnitKey, SerdeBincode<Tree>, Tag>,
+    /// Sequential order for tips, relative to a position.
+    /// Higher sequence IDs *at a particular position* are more recent.
+    /// Sequence IDs are not meaningfully comparable at different positions.
+    /// Sequence IDs are not necessarily sequential at any given position, but
+    /// should be monotonically increasing ie. there may be missing values.
+    checkpoint_seq_to_tip:
+        DatabaseUnique<U32<BE>, SerdeBincode<Option<BlockHash>>, Tag>,
+    /// Maps each tip to the checkpoint and seq ID
     checkpoints: DatabaseUnique<
         SerdeBincode<Option<BlockHash>>,
-        SerdeBincode<Checkpoint>,
+        SerdeBincode<(Checkpoint, u32)>,
         Tag,
     >,
     /// Each position may correspond to multiple checkpoints.
-    position_to_checkpoint_id: DatabaseDup<
-        SerdeBincode<Option<PositionWrapper>>,
-        SerdeBincode<Option<BlockHash>>,
-        Tag,
-    >,
+    position_to_checkpoint_seq:
+        DatabaseDup<SerdeBincode<Option<PositionWrapper>>, U32<BE>, Tag>,
     shards: DatabaseUnique<SerdeBincode<Address>, SerdeBincode<Tree>, Tag>,
 }
 
 impl<Tag> ShardTreeDb<Tag> {
-    pub const NUM_DBS: u32 = 4;
+    pub const NUM_DBS: u32 = 5;
 
     /// Creates/Opens a DB, does not commit the RwTxn.
     /// An optional prefix can be set for the DB names.
@@ -348,28 +357,91 @@ impl<Tag> ShardTreeDb<Tag> {
         if !cap.contains_key(rwtxn, &())? {
             cap.put(rwtxn, &(), &Tree(shardtree::Tree::empty()))?;
         }
-        let checkpoints =
-            DatabaseUnique::create(env, rwtxn, &db_name("checkpoints"))?;
-        let position_to_checkpoint_id = DatabaseDup::create(
+        let checkpoint_seq_to_tip = DatabaseUnique::create(
             env,
             rwtxn,
-            &db_name("position_to_checkpoint_id"),
+            &db_name("checkpoint_seq_to_tip"),
+        )?;
+        let checkpoints =
+            DatabaseUnique::create(env, rwtxn, &db_name("checkpoints"))?;
+        let position_to_checkpoint_seq = DatabaseDup::create(
+            env,
+            rwtxn,
+            &db_name("position_to_checkpoint_seq"),
         )?;
         if !checkpoints.contains_key(rwtxn, &None)? {
             checkpoints.put(
                 rwtxn,
                 &None,
-                &Checkpoint(shardtree::store::Checkpoint::tree_empty()),
+                &(Checkpoint(shardtree::store::Checkpoint::tree_empty()), 0),
             )?;
-            position_to_checkpoint_id.put(rwtxn, &None, &None)?;
+            checkpoint_seq_to_tip.put(rwtxn, &0, &None)?;
+            position_to_checkpoint_seq.put(rwtxn, &None, &0)?;
         }
         let shards = DatabaseUnique::create(env, rwtxn, &db_name("shards"))?;
         Ok(Self {
             cap,
+            checkpoint_seq_to_tip,
             checkpoints,
-            position_to_checkpoint_id,
+            position_to_checkpoint_seq,
             shards,
         })
+    }
+
+    /// Returns the checkpoint ID corresponding to a tip
+    pub fn try_get_checkpoint_id(
+        &self,
+        rotxn: &RoTxn<Tag>,
+        tip: Option<BlockHash>,
+    ) -> Result<Option<CheckpointId>, db::error::TryGet> {
+        if let Some((checkpoint, seq)) =
+            self.checkpoints.try_get(rotxn, &tip)?
+        {
+            Ok(Some(CheckpointId {
+                pos: checkpoint.0.position(),
+                seq,
+                tip,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Returns the checkpoint ID corresponding to a tip
+    pub fn get_checkpoint_id(
+        &self,
+        rotxn: &RoTxn<Tag>,
+        tip: Option<BlockHash>,
+    ) -> Result<CheckpointId, db::error::Get> {
+        let (checkpoint, seq) = self.checkpoints.get(rotxn, &tip)?;
+        Ok(CheckpointId {
+            pos: checkpoint.0.position(),
+            seq,
+            tip,
+        })
+    }
+
+    /// Returns the highest existing checkpoint seq
+    fn max_checkpoint_seq(
+        &self,
+        rotxn: &RoTxn<Tag>,
+    ) -> Result<Option<u32>, db::error::Last> {
+        let res = self
+            .checkpoint_seq_to_tip
+            .lazy_decode()
+            .last(rotxn)?
+            .map(|(seq, _)| seq);
+        Ok(res)
+    }
+
+    pub fn next_checkpoint_seq(
+        &self,
+        rotxn: &RoTxn<Tag>,
+    ) -> Result<u32, db::error::Last> {
+        match self.max_checkpoint_seq(rotxn)? {
+            Some(max_seq) => Ok(max_seq + 1),
+            None => Ok(0),
+        }
     }
 }
 
@@ -379,6 +451,7 @@ impl<Tag> ShardTreeDb<Tag> {
     from(db::error::Delete, DbError),
     from(db::error::First, DbError),
     from(db::error::Get, DbError),
+    from(db::error::Inconsistent, DbError),
     from(db::error::IterInit, DbError),
     from(db::error::IterItem, DbError),
     from(db::error::Last, DbError),
@@ -387,12 +460,23 @@ impl<Tag> ShardTreeDb<Tag> {
     from(db::error::TryGet, DbError)
 )]
 pub enum StoreError {
-    #[error(
-        "Multiple checkpoints can exist at any depth, so this operation is undefined"
-    )]
-    CheckpointAtDepthUndefined,
     #[error(transparent)]
     Db(#[from] DbError),
+    #[error(
+        "Invalid checkpoint ID: position ({:?}) must match checkpoint position ({:?})",
+        .pos,
+        .checkpoint_pos
+    )]
+    InvalidCheckpointIdPosition {
+        pos: Option<Position>,
+        checkpoint_pos: Option<Position>,
+    },
+    #[error(
+        "Invalid checkpoint ID: seq ({:?}) must match checkpoint seq ({:?})",
+        .seq,
+        .checkpoint_seq,
+    )]
+    InvalidCheckpointIdSeq { seq: u32, checkpoint_seq: u32 },
     #[error("No DB write transaction available")]
     NoRwTxn,
     #[error("No DB transaction available")]
@@ -403,6 +487,8 @@ pub enum StoreError {
     LptFromParts {
         address: incrementalmerkletree::Address,
     },
+    #[error("Cannot modify checkpoint position")]
+    UpdateCheckpointPosition,
 }
 
 pub mod db_txn {
@@ -455,13 +541,34 @@ pub mod db_txn {
 }
 pub use db_txn::DbTxn;
 
+/// Checkpoint IDs are horribly broken due to
+/// [`shardtree::store::ShardStore::update_checkpoint_with`].
+/// Checkpoint IDs are required to be ordered by position, however
+/// [`shardtree::store::ShardStore::update_checkpoint_with`] can potentially
+/// change the position of a checkpoint.
+///
+/// Our implementation of
+/// [`shardtree::store::ShardStore::update_checkpoint_with`] guards against
+/// this, but since it is used through
+/// [`shardtree::store::caching::CachingShardStore`], it is still possible for
+/// this invariant to break.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct CheckpointId {
+    pub pos: Option<Position>,
+    pub seq: u32,
+    pub tip: Option<BlockHash>,
+}
+
 /// Used to implement [`shardtree::store::ShardStore`].
 ///
 /// Does not enforce tree height invariants, so should only be used via
 /// [`shardtree::store::caching::CachingShardStore`].
 ///
-/// Since multiple checkpoints can exist at any depth, methods such as
-/// `get_checkpoint_at_depth` will return an error.
+/// The `Ord` impl for checkpoint IDs does not behave as expected
+/// (nor can it - [`shardtree::store::ShardStore::update_checkpoint_with`]
+/// can mutate checkpoints, so checkpoint IDs cannot correspond to checkpoint
+/// values, and therefore to checkpoint positions). Avoid methods with `Ord`
+/// bounds as much as possible, they are almost guaranteed to be broken.
 ///
 /// The `txn` field must be set in order to successfully load,
 /// and the `txn` field must be set to a `RwTxn` in order to successfully
@@ -501,7 +608,7 @@ impl<'a, Tag> ShardTreeStore<'a, Tag> {
 impl<'a, Tag> shardtree::store::ShardStore for ShardTreeStore<'a, Tag> {
     type H = MerkleHashOrchard;
 
-    type CheckpointId = Option<BlockHash>;
+    type CheckpointId = CheckpointId;
 
     type Error = StoreError;
 
@@ -602,26 +709,58 @@ impl<'a, Tag> shardtree::store::ShardStore for ShardTreeStore<'a, Tag> {
     fn min_checkpoint_id(
         &self,
     ) -> Result<Option<Self::CheckpointId>, Self::Error> {
-        self.read_with(|rotxn| {
-            let res = self
+        self.read_with(|rotxn| 'res: {
+            let Some((pos, seq)) =
+                self.db.position_to_checkpoint_seq.first(rotxn)?
+            else {
+                break 'res Ok(None);
+            };
+            let tip = self
                 .db
-                .position_to_checkpoint_id
-                .first(rotxn)?
-                .map(|(_pos, checkpoint)| checkpoint);
-            Ok(res)
+                .checkpoint_seq_to_tip
+                .try_get(rotxn, &seq)?
+                .ok_or_else(|| {
+                    use db::error::inconsistent::{ByKey, ByValue, Error, Xor};
+                    Error::from(Xor::new(
+                        &seq,
+                        ByValue(&*self.db.position_to_checkpoint_seq),
+                        ByKey(&*self.db.checkpoint_seq_to_tip),
+                    ))
+                })?;
+            Ok(Some(CheckpointId {
+                pos: pos.map(PositionWrapper::peel),
+                seq,
+                tip,
+            }))
         })
     }
 
     fn max_checkpoint_id(
         &self,
     ) -> Result<Option<Self::CheckpointId>, Self::Error> {
-        self.read_with(|rotxn| {
-            let res = self
+        self.read_with(|rotxn| 'res: {
+            let Some((pos, seq)) =
+                self.db.position_to_checkpoint_seq.last(rotxn)?
+            else {
+                break 'res Ok(None);
+            };
+            let tip = self
                 .db
-                .position_to_checkpoint_id
-                .last(rotxn)?
-                .map(|(_pos, checkpoint)| checkpoint);
-            Ok(res)
+                .checkpoint_seq_to_tip
+                .try_get(rotxn, &seq)?
+                .ok_or_else(|| {
+                    use db::error::inconsistent::{ByKey, ByValue, Error, Xor};
+                    Error::from(Xor::new(
+                        &seq,
+                        ByValue(&*self.db.position_to_checkpoint_seq),
+                        ByKey(&*self.db.checkpoint_seq_to_tip),
+                    ))
+                })?;
+            Ok(Some(CheckpointId {
+                pos: pos.map(PositionWrapper::peel),
+                seq,
+                tip,
+            }))
         })
     }
 
@@ -630,17 +769,62 @@ impl<'a, Tag> shardtree::store::ShardStore for ShardTreeStore<'a, Tag> {
         checkpoint_id: Self::CheckpointId,
         checkpoint: shardtree::store::Checkpoint,
     ) -> Result<(), Self::Error> {
-        let pos = checkpoint.position();
-        self.write_with(|rwtxn| {
+        if checkpoint.position() != checkpoint_id.pos {
+            return Err(Self::Error::InvalidCheckpointIdPosition {
+                pos: checkpoint_id.pos,
+                checkpoint_pos: checkpoint.position(),
+            });
+        }
+        self.write_with(|rwtxn| 'res: {
+            // If there is already a checkpoint with the specified ID,
+            // retain it if the checkpoint is unchanged. Otherwise, delete it.
+            if let Some((original_checkpoint, original_seq)) =
+                self.db.checkpoints.try_get(rwtxn, &checkpoint_id.tip)?
+            {
+                if original_checkpoint.0.tree_state() == checkpoint.tree_state()
+                    && original_checkpoint.0.marks_removed()
+                        == checkpoint.marks_removed()
+                {
+                    break 'res Ok(());
+                } else {
+                    let original_position = original_checkpoint.0.position();
+                    if original_position != checkpoint_id.pos {
+                        return Err(Self::Error::InvalidCheckpointIdPosition {
+                            pos: checkpoint_id.pos,
+                            checkpoint_pos: original_position,
+                        });
+                    }
+                    if original_seq != checkpoint_id.seq {
+                        return Err(Self::Error::InvalidCheckpointIdSeq {
+                            seq: checkpoint_id.seq,
+                            checkpoint_seq: original_seq,
+                        });
+                    }
+                    self.db.checkpoints.delete(rwtxn, &checkpoint_id.tip)?;
+                    self.db
+                        .checkpoint_seq_to_tip
+                        .delete(rwtxn, &original_seq)?;
+                    self.db.position_to_checkpoint_seq.delete_one(
+                        rwtxn,
+                        &original_position.map(PositionWrapper),
+                        &original_seq,
+                    )?;
+                }
+            }
             self.db.checkpoints.put(
                 rwtxn,
-                &checkpoint_id,
-                &Checkpoint(checkpoint),
+                &checkpoint_id.tip,
+                &(Checkpoint(checkpoint), checkpoint_id.seq),
             )?;
-            self.db.position_to_checkpoint_id.put(
+            self.db.checkpoint_seq_to_tip.put(
                 rwtxn,
-                &pos.map(PositionWrapper),
-                &checkpoint_id,
+                &checkpoint_id.seq,
+                &checkpoint_id.tip,
+            )?;
+            self.db.position_to_checkpoint_seq.put(
+                rwtxn,
+                &checkpoint_id.pos.map(PositionWrapper),
+                &checkpoint_id.seq,
             )?;
             Ok(())
         })
@@ -655,12 +839,47 @@ impl<'a, Tag> shardtree::store::ShardStore for ShardTreeStore<'a, Tag> {
 
     fn get_checkpoint_at_depth(
         &self,
-        _checkpoint_depth: usize,
+        checkpoint_depth: usize,
     ) -> Result<
         Option<(Self::CheckpointId, shardtree::store::Checkpoint)>,
         Self::Error,
     > {
-        Err(StoreError::CheckpointAtDepthUndefined)
+        self.read_with(|rotxn| 'res: {
+            use db::error::inconsistent::{ByKey, ByValue, Error, Xor};
+            let Some((pos, seq)) = self
+                .db
+                .position_to_checkpoint_seq
+                .rev_iter_through_duplicate_values(rotxn)?
+                .nth(checkpoint_depth)?
+            else {
+                break 'res Ok(None);
+            };
+            let tip = self
+                .db
+                .checkpoint_seq_to_tip
+                .try_get(rotxn, &seq)?
+                .ok_or_else(|| {
+                    Error::from(Xor::new(
+                        &seq,
+                        ByValue(&*self.db.position_to_checkpoint_seq),
+                        ByKey(&*self.db.checkpoint_seq_to_tip),
+                    ))
+                })?;
+            let (checkpoint, _) =
+                self.db.checkpoints.try_get(rotxn, &tip)?.ok_or_else(|| {
+                    Error::from(Xor::new(
+                        &tip,
+                        ByValue(&*self.db.checkpoint_seq_to_tip),
+                        ByKey(&*self.db.checkpoints),
+                    ))
+                })?;
+            let checkpoint_id = CheckpointId {
+                pos: pos.map(PositionWrapper::peel),
+                seq,
+                tip,
+            };
+            Ok(Some((checkpoint_id, checkpoint.0)))
+        })
     }
 
     fn get_checkpoint(
@@ -668,12 +887,24 @@ impl<'a, Tag> shardtree::store::ShardStore for ShardTreeStore<'a, Tag> {
         checkpoint_id: &Self::CheckpointId,
     ) -> Result<Option<shardtree::store::Checkpoint>, Self::Error> {
         self.read_with(|rotxn| {
-            let res = self
-                .db
-                .checkpoints
-                .try_get(rotxn, checkpoint_id)?
-                .map(|checkpoint| checkpoint.0);
-            Ok(res)
+            let Some((checkpoint, seq)) =
+                self.db.checkpoints.try_get(rotxn, &checkpoint_id.tip)?
+            else {
+                return Ok(None);
+            };
+            if seq != checkpoint_id.seq {
+                return Err(Self::Error::InvalidCheckpointIdSeq {
+                    seq: checkpoint_id.seq,
+                    checkpoint_seq: seq,
+                });
+            }
+            if checkpoint.0.position() != checkpoint_id.pos {
+                return Err(Self::Error::InvalidCheckpointIdPosition {
+                    pos: checkpoint_id.pos,
+                    checkpoint_pos: checkpoint.0.position(),
+                });
+            }
+            Ok(Some(checkpoint.0))
         })
     }
 
@@ -690,11 +921,38 @@ impl<'a, Tag> shardtree::store::ShardStore for ShardTreeStore<'a, Tag> {
     {
         self.read_with(|rotxn| {
             self.db
-                .checkpoints
-                .iter(rotxn)?
+                .position_to_checkpoint_seq
+                .iter_through_duplicate_values(rotxn)?
                 .take(limit)
                 .map_err(Self::Error::from)
-                .for_each(|(checkpoint_id, checkpoint)| {
+                .for_each(|(pos, seq)| {
+                    use db::error::inconsistent::{ByKey, ByValue, Error, Xor};
+                    let tip = self
+                        .db
+                        .checkpoint_seq_to_tip
+                        .try_get(rotxn, &seq)?
+                        .ok_or_else(|| {
+                            Error::from(Xor::new(
+                                &seq,
+                                ByValue(&*self.db.position_to_checkpoint_seq),
+                                ByKey(&*self.db.checkpoint_seq_to_tip),
+                            ))
+                        })?;
+                    let (checkpoint, _) =
+                        self.db.checkpoints.try_get(rotxn, &tip)?.ok_or_else(
+                            || {
+                                Error::from(Xor::new(
+                                    &tip,
+                                    ByValue(&*self.db.checkpoint_seq_to_tip),
+                                    ByKey(&*self.db.checkpoints),
+                                ))
+                            },
+                        )?;
+                    let checkpoint_id = CheckpointId {
+                        pos: pos.map(PositionWrapper::peel),
+                        seq,
+                        tip,
+                    };
                     let () = callback(&checkpoint_id, &checkpoint.0)?;
                     Ok::<_, Self::Error>(())
                 })
@@ -714,11 +972,38 @@ impl<'a, Tag> shardtree::store::ShardStore for ShardTreeStore<'a, Tag> {
     {
         self.read_with(|rotxn| {
             self.db
-                .checkpoints
-                .iter(rotxn)?
+                .position_to_checkpoint_seq
+                .iter_through_duplicate_values(rotxn)?
                 .take(limit)
                 .map_err(Self::Error::from)
-                .for_each(|(checkpoint_id, checkpoint)| {
+                .for_each(|(pos, seq)| {
+                    use db::error::inconsistent::{ByKey, ByValue, Error, Xor};
+                    let tip = self
+                        .db
+                        .checkpoint_seq_to_tip
+                        .try_get(rotxn, &seq)?
+                        .ok_or_else(|| {
+                            Error::from(Xor::new(
+                                &seq,
+                                ByValue(&*self.db.position_to_checkpoint_seq),
+                                ByKey(&*self.db.checkpoint_seq_to_tip),
+                            ))
+                        })?;
+                    let (checkpoint, _) =
+                        self.db.checkpoints.try_get(rotxn, &tip)?.ok_or_else(
+                            || {
+                                Error::from(Xor::new(
+                                    &tip,
+                                    ByValue(&*self.db.checkpoint_seq_to_tip),
+                                    ByKey(&*self.db.checkpoints),
+                                ))
+                            },
+                        )?;
+                    let checkpoint_id = CheckpointId {
+                        pos: pos.map(PositionWrapper::peel),
+                        seq,
+                        tip,
+                    };
                     let () = callback(&checkpoint_id, &checkpoint.0)?;
                     Ok::<_, Self::Error>(())
                 })
@@ -734,27 +1019,34 @@ impl<'a, Tag> shardtree::store::ShardStore for ShardTreeStore<'a, Tag> {
         F: Fn(&mut shardtree::store::Checkpoint) -> Result<(), Self::Error>,
     {
         self.write_with(|rwtxn| {
-            let Some(mut checkpoint) =
-                self.db.checkpoints.try_get(rwtxn, checkpoint_id)?
+            let Some((mut checkpoint, seq)) =
+                self.db.checkpoints.try_get(rwtxn, &checkpoint_id.tip)?
             else {
                 return Ok(false);
             };
+            if seq != checkpoint_id.seq {
+                return Err(Self::Error::InvalidCheckpointIdSeq {
+                    seq: checkpoint_id.seq,
+                    checkpoint_seq: seq,
+                });
+            }
             let original_position = checkpoint.0.position();
+            if original_position != checkpoint_id.pos {
+                return Err(Self::Error::InvalidCheckpointIdPosition {
+                    pos: checkpoint_id.pos,
+                    checkpoint_pos: original_position,
+                });
+            }
             let () = update(&mut checkpoint.0)?;
             let new_position = checkpoint.0.position();
             if new_position != original_position {
-                self.db.position_to_checkpoint_id.delete_one(
-                    rwtxn,
-                    &original_position.map(PositionWrapper),
-                    checkpoint_id,
-                )?;
-                self.db.position_to_checkpoint_id.put(
-                    rwtxn,
-                    &new_position.map(PositionWrapper),
-                    checkpoint_id,
-                )?;
-            }
-            self.db.checkpoints.put(rwtxn, checkpoint_id, &checkpoint)?;
+                return Err(Self::Error::UpdateCheckpointPosition);
+            };
+            self.db.checkpoints.put(
+                rwtxn,
+                &checkpoint_id.tip,
+                &(checkpoint, seq),
+            )?;
             Ok(true)
         })
     }
@@ -764,18 +1056,31 @@ impl<'a, Tag> shardtree::store::ShardStore for ShardTreeStore<'a, Tag> {
         checkpoint_id: &Self::CheckpointId,
     ) -> Result<(), Self::Error> {
         self.write_with(|rwtxn| {
-            let Some(checkpoint) =
-                self.db.checkpoints.try_get(rwtxn, checkpoint_id)?
+            let Some((checkpoint, seq)) =
+                self.db.checkpoints.try_get(rwtxn, &checkpoint_id.tip)?
             else {
                 return Ok(());
             };
-            self.db.checkpoints.delete(rwtxn, checkpoint_id)?;
+            if seq != checkpoint_id.seq {
+                return Err(Self::Error::InvalidCheckpointIdSeq {
+                    seq: checkpoint_id.seq,
+                    checkpoint_seq: seq,
+                });
+            }
             let pos = checkpoint.0.position();
-            self.db.position_to_checkpoint_id.delete_one(
+            if pos != checkpoint_id.pos {
+                return Err(Self::Error::InvalidCheckpointIdPosition {
+                    pos: checkpoint_id.pos,
+                    checkpoint_pos: pos,
+                });
+            }
+            self.db.checkpoints.delete(rwtxn, &checkpoint_id.tip)?;
+            self.db.position_to_checkpoint_seq.delete_one(
                 rwtxn,
                 &pos.map(PositionWrapper),
-                checkpoint_id,
+                &seq,
             )?;
+            self.db.checkpoint_seq_to_tip.delete(rwtxn, &seq)?;
             Ok(())
         })
     }
@@ -785,20 +1090,49 @@ impl<'a, Tag> shardtree::store::ShardStore for ShardTreeStore<'a, Tag> {
         checkpoint_id: &Self::CheckpointId,
     ) -> Result<(), Self::Error> {
         self.write_with(|rwtxn| {
+            let (checkpoint, checkpoint_seq) =
+                self.db.checkpoints.get(rwtxn, &checkpoint_id.tip)?;
+            let checkpoint_pos = checkpoint.0.position();
+            if checkpoint_id.pos != checkpoint_pos {
+                return Err(Self::Error::InvalidCheckpointIdPosition {
+                    pos: checkpoint_id.pos,
+                    checkpoint_pos,
+                });
+            }
+            if checkpoint_id.seq != checkpoint_seq {
+                return Err(Self::Error::InvalidCheckpointIdSeq {
+                    seq: checkpoint_id.seq,
+                    checkpoint_seq,
+                });
+            }
             let checkpoints_to_delete: Vec<_> = self
                 .db
-                .checkpoints
-                .rev_iter(rwtxn)?
-                .take_while(|(cid, _)| Ok(cid >= checkpoint_id))
+                .position_to_checkpoint_seq
+                .rev_iter_through_duplicate_values(rwtxn)?
+                .take_while(|(pos, seq)| {
+                    let pos = pos.as_ref().map(|pos| pos.0);
+                    Ok(pos > checkpoint_pos
+                        || (pos == checkpoint_pos && *seq >= checkpoint_seq))
+                })
                 .collect()?;
-            for (checkpoint_id, checkpoint) in checkpoints_to_delete {
-                let pos = checkpoint.0.position();
-                self.db.checkpoints.delete(rwtxn, &checkpoint_id)?;
-                self.db.position_to_checkpoint_id.delete_one(
-                    rwtxn,
-                    &pos.map(PositionWrapper),
-                    &checkpoint_id,
-                )?;
+            for (pos, seq) in checkpoints_to_delete {
+                self.db
+                    .position_to_checkpoint_seq
+                    .delete_one(rwtxn, &pos, &seq)?;
+                let tip = self
+                    .db
+                    .checkpoint_seq_to_tip
+                    .try_get(rwtxn, &seq)?
+                    .ok_or_else(|| {
+                    use db::error::inconsistent::{ByKey, ByValue, Error, Xor};
+                    Error::from(Xor::new(
+                        &seq,
+                        ByValue(&*self.db.position_to_checkpoint_seq),
+                        ByKey(&*self.db.checkpoint_seq_to_tip),
+                    ))
+                })?;
+                self.db.checkpoint_seq_to_tip.delete(rwtxn, &seq)?;
+                self.db.checkpoints.delete(rwtxn, &tip)?;
             }
             Ok(())
         })

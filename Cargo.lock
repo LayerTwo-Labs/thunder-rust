@@ -6391,9 +6391,9 @@ dependencies = [
 
 [[package]]
 name = "sneed"
-version = "0.0.14"
+version = "0.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56eafb3532e59b91d308024584a3d213b8e996b7871004ac15da69be660aea8b"
+checksum = "93494e8a2c65c7f1d67a346252d8b8a0c0b283044107d2c0cc2f412cd1feb70c"
 dependencies = [
  "educe",
  "enum-ordinalize",

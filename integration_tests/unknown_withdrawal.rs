@@ -58,6 +58,7 @@ async fn unknown_withdrawal_task(
         Init {
             thunder_orchard_app: bin_paths.thunder_orchard.clone(),
             data_dir_suffix: Some("withdrawer".to_owned()),
+            rpc_client_request_timeout: None,
         },
         &enforcer_post_setup,
         res_tx.clone(),
@@ -89,6 +90,7 @@ async fn unknown_withdrawal_task(
         Init {
             thunder_orchard_app: bin_paths.thunder_orchard,
             data_dir_suffix: Some("successor".to_owned()),
+            rpc_client_request_timeout: None,
         },
         &enforcer_post_setup,
         res_tx,

@@ -966,8 +966,8 @@ where
                         PeerConnectionInfo::Response(boxed) => {
                             let (resp, req) = *boxed;
                             tracing::trace!(
-                                resp = format!("{resp:#?}"),
-                                req = format!("{req:#?}"),
+                                ?resp,
+                                ?req,
                                 "mail box: received PeerConnectionInfo::Response"
                             );
                             let () = Self::handle_response(

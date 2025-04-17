@@ -493,19 +493,33 @@ where
             let filled_transaction = self
                 .state
                 .fill_transaction(&txn, &transaction.transaction)?;
-            let value_in: bitcoin::Amount = filled_transaction
+            let mut value_in: bitcoin::Amount = filled_transaction
                 .spent_utxos
                 .iter()
                 .map(GetValue::get_value)
                 .checked_sum()
                 .ok_or(AmountOverflowError)?;
-            let value_out: bitcoin::Amount = filled_transaction
+            let mut value_out: bitcoin::Amount = filled_transaction
                 .transaction
                 .outputs
                 .iter()
                 .map(GetValue::get_value)
                 .checked_sum()
                 .ok_or(AmountOverflowError)?;
+            if let Some(orchard_bundle) =
+                filled_transaction.transaction.orchard_bundle.as_ref()
+            {
+                let value_balance = orchard_bundle.value_balance();
+                if value_balance.is_positive() {
+                    value_in = value_in
+                        .checked_add(value_balance.unsigned_abs())
+                        .ok_or(AmountOverflowError)?;
+                } else {
+                    value_out = value_out
+                        .checked_add(value_balance.unsigned_abs())
+                        .ok_or(AmountOverflowError)?;
+                }
+            }
             fee = fee
                 .checked_add(
                     value_in
