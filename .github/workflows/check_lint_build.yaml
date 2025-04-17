@@ -105,8 +105,8 @@ jobs:
         with:
           shared-key: x86_64-unknown-linux-gnu
 
-      - name: Build (debug)
-        run: cargo build
+      - name: Build (release)
+        run: cargo build --release
 
       - name: Run integration tests
         id: runIntegrationTests
@@ -115,8 +115,8 @@ jobs:
           export BITCOIND='../bitcoin-patched-bins/bitcoind'
           export BITCOIN_CLI='../bitcoin-patched-bins/bitcoin-cli'
           export ELECTRS='../electrs/target/release/electrs'
-          export THUNDER_ORCHARD_APP='target/debug/thunder_orchard_app'
-          cargo run --example integration_tests
+          export THUNDER_ORCHARD_APP='target/release/thunder_orchard_app'
+          cargo run --release --example integration_tests
 
   build-release:
     strategy:
@@ -127,14 +127,14 @@ jobs:
             name: x86_64-unknown-linux-gnu
             binary-suffix: ""
             rustflags: ""
-          - os: macos-latest-large
+          - os: macos-13
             name: x86_64-apple-darwin
             binary-suffix: ""
             rustflags: ""
-          - os: ubuntu-latest
-            name: x86_64-pc-windows-gnu
-            binary-suffix: .exe
-            rustflags: "-C linker=/usr/bin/x86_64-w64-mingw32-gcc"
+          #- os: ubuntu-latest
+          #  name: x86_64-pc-windows-gnu
+          #  binary-suffix: .exe
+          #  rustflags: "-C linker=/usr/bin/x86_64-w64-mingw32-gcc"
     name: Build, Release ((${{ matrix.name }}))
     runs-on: ${{ matrix.os }}
     permissions:
@@ -219,11 +219,11 @@ jobs:
           zip L2-S9-Thunder-Orchard-latest-x86_64-apple-darwin.zip \
             thunder-orchard-latest-x86_64-apple-darwin \
             thunder-orchard-cli-latest-x86_64-apple-darwin
-          mv thunder-orchard-+([0-9]).+([0-9]).+([0-9])-x86_64-pc-windows-gnu.exe thunder-orchard-latest-x86_64-pc-windows-gnu.exe
-          mv thunder-orchard-cli-+([0-9]).+([0-9]).+([0-9])-x86_64-pc-windows-gnu.exe thunder-orchard-cli-latest-x86_64-pc-windows-gnu.exe
-          zip L2-S9-Thunder-Orchard-latest-x86_64-pc-windows-gnu.zip \
-            thunder-orchard-latest-x86_64-pc-windows-gnu.exe \
-            thunder-orchard-cli-latest-x86_64-pc-windows-gnu.exe
+          #mv thunder-orchard-+([0-9]).+([0-9]).+([0-9])-x86_64-pc-windows-gnu.exe thunder-orchard-latest-x86_64-pc-windows-gnu.exe
+          #mv thunder-orchard-cli-+([0-9]).+([0-9]).+([0-9])-x86_64-pc-windows-gnu.exe thunder-orchard-cli-latest-x86_64-pc-windows-gnu.exe
+          #zip L2-S9-Thunder-Orchard-latest-x86_64-pc-windows-gnu.zip \
+          #  thunder-orchard-latest-x86_64-pc-windows-gnu.exe \
+          #  thunder-orchard-cli-latest-x86_64-pc-windows-gnu.exe
           mv thunder-orchard-+([0-9]).+([0-9]).+([0-9])-x86_64-unknown-linux-gnu thunder-orchard-latest-x86_64-unknown-linux-gnu
           mv thunder-orchard-cli-+([0-9]).+([0-9]).+([0-9])-x86_64-unknown-linux-gnu thunder-orchard-cli-latest-x86_64-unknown-linux-gnu
           zip L2-S9-Thunder-Orchard-latest-x86_64-unknown-linux-gnu.zip \
