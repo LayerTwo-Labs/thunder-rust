@@ -62,9 +62,9 @@ pub struct GetHeadersRequest {
 impl GetHeadersRequest {
     /// Limit bytes to read in a response to a request
     pub const fn read_response_limit(&self) -> NonZeroUsize {
-        // 1KB limit per header
+        // 2KB limit per header
         const READ_HEADER_LIMIT: NonZeroUsize =
-            NonZeroUsize::new(1024).unwrap();
+            NonZeroUsize::new(2048).unwrap();
         let expected_headers = self.height.expect(
             "GetHeaders height should always be Some in an outbound request",
         ) as usize
