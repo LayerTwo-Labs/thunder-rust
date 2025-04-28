@@ -409,12 +409,11 @@ pub fn connect(
         }
     };
     let task = spawn(async move {
-        if let Err(err) = connection_task().await {
-            if let Err(send_error) = info_tx.unbounded_send(err.into())
-                && let Info::Error(err) = send_error.into_inner()
-            {
-                tracing::warn!("Failed to send error to receiver: {err}")
-            }
+        if let Err(err) = connection_task().await
+            && let Err(send_error) = info_tx.unbounded_send(err.into())
+            && let Info::Error(err) = send_error.into_inner()
+        {
+            tracing::warn!("Failed to send error to receiver: {err}")
         }
     });
     let connection_handle = ConnectionHandle {
