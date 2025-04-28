@@ -64,3 +64,14 @@ where
         Self(Some(Self::promise(stream)))
     }
 }
+
+/// Saturating predecessor of a log level
+pub fn saturating_pred_level(log_level: tracing::Level) -> tracing::Level {
+    match log_level {
+        tracing::Level::TRACE => tracing::Level::DEBUG,
+        tracing::Level::DEBUG => tracing::Level::INFO,
+        tracing::Level::INFO => tracing::Level::WARN,
+        tracing::Level::WARN => tracing::Level::ERROR,
+        tracing::Level::ERROR => tracing::Level::ERROR,
+    }
+}
