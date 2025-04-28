@@ -44,7 +44,7 @@ impl TxBuilder {
         self.tx_creator.value_in = value_in;
         spent_utxos.sort_by_key(|(outpoint, _)| format!("{outpoint}"));
         ui.separator();
-        ui.monospace(format!("Total: {}", value_in));
+        ui.monospace(format!("Total: {value_in}"));
         ui.separator();
         egui::Grid::new("utxos").striped(true).show(ui, |ui| {
             ui.monospace("kind");
@@ -73,7 +73,7 @@ impl TxBuilder {
         let value_out: bitcoin::Amount =
             self.base_tx.outputs.iter().map(GetValue::get_value).sum();
         self.tx_creator.value_out = value_out;
-        ui.monospace(format!("Total: {}", value_out));
+        ui.monospace(format!("Total: {value_out}"));
         ui.separator();
         egui::Grid::new("outputs").striped(true).show(ui, |ui| {
             let mut remove = None;

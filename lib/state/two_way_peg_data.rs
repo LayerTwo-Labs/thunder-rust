@@ -482,21 +482,19 @@ pub fn connect(
             .try_get(rwtxn, &())
             .map_err(DbError::from)?
             .is_none()
-    {
-        if let Some(bundle) =
+        && let Some(bundle) =
             collect_withdrawal_bundle(state, rwtxn, block_height)?
-        {
-            let m6id = bundle.compute_m6id();
-            state
-                .pending_withdrawal_bundle
-                .put(rwtxn, &(), &(bundle, block_height))
-                .map_err(DbError::from)?;
-            tracing::trace!(
-                %block_height,
-                %m6id,
-                "Stored pending withdrawal bundle"
-            );
-        }
+    {
+        let m6id = bundle.compute_m6id();
+        state
+            .pending_withdrawal_bundle
+            .put(rwtxn, &(), &(bundle, block_height))
+            .map_err(DbError::from)?;
+        tracing::trace!(
+            %block_height,
+            %m6id,
+            "Stored pending withdrawal bundle"
+        );
     }
     let () = accumulator.apply_diff(accumulator_diff)?;
     state

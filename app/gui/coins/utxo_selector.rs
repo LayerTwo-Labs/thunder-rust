@@ -36,7 +36,7 @@ impl UtxoSelector {
             })
             .unwrap_or_default();
         ui.separator();
-        ui.monospace(format!("Total: {}", total));
+        ui.monospace(format!("Total: {total}"));
         ui.separator();
         egui::Grid::new("utxos").striped(true).show(ui, |ui| {
             ui.monospace("kind");
