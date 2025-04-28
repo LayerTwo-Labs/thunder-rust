@@ -188,7 +188,7 @@ pub(in crate::net::peer) mod request_queue {
     }
 }
 
-pub(in crate::net::peer) mod mailbox {
+pub mod mailbox {
     #[derive(thiserror::Error, Debug)]
     pub enum Error {
         #[error("Heartbeat timeout")]

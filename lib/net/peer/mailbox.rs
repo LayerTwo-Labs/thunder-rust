@@ -1,5 +1,10 @@
 //! Mailbox for a peer connection task
 
+use std::sync::{
+    Arc,
+    atomic::{self, AtomicBool},
+};
+
 use futures::{
     Stream, StreamExt as _, TryFutureExt as _, channel::mpsc, stream,
 };
@@ -65,9 +70,12 @@ pub struct Receiver {
 }
 
 impl Receiver {
+    /// `received_msg_successfully` is set to `True` if a valid message is
+    /// received successfully.
     pub fn into_stream(
         self,
         connection: Connection,
+        received_msg_successfully: &Arc<AtomicBool>,
     ) -> impl Stream<Item = MailboxItem> + Unpin {
         let (peer_response_tx, peer_response_rx) = mpsc::unbounded();
         let internal_message_stream =
@@ -81,10 +89,14 @@ impl Receiver {
             .map(|err| MailboxItem::Error(err.into()));
         let peer_request_stream = stream::try_unfold((), move |()| {
             let conn = connection.clone();
+            let received_msg_successfully = received_msg_successfully.clone();
             let fut = async move {
                 let item = timeout(
                     Connection::HEARTBEAT_TIMEOUT_INTERVAL,
-                    conn.receive_request(),
+                    conn.receive_request().inspect_ok(|_| {
+                        received_msg_successfully
+                            .store(true, atomic::Ordering::SeqCst);
+                    }),
                 )
                 .map_err(|_| Error::HeartbeatTimeout)
                 .await??;
@@ -96,8 +108,12 @@ impl Receiver {
             Ok(peer_request) => MailboxItem::PeerRequest(peer_request),
             Err(err) => MailboxItem::Error(err),
         });
-        let peer_response_stream =
-            peer_response_rx.map(MailboxItem::PeerResponse);
+        let peer_response_stream = peer_response_rx.map(|resp| {
+            if resp.response.is_ok() {
+                received_msg_successfully.store(true, atomic::Ordering::SeqCst);
+            }
+            MailboxItem::PeerResponse(resp)
+        });
         stream::select_all([
             internal_message_stream.boxed(),
             heartbeat_stream.boxed(),

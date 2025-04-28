@@ -22,9 +22,8 @@ use crate::{
 };
 
 mod channel_pool;
-mod error;
-mod join_set;
-mod mailbox;
+pub(crate) mod error;
+pub(crate) mod mailbox;
 pub mod message;
 mod request_queue;
 mod task;
@@ -316,6 +315,8 @@ impl PeerConnectionStatus {
 /// Connection killed on drop
 pub struct ConnectionHandle {
     task: JoinHandle<()>,
+    /// Indicates that at least one message has been received successfully
+    pub(in crate::net) received_msg_successfully: Arc<AtomicBool>,
     /// Representation of [`PeerConnectionStatus`]
     pub(in crate::net) status_repr: Arc<AtomicBool>,
     /// Push messages from connection task / net task / node
@@ -327,6 +328,12 @@ impl ConnectionHandle {
         PeerConnectionStatus::from_repr(
             self.status_repr.load(atomic::Ordering::SeqCst),
         )
+    }
+
+    /// Indicates that at least one message has been received successfully
+    pub fn received_msg_successfully(&self) -> bool {
+        self.received_msg_successfully
+            .load(atomic::Ordering::SeqCst)
     }
 }
 
@@ -346,8 +353,10 @@ pub fn handle(
     let (info_tx, info_rx) = mpsc::unbounded();
     let (mailbox_tx, mailbox_rx) = mailbox::new();
     let internal_message_tx = mailbox_tx.internal_message_tx.clone();
+    let received_msg_successfully = Arc::new(AtomicBool::new(false));
     let connection_task = {
         let info_tx = info_tx.clone();
+        let received_msg_successfully = received_msg_successfully.clone();
         move || async move {
             let connection_task = ConnectionTask {
                 connection,
@@ -355,6 +364,7 @@ pub fn handle(
                 info_tx,
                 mailbox_rx,
                 mailbox_tx,
+                received_msg_successfully,
             };
             connection_task.run().await
         }
@@ -373,6 +383,7 @@ pub fn handle(
     let status = PeerConnectionStatus::Connected;
     let connection_handle = ConnectionHandle {
         task,
+        received_msg_successfully,
         status_repr: Arc::new(AtomicBool::new(status.as_repr())),
         internal_message_tx,
     };
@@ -385,10 +396,12 @@ pub fn connect(
 ) -> (ConnectionHandle, mpsc::UnboundedReceiver<Info>) {
     let connection_status = PeerConnectionStatus::Connecting;
     let status_repr = Arc::new(AtomicBool::new(connection_status.as_repr()));
+    let received_msg_successfully = Arc::new(AtomicBool::new(false));
     let (info_tx, info_rx) = mpsc::unbounded();
     let (mailbox_tx, mailbox_rx) = mailbox::new();
     let internal_message_tx = mailbox_tx.internal_message_tx.clone();
     let connection_task = {
+        let received_msg_successfully = received_msg_successfully.clone();
         let status_repr = status_repr.clone();
         let info_tx = info_tx.clone();
         move || async move {
@@ -404,6 +417,7 @@ pub fn connect(
                 info_tx,
                 mailbox_rx,
                 mailbox_tx,
+                received_msg_successfully,
             };
             connection_task.run().await
         }
@@ -418,6 +432,7 @@ pub fn connect(
     });
     let connection_handle = ConnectionHandle {
         task,
+        received_msg_successfully,
         status_repr,
         internal_message_tx,
     };

@@ -3,6 +3,7 @@
 use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},
+    sync::{Arc, atomic::AtomicBool},
 };
 
 use fallible_iterator::FallibleIterator;
@@ -32,6 +33,8 @@ pub(in crate::net::peer) struct ConnectionTask {
     pub mailbox_rx: mailbox::Receiver,
     /// Receiver for the task's mailbox
     pub mailbox_tx: mailbox::Sender,
+    /// `True` if a valid message has been received successfully
+    pub received_msg_successfully: Arc<AtomicBool>,
 }
 
 impl ConnectionTask {
@@ -766,7 +769,9 @@ impl ConnectionTask {
         let mut peer_state = Option::<PeerStateId>::None;
         // known peer states
         let mut peer_states = HashMap::<PeerStateId, PeerState>::new();
-        let mut mailbox_stream = self.mailbox_rx.into_stream(self.connection);
+        let mut mailbox_stream = self
+            .mailbox_rx
+            .into_stream(self.connection, &self.received_msg_successfully);
         while let Some(mailbox_item) = mailbox_stream.next().await {
             match mailbox_item {
                 MailboxItem::Error(err) => return Err(err.into()),

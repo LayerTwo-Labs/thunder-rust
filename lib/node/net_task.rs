@@ -5,6 +5,7 @@ use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
     sync::Arc,
+    time::Duration,
 };
 
 use fallible_iterator::{FallibleIterator, IteratorExt};
@@ -27,7 +28,8 @@ use crate::{
     archive::{self, Archive},
     mempool::{self, MemPool},
     net::{
-        self, Net, PeerConnectionInfo, PeerConnectionMessage, PeerInfoRx,
+        self, Net, PeerConnectionError, PeerConnectionInfo,
+        PeerConnectionMailboxError, PeerConnectionMessage, PeerInfoRx,
         PeerRequest, PeerResponse, PeerStateId, peer_message,
     },
     state::{self, State},
@@ -35,6 +37,7 @@ use crate::{
         BmmResult, Body, Header, Tip,
         proto::{self, mainchain},
     },
+    util::join_set,
 };
 
 #[allow(clippy::duplicated_attributes)]
@@ -812,6 +815,8 @@ impl NetTask {
             // receiver.
             NewTipReady(Tip, Option<SocketAddr>, Option<oneshot::Sender<bool>>),
             PeerInfo(Option<(SocketAddr, Option<PeerConnectionInfo>)>),
+            // Signal to reconnect to a peer
+            ReconnectPeer(SocketAddr),
         }
         let accept_connections = stream::try_unfold((), |()| {
             let env = self.ctxt.env.clone();
@@ -849,12 +854,16 @@ impl NetTask {
             });
         let peer_info_stream = StreamNotifyClose::new(self.peer_info_rx)
             .map(MailboxItem::PeerInfo);
+        let (reconnect_peer_spawner, reconnect_peer_rx) = join_set::new();
+        let reconnect_peer_stream = reconnect_peer_rx
+            .map(|addr| MailboxItem::ReconnectPeer(addr.unwrap()));
         let mut mailbox_stream = stream::select_all([
             accept_connections.boxed(),
             forward_request_stream.boxed(),
             mainchain_task_response_stream.boxed(),
             new_tip_ready_stream.boxed(),
             peer_info_stream.boxed(),
+            reconnect_peer_stream.boxed(),
         ]);
         // Attempt to switch to a descendant tip once a body has been
         // stored, if all other ancestor bodies are available.
@@ -958,6 +967,34 @@ impl NetTask {
                 MailboxItem::PeerInfo(Some((addr, Some(peer_info)))) => {
                     tracing::trace!(%addr, ?peer_info, "mailbox item: received PeerInfo");
                     match peer_info {
+                        PeerConnectionInfo::Error(
+                            PeerConnectionError::Mailbox(
+                                PeerConnectionMailboxError::HeartbeatTimeout,
+                            ),
+                        ) => {
+                            const RECONNECT_DELAY: Duration =
+                                Duration::from_secs(10);
+                            // Attempt to reconnect if a valid message was
+                            // received successfully
+                            let Some(received_msg_successfully) =
+                                self.ctxt.net.try_with_active_peer_connection(
+                                    addr,
+                                    |conn_handle| {
+                                        conn_handle.received_msg_successfully()
+                                    },
+                                )
+                            else {
+                                continue;
+                            };
+                            let () = self.ctxt.net.remove_active_peer(addr);
+                            if !received_msg_successfully {
+                                continue;
+                            }
+                            reconnect_peer_spawner.spawn(async move {
+                                tokio::time::sleep(RECONNECT_DELAY).await;
+                                addr
+                            });
+                        }
                         PeerConnectionInfo::Error(err) => {
                             let err = anyhow::anyhow!(err);
                             tracing::error!(%addr, err = format!("{err:#}"), "Peer connection error");
@@ -1022,6 +1059,22 @@ impl NetTask {
                                 req,
                             )
                             .await?;
+                        }
+                    }
+                }
+                MailboxItem::ReconnectPeer(peer_address) => {
+                    match self
+                        .ctxt
+                        .net
+                        .connect_peer(self.ctxt.env.clone(), peer_address)
+                    {
+                        Ok(()) => (),
+                        Err(err) => {
+                            let err = anyhow::Error::from(err);
+                            tracing::error!(
+                                %peer_address,
+                                "Failed to connect to peer: {err:#}"
+                            )
                         }
                     }
                 }
