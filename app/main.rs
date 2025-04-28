@@ -17,17 +17,7 @@ mod rpc_server;
 mod util;
 
 use line_buffer::{LineBuffer, LineBufferWriter};
-
-/// Saturating predecessor of a log level
-fn saturating_pred_level(log_level: tracing::Level) -> tracing::Level {
-    match log_level {
-        tracing::Level::TRACE => tracing::Level::DEBUG,
-        tracing::Level::DEBUG => tracing::Level::INFO,
-        tracing::Level::INFO => tracing::Level::WARN,
-        tracing::Level::WARN => tracing::Level::ERROR,
-        tracing::Level::ERROR => tracing::Level::ERROR,
-    }
-}
+use util::saturating_pred_level;
 
 /// The empty string target `""` can be used to set a default level.
 fn targets_directive_str<'a, Targets>(targets: Targets) -> String
