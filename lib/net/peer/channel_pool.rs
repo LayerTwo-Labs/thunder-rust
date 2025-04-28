@@ -10,9 +10,12 @@ use async_lock::{Semaphore, SemaphoreGuardArc};
 use futures::{FutureExt as _, Stream, StreamExt as _, future::Either, stream};
 use tokio::task::AbortHandle;
 
-use crate::net::peer::{
-    Connection, PeerResponseItem, error, join_set,
-    message::{Heartbeat, Request},
+use crate::{
+    net::peer::{
+        Connection, PeerResponseItem, error,
+        message::{Heartbeat, Request},
+    },
+    util::join_set,
 };
 
 /// Type tags for channel limiters
