@@ -60,7 +60,7 @@ pub enum Error {
     #[error("mempool error")]
     MemPool(#[from] mempool::Error),
     #[error("Net error")]
-    Net(#[from] net::Error),
+    Net(#[from] Box<net::Error>),
     #[error("peer info stream closed")]
     PeerInfoRxClosed,
     #[error("Receive mainchain task response cancelled")]
@@ -75,6 +75,12 @@ pub enum Error {
     SendReorgResultOneshot,
     #[error("state error")]
     State(#[from] state::Error),
+}
+
+impl From<net::Error> for Error {
+    fn from(err: net::Error) -> Self {
+        Self::Net(Box::new(err))
+    }
 }
 
 fn connect_tip_(
@@ -794,7 +800,12 @@ impl NetTask {
         tracing::debug!("starting net task");
         #[derive(Debug)]
         enum MailboxItem {
-            AcceptConnection(Result<Option<SocketAddr>, Error>),
+            AcceptConnection(
+                Result<
+                    Option<SocketAddr>,
+                    <net::error::AcceptConnection as fatality::Split>::Fatal,
+                >,
+            ),
             // Forward a mainchain task request, along with the peer that
             // caused the request, and the peer state ID of the request
             ForwardMainchainTaskRequest(
@@ -816,18 +827,32 @@ impl NetTask {
             let env = self.ctxt.env.clone();
             let net = self.ctxt.net.clone();
             let fut = async move {
-                let maybe_socket_addr = net.accept_incoming(env).await?;
+                use fatality::Nested as _;
+                let maybe_socket_addr =
+                    net.accept_incoming(env).await.into_nested()?;
 
                 // / Return:
                 // - The value to yield (maybe_socket_addr)
                 // - The state for the next iteration (())
                 // Wrapped in Result and Option
-                Result::<Option<(Option<SocketAddr>, ())>, Error>::Ok(Some((
-                    maybe_socket_addr,
-                    (),
-                )))
+                Result::<_, _>::Ok(Some((maybe_socket_addr, ())))
             };
             Box::pin(fut)
+        })
+        .filter_map(async |item| match item {
+            Ok(Ok(maybe_socket_addr)) => Some(Ok(maybe_socket_addr)),
+            Ok(Err(non_fatal_err)) => {
+                // type the error explicitly
+                let non_fatal_err:
+                    <net::error::AcceptConnection as fatality::Split>::Jfyi =
+                    non_fatal_err;
+                let non_fatal_err = anyhow::Error::from(non_fatal_err);
+                tracing::error!(
+                    "Failed to accept connection: {non_fatal_err:#}"
+                );
+                None
+            }
+            Err(fatal_err) => Some(Err(fatal_err)),
         })
         .map(MailboxItem::AcceptConnection);
         let forward_request_stream = self
@@ -884,8 +909,14 @@ impl NetTask {
                     Ok(Some(addr)) => {
                         tracing::trace!(%addr, "accepted new incoming connection");
                     }
-                    Err(err) => {
-                        tracing::error!(%err, "failed to accept connection");
+                    Err(fatal_err) => {
+                        // explicitly type error
+                        let fatal_err: <net::error::AcceptConnection as fatality::Split>::Fatal =
+                            fatal_err;
+                        let fatal_err = anyhow::Error::from(fatal_err);
+                        tracing::error!(
+                            "failed to accept connection: {fatal_err:#}"
+                        );
                     }
                 },
                 MailboxItem::ForwardMainchainTaskRequest(

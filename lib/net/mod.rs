@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet, hash_map},
-    net::{IpAddr, SocketAddr},
+    net::SocketAddr,
     sync::Arc,
 };
 
@@ -21,8 +21,10 @@ use crate::{
     types::{AuthorizedTransaction, THIS_SIDECHAIN, VERSION, Version},
 };
 
+pub mod error;
 mod peer;
 
+pub use error::Error;
 pub(crate) use peer::error::mailbox::Error as PeerConnectionMailboxError;
 use peer::{
     Connection, ConnectionContext as PeerConnectionCtxt,
@@ -34,60 +36,6 @@ pub use peer::{
     PeerStateId, Request as PeerRequest, ResponseMessage as PeerResponse,
     message as peer_message,
 };
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("accept error")]
-    AcceptError,
-    #[error("already connected to peer at {0}")]
-    AlreadyConnected(SocketAddr),
-    #[error("bincode error")]
-    Bincode(#[from] bincode::Error),
-    #[error("connect error")]
-    Connect(#[from] quinn::ConnectError),
-    #[error("connection error (remote address: {remote_address})")]
-    Connection {
-        #[source]
-        error: quinn::ConnectionError,
-        remote_address: SocketAddr,
-    },
-    #[error(transparent)]
-    Db(#[from] DbError),
-    #[error("Database env error")]
-    DbEnv(#[from] sneed::env::Error),
-    #[error("Database write error")]
-    DbWrite(#[from] sneed::rwtxn::Error),
-    #[error("quinn error")]
-    Io(#[from] std::io::Error),
-    #[error("peer connection not found for {0}")]
-    MissingPeerConnection(SocketAddr),
-    /// Unspecified peer IP addresses cannot be connected to.
-    /// `0.0.0.0` is one example of an "unspecified" IP.
-    #[error("unspecified peer ip address (cannot connect to '{0}')")]
-    UnspecfiedPeerIP(IpAddr),
-    #[error(transparent)]
-    NoInitialCipherSuite(#[from] quinn::crypto::rustls::NoInitialCipherSuite),
-    #[error("peer connection")]
-    PeerConnection(#[source] Box<PeerConnectionError>),
-    #[error("quinn rustls error")]
-    QuinnRustls(#[from] quinn::crypto::rustls::Error),
-    #[error("rcgen")]
-    RcGen(#[from] rcgen::Error),
-    #[error("read to end error")]
-    ReadToEnd(#[from] quinn::ReadToEndError),
-    #[error("send datagram error")]
-    SendDatagram(#[from] quinn::SendDatagramError),
-    #[error("server endpoint closed")]
-    ServerEndpointClosed,
-    #[error("write error")]
-    Write(#[from] quinn::WriteError),
-}
-
-impl From<PeerConnectionError> for Error {
-    fn from(err: PeerConnectionError) -> Self {
-        Self::PeerConnection(Box::new(err))
-    }
-}
 
 /// Dummy certificate verifier that treats any certificate as valid.
 /// NOTE, such verification is vulnerable to MITM attacks, but convenient for testing.
@@ -233,13 +181,13 @@ impl Net {
         &self,
         addr: SocketAddr,
         peer_connection_handle: PeerConnectionHandle,
-    ) -> Result<(), Error> {
+    ) -> Result<(), error::AlreadyConnected> {
         tracing::trace!(%addr, "add active peer: starting");
         let mut active_peers_write = self.active_peers.write();
         match active_peers_write.entry(addr) {
             hash_map::Entry::Occupied(_) => {
                 tracing::error!(%addr, "add active peer: already connected");
-                Err(Error::AlreadyConnected(addr))
+                Err(error::AlreadyConnected(addr))
             }
             hash_map::Entry::Vacant(active_peer_entry) => {
                 active_peer_entry.insert(peer_connection_handle);
@@ -292,7 +240,7 @@ impl Net {
     ) -> Result<(), Error> {
         if self.active_peers.read().contains_key(&addr) {
             tracing::error!("connect peer: already connected");
-            return Err(Error::AlreadyConnected(addr));
+            return Err(error::AlreadyConnected(addr).into());
         }
 
         // This check happens within Quinn with a
@@ -432,7 +380,7 @@ impl Net {
     pub async fn accept_incoming(
         &self,
         env: sneed::Env,
-    ) -> Result<Option<SocketAddr>, Error> {
+    ) -> Result<Option<SocketAddr>, error::AcceptConnection> {
         tracing::debug!(
             "accept incoming: listening for connections on `{}`",
             self.server
@@ -445,16 +393,17 @@ impl Net {
                 let remote_address = conn.remote_address();
                 tracing::trace!("accepting connection from {remote_address}",);
 
-                let raw_conn =
-                    conn.await.map_err(|error| Error::Connection {
+                let raw_conn = conn.await.map_err(|error| {
+                    error::AcceptConnection::Connection {
                         error,
                         remote_address,
-                    })?;
+                    }
+                })?;
                 Connection::from(raw_conn)
             }
             None => {
                 tracing::debug!("server endpoint closed");
-                return Err(Error::ServerEndpointClosed);
+                return Err(error::AcceptConnection::ServerEndpointClosed);
             }
         };
         let addr = connection.addr();

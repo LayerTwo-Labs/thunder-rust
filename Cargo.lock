@@ -6431,6 +6431,7 @@ dependencies = [
  "ed25519-dalek-bip32",
  "educe",
  "fallible-iterator",
+ "fatality",
  "futures",
  "governor",
  "hashlink 0.10.0",
