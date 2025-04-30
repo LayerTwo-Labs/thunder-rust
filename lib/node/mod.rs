@@ -60,7 +60,7 @@ pub enum Error {
     #[error("mempool error")]
     MemPool(#[from] mempool::Error),
     #[error("net error")]
-    Net(#[from] net::Error),
+    Net(#[from] Box<net::Error>),
     #[error("net task error")]
     NetTask(#[source] Box<net_task::Error>),
     #[error("No CUSF mainchain wallet client")]
@@ -77,6 +77,12 @@ pub enum Error {
     Utreexo(String),
     #[error("Verify BMM error")]
     VerifyBmm(anyhow::Error),
+}
+
+impl From<net::Error> for Error {
+    fn from(err: net::Error) -> Self {
+        Self::Net(Box::new(err))
+    }
 }
 
 impl From<net_task::Error> for Error {
