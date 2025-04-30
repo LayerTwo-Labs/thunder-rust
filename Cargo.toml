@@ -10,7 +10,7 @@ authors = [
 edition = "2024"
 license-file = "LICENSE.txt"
 publish = false
-version = "0.12.1"
+version = "0.12.2"
 
 [workspace.dependencies]
 anyhow = "1.0.72"
