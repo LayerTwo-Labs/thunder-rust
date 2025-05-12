@@ -442,12 +442,20 @@ impl App {
 
         tracing::debug!(%bmm_txid, "mine: confirming BMM...");
         if let Some((main_hash, header, body)) =
-            miner_write.confirm_bmm().await?
+            miner_write.confirm_bmm().await.inspect_err(|err| {
+                tracing::error!("{:#}", thunder::util::ErrorChain::new(err))
+            })?
         {
             tracing::debug!(
                 %main_hash, side_hash = %header.hash(), "mine: confirmed BMM, submitting block",
             );
-            match self.node.submit_block(main_hash, &header, &body).await? {
+            match self
+                .node
+                .submit_block(main_hash, &header, &body)
+                .await
+                .inspect_err(|err| {
+                    tracing::error!("{:#}", thunder::util::ErrorChain::new(err))
+                })? {
                 true => {
                     tracing::debug!(
                          %main_hash, "mine: BMM accepted as new tip",
