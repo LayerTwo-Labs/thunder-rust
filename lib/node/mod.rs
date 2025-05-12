@@ -533,7 +533,9 @@ where
             .map_err(|_| Error::SendMainchainTaskRequest)?
             .await
             .map_err(|_| Error::ReceiveMainchainTaskResponse)?;
-        let () = res.map_err(Error::MainchainAncestors)?;
+        if !res.map_err(Error::MainchainAncestors)? {
+            return Ok(false);
+        };
         // Write header
         tracing::trace!("Storing header: {block_hash}");
         {

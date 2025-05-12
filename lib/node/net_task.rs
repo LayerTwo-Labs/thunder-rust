@@ -913,7 +913,7 @@ impl NetTask {
                     let request = (&response).into();
                     match response {
                         mainchain_task::Response::AncestorInfos(
-                            _block_hash,
+                            block_hash,
                             res,
                         ) => {
                             let Some(sources) =
@@ -924,8 +924,11 @@ impl NetTask {
                             let res = res.map_err(Arc::new);
                             for (addr, peer_state_id) in sources {
                                 let message = match res {
-                                    Ok(()) => PeerConnectionMessage::MainchainAncestors(
+                                    Ok(true) => PeerConnectionMessage::MainchainAncestors(
                                         peer_state_id,
+                                    ),
+                                    Ok(false) => PeerConnectionMessage::MainchainAncestorsError(
+                                        anyhow::anyhow!("Requested block was not available: {block_hash}")
                                     ),
                                     Err(ref err) => PeerConnectionMessage::MainchainAncestorsError(
                                         anyhow::Error::from(err.clone())

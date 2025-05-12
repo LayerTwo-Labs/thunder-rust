@@ -48,7 +48,8 @@ pub enum ResponseError {
 /// Response indicating that a request has been fulfilled
 #[derive(Debug)]
 pub(super) enum Response {
-    AncestorInfos(bitcoin::BlockHash, Result<(), ResponseError>),
+    /// Response bool indicates if the requested header was available
+    AncestorInfos(bitcoin::BlockHash, Result<bool, ResponseError>),
 }
 
 impl From<&Response> for Request {
@@ -84,22 +85,23 @@ where
     Transport: proto::Transport,
 {
     /// Request ancestor header info and block info from the mainchain node,
-    /// including the specified header
+    /// including the specified header.
+    /// Returns `false` if the specified block was not available.
     async fn request_ancestor_infos(
         env: &sneed::Env,
         archive: &Archive,
         cusf_mainchain: &mut proto::mainchain::ValidatorClient<Transport>,
         block_hash: bitcoin::BlockHash,
-    ) -> Result<(), ResponseError> {
+    ) -> Result<bool, ResponseError> {
         if block_hash == bitcoin::BlockHash::all_zeros() {
-            return Ok(());
+            return Ok(true);
         } else {
             let rotxn = env.read_txn().map_err(EnvError::from)?;
             if archive
                 .try_get_main_header_info(&rotxn, &block_hash)?
                 .is_some()
             {
-                return Ok(());
+                return Ok(true);
             }
         }
         let mut current_block_hash = block_hash;
@@ -122,9 +124,12 @@ where
                 }
                 tracing::trace!(%block_hash, "requesting ancestor headers: {current_block_hash}({current_height})")
             }
-            let block_infos_resp = cusf_mainchain
+            let Some(block_infos_resp) = cusf_mainchain
                 .get_block_infos(current_block_hash, BATCH_REQUEST_SIZE - 1)
-                .await?;
+                .await?
+            else {
+                return Ok(false);
+            };
             {
                 let (current_header, _) = block_infos_resp.last();
                 current_block_hash = current_header.prev_block_hash;
@@ -159,7 +164,7 @@ where
             }
             rwtxn.commit().map_err(RwTxnError::from)?;
             tracing::trace!(%block_hash, "stored ancestor headers/info");
-            Ok(())
+            Ok(true)
         })
     }
 

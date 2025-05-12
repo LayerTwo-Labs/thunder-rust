@@ -120,7 +120,7 @@ pub mod common {
 
     impl ConsensusHex {
         pub fn decode<Message, T>(
-            self,
+            &self,
             field_name: &str,
         ) -> Result<T, super::Error>
         where
@@ -128,10 +128,11 @@ pub mod common {
             T: bitcoin::consensus::Decodable,
         {
             let Self { hex } = self;
-            let hex =
-                hex.ok_or_else(|| super::Error::missing_field::<Self>("hex"))?;
-            bitcoin::consensus::encode::deserialize_hex(&hex).map_err(|_err| {
-                super::Error::invalid_field_value::<Message>(field_name, &hex)
+            let hex = hex
+                .as_ref()
+                .ok_or_else(|| super::Error::missing_field::<Self>("hex"))?;
+            bitcoin::consensus::encode::deserialize_hex(hex).map_err(|_err| {
+                super::Error::invalid_field_value::<Message>(field_name, hex)
             })
         }
 
@@ -204,7 +205,7 @@ pub mod common {
 
     impl ReverseHex {
         pub fn decode<Message, T>(
-            self,
+            &self,
             field_name: &str,
         ) -> Result<T, super::Error>
         where
@@ -212,14 +213,15 @@ pub mod common {
             T: bitcoin::consensus::Decodable,
         {
             let Self { hex } = self;
-            let hex =
-                hex.ok_or_else(|| super::Error::missing_field::<Self>("hex"))?;
-            let mut bytes = hex::decode(&hex).map_err(|_| {
-                super::Error::invalid_field_value::<Message>(field_name, &hex)
+            let hex = hex
+                .as_ref()
+                .ok_or_else(|| super::Error::missing_field::<Self>("hex"))?;
+            let mut bytes = hex::decode(hex).map_err(|_| {
+                super::Error::invalid_field_value::<Message>(field_name, hex)
             })?;
             bytes.reverse();
             bitcoin::consensus::deserialize(&bytes).map_err(|_err| {
-                super::Error::invalid_field_value::<Message>(field_name, &hex)
+                super::Error::invalid_field_value::<Message>(field_name, hex)
             })
         }
 
@@ -713,6 +715,7 @@ pub mod mainchain {
                 block_info,
             } = info;
             let header_info = header_info
+                .as_ref()
                 .ok_or_else(|| {
                     Self::Error::missing_field::<Info>("header_info")
                 })?
@@ -810,7 +813,7 @@ pub mod mainchain {
                         return Err(super::Error::missing_field::<generated::get_two_way_peg_data_response::ResponseItem>("block_header_info"));
                     };
                     let BlockHeaderInfo { block_hash, .. } =
-                        block_header_info.try_into()?;
+                        (&block_header_info).try_into()?;
                     let Some(block_info) = block_info else {
                         return Err(super::Error::missing_field::<generated::get_two_way_peg_data_response::ResponseItem>("block_info"));
                     };
@@ -821,11 +824,11 @@ pub mod mainchain {
         }
     }
 
-    impl TryFrom<generated::BlockHeaderInfo> for BlockHeaderInfo {
+    impl TryFrom<&generated::BlockHeaderInfo> for BlockHeaderInfo {
         type Error = super::Error;
 
         fn try_from(
-            header_info: generated::BlockHeaderInfo,
+            header_info: &generated::BlockHeaderInfo,
         ) -> Result<Self, Self::Error> {
             let generated::BlockHeaderInfo {
                 block_hash,
@@ -834,6 +837,7 @@ pub mod mainchain {
                 work,
             } = header_info;
             let block_hash = block_hash
+                .as_ref()
                 .ok_or_else(|| {
                     super::Error::missing_field::<generated::BlockHeaderInfo>(
                         "block_hash",
@@ -841,6 +845,7 @@ pub mod mainchain {
                 })?
                 .decode::<generated::BlockHeaderInfo, _>("block_hash")?;
             let prev_block_hash = prev_block_hash
+                .as_ref()
                 .ok_or_else(|| {
                     super::Error::missing_field::<generated::BlockHeaderInfo>(
                         "prev_block_hash",
@@ -848,6 +853,7 @@ pub mod mainchain {
                 })?
                 .decode::<generated::BlockHeaderInfo, _>("prev_block_hash")?;
             let work = work
+                .as_ref()
                 .ok_or_else(|| {
                     super::Error::missing_field::<generated::BlockHeaderInfo>(
                         "work",
@@ -858,7 +864,7 @@ pub mod mainchain {
             Ok(BlockHeaderInfo {
                 block_hash,
                 prev_block_hash,
-                height,
+                height: *height,
                 work,
             })
         }
@@ -899,7 +905,7 @@ pub mod mainchain {
                         >("block_info"));
                     };
                     Ok(Self::ConnectBlock {
-                        header_info: header_info.try_into()?,
+                        header_info: (&header_info).try_into()?,
                         block_info: block_info.try_into()?,
                     })
                 }
@@ -981,114 +987,87 @@ pub mod mainchain {
         pub async fn get_block_header_info(
             &mut self,
             block_hash: BlockHash,
-        ) -> Result<BlockHeaderInfo, super::Error> {
+        ) -> Result<Option<BlockHeaderInfo>, super::Error> {
             let request = generated::GetBlockHeaderInfoRequest {
                 block_hash: Some(ReverseHex::encode(&block_hash)),
                 max_ancestors: Some(0),
             };
-            let generated::GetBlockHeaderInfoResponse {
-                header_info,
-                ancestor_infos: _,
-            } = self.0.get_block_header_info(request).await?.into_inner();
-            let Some(header_info) = header_info else {
-                return Err(super::Error::missing_field::<
-                    generated::GetBlockHeaderInfoResponse,
-                >("header_info"));
+            let generated::GetBlockHeaderInfoResponse { header_infos } =
+                self.0.get_block_header_info(request).await?.into_inner();
+            let Some(header_info) = header_infos.first() else {
+                return Ok(None);
             };
-            header_info.try_into()
+            let header_info = header_info.try_into()?;
+            Ok(Some(header_info))
         }
 
         pub async fn get_block_header_infos(
             &mut self,
             block_hash: BlockHash,
             max_ancestors: u32,
-        ) -> Result<NonEmpty<BlockHeaderInfo>, super::Error> {
+        ) -> Result<Option<NonEmpty<BlockHeaderInfo>>, super::Error> {
             let request = generated::GetBlockHeaderInfoRequest {
                 block_hash: Some(ReverseHex::encode(&block_hash)),
                 max_ancestors: Some(max_ancestors),
             };
-            let generated::GetBlockHeaderInfoResponse {
-                header_info,
-                ancestor_infos,
-            } = self.0.get_block_header_info(request).await?.into_inner();
-            let header_info: BlockHeaderInfo = header_info
-                .ok_or_else(|| {
-                    super::Error::missing_field::<
+            let generated::GetBlockHeaderInfoResponse { header_infos } =
+                self.0.get_block_header_info(request).await?.into_inner();
+            let Some(header_infos) = NonEmpty::from_vec(header_infos) else {
+                return Ok(None);
+            };
+            let header_infos: NonEmpty<BlockHeaderInfo> = header_infos
+                .try_map(|header_info| (&header_info).try_into())?;
+            let mut expected_block_hash = header_infos.head.prev_block_hash;
+            // Check that ancestor infos are sequential
+            for header_info in &header_infos.tail {
+                if header_info.block_hash == expected_block_hash {
+                    expected_block_hash = header_info.prev_block_hash;
+                } else {
+                    return Err(super::Error::invalid_repeated_value::<
                         generated::GetBlockHeaderInfoResponse,
-                    >("header_info")
-                })?
-                .try_into()?;
-            let mut expected_block_hash = header_info.prev_block_hash;
-            let ancestor_infos = ancestor_infos
-                .into_iter()
-                .map(|ancestor_info| {
-                    let ancestor_info: BlockHeaderInfo =
-                        ancestor_info.try_into()?;
-                    // Check that ancestor infos are sequential
-                    if ancestor_info.block_hash == expected_block_hash {
-                        expected_block_hash = ancestor_info.prev_block_hash;
-                        Ok(ancestor_info)
-                    } else {
-                        Err(super::Error::invalid_repeated_value::<
-                            generated::GetBlockHeaderInfoResponse,
-                        >(
-                            "ancestor_infos",
-                            &serde_json::to_string(&ancestor_info).unwrap(),
-                        ))
-                    }
-                })
-                .collect::<Result<_, _>>()?;
-            Ok(NonEmpty {
-                head: header_info,
-                tail: ancestor_infos,
-            })
+                    >(
+                        "header_infos",
+                        &serde_json::to_string(&header_info).unwrap(),
+                    ));
+                }
+            }
+            Ok(Some(header_infos))
         }
 
         pub async fn get_block_infos(
             &mut self,
             block_hash: BlockHash,
             max_ancestors: u32,
-        ) -> Result<NonEmpty<(BlockHeaderInfo, BlockInfo)>, super::Error>
+        ) -> Result<Option<NonEmpty<(BlockHeaderInfo, BlockInfo)>>, super::Error>
         {
             let request = generated::GetBlockInfoRequest {
                 block_hash: Some(ReverseHex::encode(&block_hash)),
                 sidechain_id: Some(THIS_SIDECHAIN as u32),
                 max_ancestors: Some(max_ancestors),
             };
-            let generated::GetBlockInfoResponse {
-                info,
-                ancestor_infos,
-            } = self.0.get_block_info(request).await?.into_inner();
-            let (header_info, block_info) = info
-                .ok_or_else(|| {
-                    super::Error::missing_field::<
+            let generated::GetBlockInfoResponse { infos } =
+                self.0.get_block_info(request).await?.into_inner();
+            let Some(infos) = NonEmpty::from_vec(infos) else {
+                return Ok(None);
+            };
+            let infos: NonEmpty<(BlockHeaderInfo, BlockInfo)> =
+                infos.try_map(|info| info.try_into())?;
+            let mut expected_block_hash = infos.head.0.prev_block_hash;
+            // Check that ancestor infos are sequential
+            for (header_info, block_info) in &infos.tail {
+                if header_info.block_hash == expected_block_hash {
+                    expected_block_hash = header_info.prev_block_hash;
+                } else {
+                    return Err(super::Error::invalid_repeated_value::<
                         generated::GetBlockInfoResponse,
-                    >("info")
-                })?.try_into()?;
-            let mut expected_block_hash = header_info.prev_block_hash;
-            let ancestor_infos = ancestor_infos
-                .into_iter()
-                .map(|ancestor_info| {
-                    let (header_info, block_info) = ancestor_info.try_into()?;
-                    // Check that ancestor infos are sequential
-                    if header_info.block_hash == expected_block_hash {
-                        expected_block_hash = header_info.prev_block_hash;
-                        Ok((header_info, block_info))
-                    } else {
-                        Err(super::Error::invalid_repeated_value::<
-                            generated::GetBlockInfoResponse,
-                        >(
-                            "ancestor_infos",
-                            &serde_json::to_string(&(header_info, block_info))
-                                .unwrap(),
-                        ))
-                    }
-                })
-                .collect::<Result<_, _>>()?;
-            Ok(NonEmpty {
-                head: (header_info, block_info),
-                tail: ancestor_infos,
-            })
+                    >(
+                        "infos",
+                        &serde_json::to_string(&(header_info, block_info))
+                            .unwrap(),
+                    ));
+                }
+            }
+            Ok(Some(infos))
         }
 
         pub async fn get_bmm_hstar_commitments(
@@ -1149,7 +1128,7 @@ pub mod mainchain {
                     generated::GetChainTipResponse,
                 >("block_header_info"));
             };
-            block_header_info.try_into()
+            (&block_header_info).try_into()
         }
 
         pub async fn get_two_way_peg_data(
