@@ -699,6 +699,33 @@ pub mod mainchain {
         }
     }
 
+    impl TryFrom<generated::get_block_info_response::Info>
+        for (BlockHeaderInfo, BlockInfo)
+    {
+        type Error = super::Error;
+
+        fn try_from(
+            info: generated::get_block_info_response::Info,
+        ) -> Result<Self, Self::Error> {
+            use generated::get_block_info_response::Info;
+            let Info {
+                header_info,
+                block_info,
+            } = info;
+            let header_info = header_info
+                .ok_or_else(|| {
+                    Self::Error::missing_field::<Info>("header_info")
+                })?
+                .try_into()?;
+            let block_info = block_info
+                .ok_or_else(|| {
+                    Self::Error::missing_field::<Info>("block_info")
+                })?
+                .try_into()?;
+            Ok((header_info, block_info))
+        }
+    }
+
     #[derive(Clone, Debug, Default, Deserialize, Serialize)]
     pub struct TwoWayPegData {
         pub block_info: LinkedHashMap<BlockHash, BlockInfo>,
@@ -1013,6 +1040,53 @@ pub mod mainchain {
                 .collect::<Result<_, _>>()?;
             Ok(NonEmpty {
                 head: header_info,
+                tail: ancestor_infos,
+            })
+        }
+
+        pub async fn get_block_infos(
+            &mut self,
+            block_hash: BlockHash,
+            max_ancestors: u32,
+        ) -> Result<NonEmpty<(BlockHeaderInfo, BlockInfo)>, super::Error>
+        {
+            let request = generated::GetBlockInfoRequest {
+                block_hash: Some(ReverseHex::encode(&block_hash)),
+                sidechain_id: Some(THIS_SIDECHAIN as u32),
+                max_ancestors: Some(max_ancestors),
+            };
+            let generated::GetBlockInfoResponse {
+                info,
+                ancestor_infos,
+            } = self.0.get_block_info(request).await?.into_inner();
+            let (header_info, block_info) = info
+                .ok_or_else(|| {
+                    super::Error::missing_field::<
+                        generated::GetBlockInfoResponse,
+                    >("info")
+                })?.try_into()?;
+            let mut expected_block_hash = header_info.prev_block_hash;
+            let ancestor_infos = ancestor_infos
+                .into_iter()
+                .map(|ancestor_info| {
+                    let (header_info, block_info) = ancestor_info.try_into()?;
+                    // Check that ancestor infos are sequential
+                    if header_info.block_hash == expected_block_hash {
+                        expected_block_hash = header_info.prev_block_hash;
+                        Ok((header_info, block_info))
+                    } else {
+                        Err(super::Error::invalid_repeated_value::<
+                            generated::GetBlockInfoResponse,
+                        >(
+                            "ancestor_infos",
+                            &serde_json::to_string(&(header_info, block_info))
+                                .unwrap(),
+                        ))
+                    }
+                })
+                .collect::<Result<_, _>>()?;
+            Ok(NonEmpty {
+                head: (header_info, block_info),
                 tail: ancestor_infos,
             })
         }

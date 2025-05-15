@@ -5,6 +5,7 @@ use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
     sync::Arc,
+    time::Duration,
 };
 
 use fallible_iterator::{FallibleIterator, IteratorExt};
@@ -16,25 +17,27 @@ use futures::{
     },
     stream,
 };
+use nonempty::NonEmpty;
 use sneed::{DbError, EnvError, RwTxn, RwTxnError, db};
 use thiserror::Error;
-use tokio::task::JoinHandle;
+use tokio::task::{self, JoinHandle};
 use tokio_stream::StreamNotifyClose;
-use tokio_util::task::LocalPoolHandle;
 
 use super::mainchain_task::{self, MainchainTaskHandle};
 use crate::{
     archive::{self, Archive},
     mempool::{self, MemPool},
     net::{
-        self, Net, PeerConnectionInfo, PeerConnectionMessage, PeerInfoRx,
-        PeerRequest, PeerResponse, PeerStateId,
+        self, Net, PeerConnectionError, PeerConnectionInfo,
+        PeerConnectionMailboxError, PeerConnectionMessage, PeerInfoRx,
+        PeerRequest, PeerResponse, PeerStateId, peer_message,
     },
     state::{self, State},
     types::{
         BmmResult, Body, Header, Tip,
         proto::{self, mainchain},
     },
+    util::join_set,
 };
 
 #[allow(clippy::duplicated_attributes)]
@@ -71,56 +74,24 @@ pub enum Error {
     #[error("Send reorg result error (oneshot)")]
     SendReorgResultOneshot,
     #[error("state error")]
-    State(#[from] state::Error),
+    State(#[from] Box<state::Error>),
 }
 
-async fn connect_tip_<Transport>(
+impl From<state::Error> for Error {
+    fn from(err: state::Error) -> Self {
+        Self::State(Box::new(err))
+    }
+}
+
+fn connect_tip_(
     rwtxn: &mut RwTxn<'_>,
     archive: &Archive,
-    cusf_mainchain: &mut mainchain::ValidatorClient<Transport>,
     mempool: &MemPool,
     state: &State,
     header: &Header,
     body: &Body,
-) -> Result<(), Error>
-where
-    Transport: proto::Transport,
-{
-    let last_deposit_block_hash = state.get_last_deposit_block_hash(rwtxn)?;
-    let last_withdrawal_bundle_event_block_hash =
-        state.get_last_withdrawal_bundle_event_block_hash(rwtxn)?;
-    let last_2wpd_block = match (
-        last_deposit_block_hash,
-        last_withdrawal_bundle_event_block_hash,
-    ) {
-        (None, None) => None,
-        (Some(last_deposit_block_hash), None) => Some(last_deposit_block_hash),
-        (None, Some(last_withdrawal_bundle_event_block_hash)) => {
-            Some(last_withdrawal_bundle_event_block_hash)
-        }
-        (
-            Some(last_deposit_block_hash),
-            Some(last_withdrawal_bundle_event_block_hash),
-        ) => {
-            if archive.is_main_descendant(
-                rwtxn,
-                last_deposit_block_hash,
-                last_withdrawal_bundle_event_block_hash,
-            )? {
-                Some(last_withdrawal_bundle_event_block_hash)
-            } else {
-                assert!(archive.is_main_descendant(
-                    rwtxn,
-                    last_withdrawal_bundle_event_block_hash,
-                    last_deposit_block_hash
-                )?);
-                Some(last_deposit_block_hash)
-            }
-        }
-    };
-    let two_way_peg_data = cusf_mainchain
-        .get_two_way_peg_data(last_2wpd_block, header.prev_main_hash)
-        .await?;
+    two_way_peg_data: &mainchain::TwoWayPegData,
+) -> Result<(), Error> {
     let block_hash = header.hash();
     let _fees: bitcoin::Amount = state.validate_block(rwtxn, header, body)?;
     let orchard_frontier = if tracing::enabled!(tracing::Level::DEBUG) {
@@ -141,7 +112,7 @@ where
         )?;
     }
     let accumulator =
-        state.connect_two_way_peg_data(rwtxn, &two_way_peg_data)?;
+        state.connect_two_way_peg_data(rwtxn, two_way_peg_data)?;
     let () = archive.put_header(rwtxn, header)?;
     let () = archive.put_body(rwtxn, block_hash, body)?;
     let () = archive.put_accumulator(rwtxn, block_hash, &accumulator)?;
@@ -152,16 +123,12 @@ where
     Ok(())
 }
 
-async fn disconnect_tip_<Transport>(
+fn disconnect_tip_(
     rwtxn: &mut RwTxn<'_>,
     archive: &Archive,
-    cusf_mainchain: &mut mainchain::ValidatorClient<Transport>,
     mempool: &MemPool,
     state: &State,
-) -> Result<(), Error>
-where
-    Transport: proto::Transport,
-{
+) -> Result<(), Error> {
     let tip_block_hash =
         state.try_get_tip(rwtxn)?.ok_or(state::Error::NoTip)?;
     let tip_header = archive.get_header(rwtxn, tip_block_hash)?;
@@ -231,9 +198,24 @@ where
                 }
             }
         };
-        cusf_mainchain
-            .get_two_way_peg_data(start_block_hash, tip_header.prev_main_hash)
-            .await?
+        let block_infos: Vec<_> = archive
+            .main_ancestors(rwtxn, tip_header.prev_main_hash)
+            .take_while(|ancestor| {
+                Ok(Some(ancestor) != start_block_hash.as_ref())
+            })
+            .filter_map(|ancestor| {
+                let block_info =
+                    archive.get_main_block_info(rwtxn, &ancestor)?;
+                if block_info.events.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some((ancestor, block_info)))
+                }
+            })
+            .collect()?;
+        mainchain::TwoWayPegData {
+            block_info: block_infos.into_iter().rev().collect(),
+        }
     };
     let () = state.disconnect_two_way_peg_data(rwtxn, &two_way_peg_data)?;
     let prev_accumulator =
@@ -260,17 +242,13 @@ where
 /// The new tip block and all ancestor blocks must exist in the node's archive.
 /// A result of `Ok(true)` indicates a successful re-org.
 /// A result of `Ok(false)` indicates that no re-org was attempted.
-async fn reorg_to_tip<Transport>(
+fn reorg_to_tip(
     env: &sneed::Env,
     archive: &Archive,
-    cusf_mainchain: &mut mainchain::ValidatorClient<Transport>,
     mempool: &MemPool,
     state: &State,
     new_tip: Tip,
-) -> Result<bool, Error>
-where
-    Transport: proto::Transport,
-{
+) -> Result<bool, Error> {
     let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
     let tip_height = state.try_get_height(&rwtxn)?;
     let tip = state
@@ -305,18 +283,31 @@ where
         None
     };
     // Check that all necessary bodies exist before disconnecting tip
-    let blocks_to_apply: Vec<(Header, Body)> = archive
-        .ancestors(&rwtxn, new_tip.block_hash)
-        .take_while(|block_hash| {
-            Ok(common_ancestor
-                .is_none_or(|common_ancestor| *block_hash != common_ancestor))
-        })
-        .map(|block_hash| {
-            let header = archive.get_header(&rwtxn, block_hash)?;
-            let body = archive.get_body(&rwtxn, block_hash)?;
-            Ok((header, body))
-        })
-        .collect()?;
+    let blocks_to_apply: NonEmpty<(Header, Body)> = {
+        let header = archive.get_header(&rwtxn, new_tip.block_hash)?;
+        let body = archive.get_body(&rwtxn, new_tip.block_hash)?;
+        let ancestors = if let Some(prev_side_hash) = header.prev_side_hash {
+            archive
+                .ancestors(&rwtxn, prev_side_hash)
+                .take_while(|block_hash| {
+                    Ok(common_ancestor.is_none_or(|common_ancestor| {
+                        *block_hash != common_ancestor
+                    }))
+                })
+                .map(|block_hash| {
+                    let header = archive.get_header(&rwtxn, block_hash)?;
+                    let body = archive.get_body(&rwtxn, block_hash)?;
+                    Ok((header, body))
+                })
+                .collect()?
+        } else {
+            Vec::new()
+        };
+        NonEmpty {
+            head: (header, body),
+            tail: ancestors,
+        }
+    };
     // Disconnect tip until common ancestor is reached
     if let Some(tip_height) = tip_height {
         let common_ancestor_height =
@@ -339,32 +330,57 @@ where
                 tip_height + 1
             };
         for _ in 0..disconnects {
-            let () = disconnect_tip_(
-                &mut rwtxn,
-                archive,
-                cusf_mainchain,
-                mempool,
-                state,
-            )
-            .await?;
+            let () = disconnect_tip_(&mut rwtxn, archive, mempool, state)?;
         }
     }
     {
         let tip_hash = state.try_get_tip(&rwtxn)?;
         assert_eq!(tip_hash, common_ancestor);
     }
+    let mut two_way_peg_data_batch: Vec<_> = {
+        let common_ancestor_header =
+            if let Some(common_ancestor) = common_ancestor {
+                Some(archive.get_header(&rwtxn, common_ancestor)?)
+            } else {
+                None
+            };
+        let common_ancestor_prev_main_hash =
+            common_ancestor_header.map(|header| header.prev_main_hash);
+        archive
+            .main_ancestors(&rwtxn, blocks_to_apply.head.0.prev_main_hash)
+            .take_while(|ancestor| {
+                Ok(Some(ancestor) != common_ancestor_prev_main_hash.as_ref())
+            })
+            .map(|ancestor| {
+                let block_info =
+                    archive.get_main_block_info(&rwtxn, &ancestor)?;
+                Ok((ancestor, block_info))
+            })
+            .collect()?
+    };
     // Apply blocks until new tip is reached
     for (header, body) in blocks_to_apply.into_iter().rev() {
+        let two_way_peg_data = {
+            let mut two_way_peg_data = mainchain::TwoWayPegData::default();
+            'fill_2wpd: while let Some((block_hash, block_info)) =
+                two_way_peg_data_batch.pop()
+            {
+                two_way_peg_data.block_info.replace(block_hash, block_info);
+                if block_hash == header.prev_main_hash {
+                    break 'fill_2wpd;
+                }
+            }
+            two_way_peg_data
+        };
         let () = connect_tip_(
             &mut rwtxn,
             archive,
-            cusf_mainchain,
             mempool,
             state,
             &header,
             &body,
-        )
-        .await?;
+            &two_way_peg_data,
+        )?;
         let new_tip_hash = state.try_get_tip(&rwtxn)?.unwrap();
         let bmm_verification =
             archive.get_best_main_verification(&rwtxn, new_tip_hash)?;
@@ -389,10 +405,9 @@ where
 }
 
 #[derive(Clone)]
-struct NetTaskContext<MainchainTransport> {
+struct NetTaskContext {
     env: sneed::Env,
     archive: Archive,
-    cusf_mainchain: mainchain::ValidatorClient<MainchainTransport>,
     mainchain_task: MainchainTaskHandle,
     mempool: MemPool,
     net: Net,
@@ -408,8 +423,8 @@ struct NetTaskContext<MainchainTransport> {
 type NewTipReadyMessage =
     (Tip, Option<SocketAddr>, Option<oneshot::Sender<bool>>);
 
-struct NetTask<MainchainTransport> {
-    ctxt: NetTaskContext<MainchainTransport>,
+struct NetTask {
+    ctxt: NetTaskContext,
     /// Receive a request to forward to the mainchain task, with the address of
     /// the peer connection that caused the request, and the peer state ID of
     /// the request
@@ -438,16 +453,16 @@ struct NetTask<MainchainTransport> {
     peer_info_rx: PeerInfoRx,
 }
 
-impl<MainchainTransport> NetTask<MainchainTransport>
-where
-    MainchainTransport: proto::Transport,
-{
+impl NetTask {
     async fn handle_response(
-        ctxt: &NetTaskContext<MainchainTransport>,
+        ctxt: &NetTaskContext,
         // Attempt to switch to a descendant tip once a body has been
         // stored, if all other ancestor bodies are available.
         // Each descendant tip maps to the peers that sent that tip.
-        descendant_tips: &mut HashMap<Tip, HashMap<Tip, HashSet<SocketAddr>>>,
+        descendant_tips: &mut HashMap<
+            crate::types::BlockHash,
+            HashMap<Tip, HashSet<SocketAddr>>,
+        >,
         new_tip_ready_tx: &UnboundedSender<NewTipReadyMessage>,
         addr: SocketAddr,
         resp: PeerResponse,
@@ -456,12 +471,14 @@ where
         tracing::debug!(?req, ?resp, "starting response handler");
         match (req, resp) {
             (
-                req @ PeerRequest::GetBlock {
-                    block_hash,
-                    descendant_tip: Some(descendant_tip),
-                    ancestor,
-                    peer_state_id: Some(peer_state_id),
-                },
+                PeerRequest::GetBlock(
+                    req @ peer_message::GetBlockRequest {
+                        block_hash,
+                        descendant_tip: Some(descendant_tip),
+                        ancestor,
+                        peer_state_id: Some(peer_state_id),
+                    },
+                ),
                 ref resp @ PeerResponse::Block {
                     ref header,
                     ref body,
@@ -487,19 +504,39 @@ where
                     let missing_bodies = ctxt
                         .archive
                         .get_missing_bodies(&rotxn, block_hash, ancestor)?;
-                    if missing_bodies.is_empty() {
+                    if let Some(earliest_missing_body) = missing_bodies.first()
+                    {
+                        descendant_tips
+                            .entry(*earliest_missing_body)
+                            .or_default()
+                            .entry(descendant_tip)
+                            .or_default()
+                            .insert(addr);
+                    } else {
                         let message = PeerConnectionMessage::BodiesAvailable(
                             peer_state_id,
                         );
-                        let () =
-                            ctxt.net.push_internal_message(message, addr)?;
+                        let _: bool =
+                            ctxt.net.push_internal_message(message, addr);
                     }
                 }
                 // Check if any new tips can be applied,
                 // and send new tip ready if so
                 {
                     let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
-                    let tip_hash = ctxt.state.try_get_tip(&rotxn)?;
+                    let tip = ctxt
+                        .state
+                        .try_get_tip(&rotxn)?
+                        .map(|tip_hash| {
+                            let bmm_verification = ctxt
+                                .archive
+                                .get_best_main_verification(&rotxn, tip_hash)?;
+                            Ok::<_, Error>(Tip {
+                                block_hash: tip_hash,
+                                main_block_hash: bmm_verification,
+                            })
+                        })
+                        .transpose()?;
                     // Find the BMM verification that is an ancestor of
                     // `main_descendant_tip`
                     let main_block_hash = ctxt
@@ -530,7 +567,7 @@ where
                         main_block_hash,
                     };
 
-                    if header.prev_side_hash == tip_hash {
+                    if header.prev_side_hash == tip.map(|tip| tip.block_hash) {
                         tracing::trace!(
                             ?block_tip,
                             %addr,
@@ -541,17 +578,17 @@ where
                             .unbounded_send((block_tip, Some(addr), None))
                             .map_err(Error::SendNewTipReady)?;
                     }
-                    let Some(descendant_tips) =
-                        descendant_tips.remove(&block_tip)
+                    let Some(block_descendant_tips) =
+                        descendant_tips.remove(&block_hash)
                     else {
                         return Ok(());
                     };
-                    for (descendant_tip, sources) in descendant_tips {
-                        let common_ancestor = if let Some(tip_hash) = tip_hash {
+                    for (descendant_tip, sources) in block_descendant_tips {
+                        let common_ancestor = if let Some(tip) = tip {
                             ctxt.archive.last_common_ancestor(
                                 &rotxn,
                                 descendant_tip.block_hash,
-                                tip_hash,
+                                tip.block_hash,
                             )?
                         } else {
                             None
@@ -561,23 +598,62 @@ where
                             descendant_tip.block_hash,
                             common_ancestor,
                         )?;
-                        if missing_bodies.is_empty() {
-                            tracing::debug!(
-                                ?descendant_tip,
-                                "no missing bodies, submitting new tip ready to sources"
-                            );
+                        // If a better tip is ready, send a notification
+                        'better_tip: {
+                            let next_tip = if let Some(earliest_missing_body) =
+                                missing_bodies.first()
+                            {
+                                descendant_tips
+                                    .entry(*earliest_missing_body)
+                                    .or_default()
+                                    .entry(descendant_tip)
+                                    .or_default()
+                                    .extend(sources.iter().cloned());
 
-                            for addr in sources {
-                                tracing::trace!(%addr, ?descendant_tip, "sending new tip ready");
-                                let () = new_tip_ready_tx
-                                    .unbounded_send((
-                                        descendant_tip,
-                                        Some(addr),
-                                        None,
-                                    ))
-                                    .map_err(|err| {
-                                        Error::SendNewTipReady(err)
-                                    })?;
+                                // Parent of the earlist missing body
+                                ctxt.archive
+                                    .get_header(&rotxn, *earliest_missing_body)?
+                                    .prev_side_hash
+                                    .map(|tip_hash| {
+                                        let bmm_verification = ctxt
+                                            .archive
+                                            .get_best_main_verification(
+                                                &rotxn, tip_hash,
+                                            )?;
+                                        Ok::<_, Error>(Tip {
+                                            block_hash: tip_hash,
+                                            main_block_hash: bmm_verification,
+                                        })
+                                    })
+                                    .transpose()?
+                            } else {
+                                Some(descendant_tip)
+                            };
+                            let Some(next_tip) = next_tip else {
+                                break 'better_tip;
+                            };
+                            if let Some(tip) = tip
+                                && ctxt
+                                    .archive
+                                    .better_tip(&rotxn, tip, next_tip)?
+                                    != Some(next_tip)
+                            {
+                                break 'better_tip;
+                            } else {
+                                tracing::debug!(
+                                    new_tip = ?next_tip,
+                                    "sending new tip ready to sources"
+                                );
+                                for addr in sources {
+                                    tracing::trace!(%addr, new_tip = ?next_tip, "sending new tip ready");
+                                    let () = new_tip_ready_tx
+                                        .unbounded_send((
+                                            next_tip,
+                                            Some(addr),
+                                            None,
+                                        ))
+                                        .map_err(Error::SendNewTipReady)?;
+                                }
                             }
                         }
                     }
@@ -585,23 +661,25 @@ where
                 Ok(())
             }
             (
-                PeerRequest::GetBlock {
+                PeerRequest::GetBlock(peer_message::GetBlockRequest {
                     block_hash: req_block_hash,
                     descendant_tip: Some(_),
                     ancestor: _,
                     peer_state_id: Some(_),
-                },
+                }),
                 PeerResponse::NoBlock {
                     block_hash: resp_block_hash,
                 },
             ) if req_block_hash == resp_block_hash => Ok(()),
             (
-                ref req @ PeerRequest::GetHeaders {
-                    ref start,
-                    end,
-                    height: Some(height),
-                    peer_state_id: Some(peer_state_id),
-                },
+                PeerRequest::GetHeaders(
+                    ref req @ peer_message::GetHeadersRequest {
+                        ref start,
+                        end,
+                        height: Some(height),
+                        peer_state_id: Some(peer_state_id),
+                    },
+                ),
                 PeerResponse::Headers(headers),
             ) => {
                 // check that the end header is as requested
@@ -680,30 +758,33 @@ where
                 rwtxn.commit().map_err(RwTxnError::from)?;
                 // Notify peer connection that headers are available
                 let message = PeerConnectionMessage::Headers(peer_state_id);
-                let () = ctxt.net.push_internal_message(message, addr)?;
+                let _: bool = ctxt.net.push_internal_message(message, addr);
                 Ok(())
             }
             (
-                PeerRequest::GetHeaders {
+                PeerRequest::GetHeaders(peer_message::GetHeadersRequest {
                     start: _,
                     end,
                     height: _,
                     peer_state_id: _,
-                },
+                }),
                 PeerResponse::NoHeader { block_hash },
             ) if end == block_hash => Ok(()),
             (
-                PeerRequest::PushTransaction { transaction: _ },
+                PeerRequest::PushTransaction(
+                    peer_message::PushTransactionRequest { transaction: _ },
+                ),
                 PeerResponse::TransactionAccepted(_),
             ) => Ok(()),
             (
-                PeerRequest::PushTransaction { transaction: _ },
+                PeerRequest::PushTransaction(
+                    peer_message::PushTransactionRequest { transaction: _ },
+                ),
                 PeerResponse::TransactionRejected(_),
             ) => Ok(()),
             (
                 req @ (PeerRequest::GetBlock { .. }
                 | PeerRequest::GetHeaders { .. }
-                | PeerRequest::Heartbeat(_)
                 | PeerRequest::PushTransaction { .. }),
                 resp,
             ) => {
@@ -715,7 +796,7 @@ where
         }
     }
 
-    async fn run(mut self) -> Result<(), Error> {
+    async fn run(self) -> Result<(), Error> {
         tracing::debug!("starting net task");
         #[derive(Debug)]
         enum MailboxItem {
@@ -734,6 +815,8 @@ where
             // receiver.
             NewTipReady(Tip, Option<SocketAddr>, Option<oneshot::Sender<bool>>),
             PeerInfo(Option<(SocketAddr, Option<PeerConnectionInfo>)>),
+            // Signal to reconnect to a peer
+            ReconnectPeer(SocketAddr),
         }
         let accept_connections = stream::try_unfold((), |()| {
             let env = self.ctxt.env.clone();
@@ -771,18 +854,24 @@ where
             });
         let peer_info_stream = StreamNotifyClose::new(self.peer_info_rx)
             .map(MailboxItem::PeerInfo);
+        let (reconnect_peer_spawner, reconnect_peer_rx) = join_set::new();
+        let reconnect_peer_stream = reconnect_peer_rx
+            .map(|addr| MailboxItem::ReconnectPeer(addr.unwrap()));
         let mut mailbox_stream = stream::select_all([
             accept_connections.boxed(),
             forward_request_stream.boxed(),
             mainchain_task_response_stream.boxed(),
             new_tip_ready_stream.boxed(),
             peer_info_stream.boxed(),
+            reconnect_peer_stream.boxed(),
         ]);
         // Attempt to switch to a descendant tip once a body has been
         // stored, if all other ancestor bodies are available.
         // Each descendant tip maps to the peers that sent that tip.
-        let mut descendant_tips =
-            HashMap::<Tip, HashMap<Tip, HashSet<SocketAddr>>>::new();
+        let mut descendant_tips = HashMap::<
+            crate::types::BlockHash,
+            HashMap<Tip, HashSet<SocketAddr>>,
+        >::new();
         // Map associating mainchain task requests with the peer(s) that
         // caused the request, and the request peer state ID
         let mut mainchain_task_request_sources = HashMap::<
@@ -823,7 +912,7 @@ where
                 MailboxItem::MainchainTaskResponse(response) => {
                     let request = (&response).into();
                     match response {
-                        mainchain_task::Response::AncestorHeaders(
+                        mainchain_task::Response::AncestorInfos(
                             _block_hash,
                             res,
                         ) => {
@@ -842,48 +931,24 @@ where
                                         anyhow::Error::from(err.clone())
                                     )
                                 };
-                                let () = self
+                                let _: bool = self
                                     .ctxt
                                     .net
-                                    .push_internal_message(message, addr)?;
-                            }
-                        }
-                        mainchain_task::Response::VerifyBmm(
-                            _block_hash,
-                            res,
-                        ) => {
-                            let Some(sources) =
-                                mainchain_task_request_sources.remove(&request)
-                            else {
-                                continue;
-                            };
-                            let res = res.map_err(Arc::new);
-                            for (addr, peer_state_id) in sources {
-                                let message = match res {
-                                    Ok(bmm_verification_res) => PeerConnectionMessage::BmmVerification {
-                                        res: bmm_verification_res,
-                                        peer_state_id,
-                                    },
-                                    Err(ref err) => PeerConnectionMessage::BmmVerificationError(anyhow::Error::from(err.clone()))
-                                };
-                                let () = self
-                                    .ctxt
-                                    .net
-                                    .push_internal_message(message, addr)?;
+                                    .push_internal_message(message, addr);
                             }
                         }
                     }
                 }
                 MailboxItem::NewTipReady(new_tip, _addr, resp_tx) => {
-                    let reorg_applied = reorg_to_tip(
-                        &self.ctxt.env,
-                        &self.ctxt.archive,
-                        &mut self.ctxt.cusf_mainchain,
-                        &self.ctxt.mempool,
-                        &self.ctxt.state,
-                        new_tip,
-                    )
-                    .await?;
+                    let reorg_applied = task::block_in_place(|| {
+                        reorg_to_tip(
+                            &self.ctxt.env,
+                            &self.ctxt.archive,
+                            &self.ctxt.mempool,
+                            &self.ctxt.state,
+                            new_tip,
+                        )
+                    })?;
                     if let Some(resp_tx) = resp_tx {
                         let () = resp_tx
                             .send(reorg_applied)
@@ -902,30 +967,45 @@ where
                 MailboxItem::PeerInfo(Some((addr, Some(peer_info)))) => {
                     tracing::trace!(%addr, ?peer_info, "mailbox item: received PeerInfo");
                     match peer_info {
+                        PeerConnectionInfo::Error(
+                            PeerConnectionError::Mailbox(
+                                PeerConnectionMailboxError::HeartbeatTimeout,
+                            ),
+                        ) => {
+                            const RECONNECT_DELAY: Duration =
+                                Duration::from_secs(10);
+                            // Attempt to reconnect if a valid message was
+                            // received successfully
+                            let Some(received_msg_successfully) =
+                                self.ctxt.net.try_with_active_peer_connection(
+                                    addr,
+                                    |conn_handle| {
+                                        conn_handle.received_msg_successfully()
+                                    },
+                                )
+                            else {
+                                continue;
+                            };
+                            let () = self.ctxt.net.remove_active_peer(addr);
+                            if !received_msg_successfully {
+                                continue;
+                            }
+                            reconnect_peer_spawner.spawn(async move {
+                                tokio::time::sleep(RECONNECT_DELAY).await;
+                                addr
+                            });
+                        }
                         PeerConnectionInfo::Error(err) => {
                             let err = anyhow::anyhow!(err);
                             tracing::error!(%addr, err = format!("{err:#}"), "Peer connection error");
                             let () = self.ctxt.net.remove_active_peer(addr);
-                        }
-                        PeerConnectionInfo::NeedBmmVerification {
-                            main_hash,
-                            peer_state_id,
-                        } => {
-                            let request =
-                                mainchain_task::Request::VerifyBmm(main_hash);
-                            let () = self
-                                .forward_mainchain_task_request_tx
-                                .unbounded_send((request, addr, peer_state_id))
-                                .map_err(|_| {
-                                    Error::ForwardMainchainTaskRequest
-                                })?;
                         }
                         PeerConnectionInfo::NeedMainchainAncestors {
                             main_hash,
                             peer_state_id,
                         } => {
                             let request =
-                                mainchain_task::Request::AncestorHeaders(
+                                mainchain_task::Request::AncestorInfos(
                                     main_hash,
                                 );
                             let () = self
@@ -982,6 +1062,22 @@ where
                         }
                     }
                 }
+                MailboxItem::ReconnectPeer(peer_address) => {
+                    match self
+                        .ctxt
+                        .net
+                        .connect_peer(self.ctxt.env.clone(), peer_address)
+                    {
+                        Ok(()) => (),
+                        Err(err) => {
+                            let err = anyhow::Error::from(err);
+                            tracing::error!(
+                                %peer_address,
+                                "Failed to connect to peer: {err:#}"
+                            )
+                        }
+                    }
+                }
             }
         }
         Ok(())
@@ -1004,25 +1100,20 @@ pub(super) struct NetTaskHandle {
 
 impl NetTaskHandle {
     #[allow(clippy::too_many_arguments)]
-    pub fn new<MainchainTransport>(
-        local_pool: LocalPoolHandle,
+    pub fn new(
+        runtime: &tokio::runtime::Runtime,
         env: sneed::Env,
         archive: Archive,
-        cusf_mainchain: mainchain::ValidatorClient<MainchainTransport>,
         mainchain_task: MainchainTaskHandle,
         mainchain_task_response_rx: UnboundedReceiver<mainchain_task::Response>,
         mempool: MemPool,
         net: Net,
         peer_info_rx: PeerInfoRx,
         state: State,
-    ) -> Self
-    where
-        MainchainTransport: proto::Transport + Send + 'static,
-    {
+    ) -> Self {
         let ctxt = NetTaskContext {
             env,
             archive,
-            cusf_mainchain,
             mainchain_task,
             mempool,
             net,
@@ -1042,7 +1133,7 @@ impl NetTaskHandle {
             new_tip_ready_rx,
             peer_info_rx,
         };
-        let task = local_pool.spawn_pinned(|| async {
+        let task = runtime.spawn(async {
             if let Err(err) = task.run().await {
                 let err = anyhow::Error::from(err);
                 tracing::error!("Net task error: {err:#}");

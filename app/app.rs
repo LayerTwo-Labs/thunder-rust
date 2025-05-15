@@ -227,8 +227,7 @@ impl App {
             .await?
         {
             return Err(tonic::Status::aborted(format!(
-                "{} is not supported in mainchain client",
-                validator_service_name
+                "{validator_service_name} is not supported in mainchain client",
             )));
         }
 
@@ -301,7 +300,7 @@ impl App {
             config.net_addr,
             cusf_mainchain,
             cusf_mainchain_wallet,
-            local_pool.clone(),
+            &runtime,
         )?;
         let utxos = {
             let mut utxos = {

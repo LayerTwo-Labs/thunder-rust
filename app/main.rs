@@ -17,17 +17,7 @@ mod rpc_server;
 mod util;
 
 use line_buffer::{LineBuffer, LineBufferWriter};
-
-/// Saturating predecessor of a log level
-fn saturating_pred_level(log_level: tracing::Level) -> tracing::Level {
-    match log_level {
-        tracing::Level::TRACE => tracing::Level::DEBUG,
-        tracing::Level::DEBUG => tracing::Level::INFO,
-        tracing::Level::INFO => tracing::Level::WARN,
-        tracing::Level::WARN => tracing::Level::ERROR,
-        tracing::Level::ERROR => tracing::Level::ERROR,
-    }
-}
+use util::saturating_pred_level;
 
 /// The empty string target `""` can be used to set a default level.
 fn targets_directive_str<'a, Targets>(targets: Targets) -> String
@@ -93,8 +83,20 @@ fn set_tracing_subscriber(
             ("", saturating_pred_level(log_level)),
             ("bip300301", log_level),
             ("jsonrpsee_core::tracing", log_level),
+            (
+                "h2::codec::framed_read",
+                saturating_pred_level(saturating_pred_level(log_level)),
+            ),
+            (
+                "h2::codec::framed_write",
+                saturating_pred_level(saturating_pred_level(log_level)),
+            ),
             ("thunder_orchard", log_level),
             ("thunder_orchard_app", log_level),
+            (
+                "tower::buffer::worker",
+                saturating_pred_level(saturating_pred_level(log_level)),
+            ),
         ]);
         let directives_str =
             match std::env::var(tracing_filter::EnvFilter::DEFAULT_ENV) {
