@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, time::Duration};
+use std::{fmt, io, net::SocketAddr, time::Duration};
 
 use clap::{Parser, Subcommand};
 use http::HeaderMap;
@@ -7,6 +7,128 @@ use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder};
 use thunder::types::{Address, Txid};
 use thunder_app_rpc_api::RpcClient;
 use tracing_subscriber::layer::SubscriberExt as _;
+
+/// Custom error type for CLI-specific errors
+#[derive(Debug)]
+pub enum CliError {
+    /// Connection error with details
+    ConnectionError {
+        /// The URL that was being connected to
+        url: url::Url,
+        /// The underlying error
+        source: anyhow::Error,
+    },
+    /// Other errors
+    Other(anyhow::Error),
+}
+
+impl fmt::Display for CliError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ConnectionError { url, source } => {
+                write!(f, "Failed to connect to Thunder node at {}", url)?;
+
+                // Check for common connection errors and provide helpful messages
+                if let Some(io_err) = source.downcast_ref::<io::Error>() {
+                    match io_err.kind() {
+                        io::ErrorKind::ConnectionRefused => {
+                            write!(f, "\nConnection refused. Please check that:")?;
+                            write!(f, "\n  1. The Thunder node is running")?;
+                            write!(f, "\n  2. The RPC server is enabled")?;
+                            write!(f, "\n  3. The RPC address is correct ({})", url)?;
+                            write!(f, "\n  4. There are no firewall rules blocking the connection")?;
+                        }
+                        io::ErrorKind::ConnectionReset => {
+                            write!(f, "\nConnection reset by peer. The server might be overloaded or restarting.")?;
+                        }
+                        io::ErrorKind::ConnectionAborted => {
+                            write!(f, "\nConnection aborted. The server might have terminated the connection.")?;
+                        }
+                        io::ErrorKind::TimedOut => {
+                            write!(f, "\nConnection timed out. The server might be unresponsive or behind a firewall.")?;
+                        }
+                        io::ErrorKind::AddrNotAvailable => {
+                            write!(f, "\nAddress not available. The specified address cannot be assigned.")?;
+                        }
+                        io::ErrorKind::NotConnected => {
+                            write!(f, "\nNot connected. No connection could be established.")?;
+                        }
+                        io::ErrorKind::BrokenPipe => {
+                            write!(f, "\nBroken pipe. The connection was unexpectedly closed.")?;
+                        }
+                        _ => {
+                            write!(f, "\nIO Error: {} (kind: {:?})", source, io_err.kind())?;
+                        }
+                    }
+                } else {
+                    // Check for common error patterns in the error message
+                    let err_str = source.to_string().to_lowercase();
+
+                    if err_str.contains("connection refused") ||
+                       err_str.contains("tcp connect error") {
+                        write!(f, "\nConnection refused. Please check that:")?;
+                        write!(f, "\n  1. The Thunder node is running")?;
+                        write!(f, "\n  2. The RPC server is enabled")?;
+                        write!(f, "\n  3. The RPC address is correct ({})", url)?;
+                        write!(f, "\n  4. There are no firewall rules blocking the connection")?;
+                    } else if err_str.contains("dns error") ||
+                              err_str.contains("lookup") ||
+                              err_str.contains("nodename nor servname provided") ||
+                              err_str.contains("not known") {
+                        write!(f, "\nDNS resolution failed. Could not resolve the host name.")?;
+                        write!(f, "\nPlease check that the host part of the URL is correct.")?;
+                    } else if err_str.contains("timeout") ||
+                              err_str.contains("timed out") {
+                        write!(f, "\nConnection timed out. The server might be unresponsive or behind a firewall.")?;
+                    } else {
+                        // For other errors, provide the details but in a more user-friendly format
+                        let mut source_err = source.source();
+                        if let Some(err) = source_err {
+                            write!(f, "\nError: {}", err)?;
+
+                            // Check if there's a more specific cause
+                            source_err = err.source();
+                            if let Some(err) = source_err {
+                                write!(f, "\nCause: {}", err)?;
+                            }
+                        } else {
+                            write!(f, "\nError: {}", source)?;
+                        }
+                    }
+
+                    // Add a helpful suggestion for all connection errors
+                    write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
+                }
+            }
+            Self::Other(err) => write!(f, "{}", err)?,
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for CliError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ConnectionError { source, .. } => Some(source.as_ref()),
+            Self::Other(err) => err.source(),
+        }
+    }
+}
+
+impl From<anyhow::Error> for CliError {
+    fn from(err: anyhow::Error) -> Self {
+        // Try to determine if this is a connection error
+        if let Some(client_err) = err.downcast_ref::<jsonrpsee::core::ClientError>() {
+            if client_err.to_string().contains("Connect") {
+                // This is likely a connection error, but we don't have the URL here
+                // We'll handle this in the run method where we have the URL
+                return Self::Other(err);
+            }
+        }
+
+        Self::Other(err)
+    }
+}
 
 #[derive(Clone, Debug, Subcommand)]
 #[command(arg_required_else_help(true))]
@@ -95,7 +217,8 @@ pub enum Command {
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
     /// Base URL used for requests to the RPC server.
-    #[arg(default_value = "http://localhost:6009", long)]
+    /// If protocol is not specified, http:// will be used.
+    #[arg(default_value = "http://localhost:6009", long, value_parser = parse_url)]
     pub rpc_url: url::Url,
 
     #[arg(long, help = "Timeout for RPC requests in seconds (default: 60)")]
@@ -106,6 +229,31 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Command,
+}
+
+/// Custom URL parser that adds http:// prefix if missing
+fn parse_url(s: &str) -> Result<url::Url, String> {
+    // Check if the URL already has a scheme
+    if s.contains("://") {
+        // Try to parse the URL as-is
+        match url::Url::parse(s) {
+            Ok(url) => Ok(url),
+            Err(e) => Err(format!(
+                "Invalid URL '{}': {}. Make sure the URL format is correct (e.g., http://hostname:port).",
+                s, e
+            )),
+        }
+    } else {
+        // Add http:// prefix and try to parse
+        let url_with_scheme = format!("http://{}", s);
+        match url::Url::parse(&url_with_scheme) {
+            Ok(url) => Ok(url),
+            Err(e) => Err(format!(
+                "Invalid URL '{}': {}. Make sure the URL format is correct (e.g., http://hostname:port).",
+                s, e
+            )),
+        }
+    }
 }
 /// Handle a command, returning CLI output
 async fn handle_command<RpcClient>(
@@ -253,14 +401,14 @@ fn set_tracing_subscriber() -> anyhow::Result<()> {
 }
 
 impl Cli {
-    pub async fn run(self) -> anyhow::Result<String> {
+    pub async fn run(self) -> Result<String, CliError> {
         if self.verbose {
-            set_tracing_subscriber()?;
+            set_tracing_subscriber().map_err(|e| CliError::Other(e))?;
         }
 
         const DEFAULT_TIMEOUT: u64 = 60;
 
-        let request_id = uuid::Uuid::new_v4().as_simple().to_string();
+        let request_id = uuid::Uuid::new_v4().to_string().replace("-", "");
 
         tracing::info!("request ID: {}", request_id);
 
@@ -271,11 +419,74 @@ impl Cli {
             .set_max_logging_length(1024)
             .set_headers(HeaderMap::from_iter([(
                 http::header::HeaderName::from_static("x-request-id"),
-                http::header::HeaderValue::from_str(&request_id)?,
+                http::header::HeaderValue::from_str(&request_id)
+                    .map_err(|e| CliError::Other(e.into()))?,
             )]));
 
-        let client = builder.build(self.rpc_url)?;
-        let result = handle_command(&client, self.command).await?;
+        // Store the URL for potential error messages
+        let rpc_url = self.rpc_url.clone();
+
+        // Build the client and handle connection errors
+        let client = builder.build(self.rpc_url.clone()).map_err(|err| {
+            // Check if this is a connection error
+            let err_str = err.to_string().to_lowercase();
+            if err_str.contains("connect") ||
+               err_str.contains("connection") ||
+               err_str.contains("network") ||
+               err_str.contains("tcp") ||
+               err_str.contains("dns") ||
+               err_str.contains("lookup") ||
+               err_str.contains("timeout") ||
+               err_str.contains("timed out") {
+                return CliError::ConnectionError {
+                    url: rpc_url.clone(),
+                    source: err.into(),
+                };
+            }
+
+            CliError::Other(err.into())
+        })?;
+
+        // Execute the command and handle potential connection errors
+        let result = handle_command(&client, self.command)
+            .await
+            .map_err(|err| {
+                // Check if this is a connection error that happened during the request
+                if let Some(client_err) = err.downcast_ref::<jsonrpsee::core::ClientError>() {
+                    if client_err.to_string().contains("Connect") ||
+                       client_err.to_string().contains("connection") ||
+                       client_err.to_string().contains("Connection") ||
+                       client_err.to_string().contains("network") ||
+                       client_err.to_string().contains("Network") ||
+                       client_err.to_string().contains("timeout") ||
+                       client_err.to_string().contains("timed out") {
+                        return CliError::ConnectionError {
+                            url: rpc_url.clone(),
+                            source: err,
+                        };
+                    }
+                }
+
+                // Check for transport errors
+                let err_str = err.to_string().to_lowercase();
+                if err_str.contains("tcp connect error") ||
+                   err_str.contains("connection refused") ||
+                   err_str.contains("connection reset") ||
+                   err_str.contains("connection aborted") ||
+                   err_str.contains("broken pipe") ||
+                   err_str.contains("dns error") ||
+                   err_str.contains("lookup") ||
+                   err_str.contains("timeout") ||
+                   err_str.contains("timed out") {
+                    return CliError::ConnectionError {
+                        url: rpc_url.clone(),
+                        source: err,
+                    };
+                }
+
+                CliError::Other(err)
+            })?;
+
         Ok(result)
     }
 }
