@@ -42,6 +42,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 url = "2.5.4"
 utoipa = { workspace = true }
 uuid = { workspace = true }
+rfd = "0.14.0"
 
 [lints]
 workspace = true
