@@ -14,17 +14,22 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Err(err) => {
-            match err {
-                CliError::ConnectionError { .. } => {
-                    // For connection errors, we want to show a user-friendly message
-                    // without the stack trace
-                    eprintln!("{}", err);
-                    std::process::exit(1);
+            // For all errors, we want to show a user-friendly message without the stack trace
+            // unless THUNDER_DEBUG is set
+            if std::env::var("THUNDER_DEBUG").is_ok() {
+                match err {
+                    CliError::ConnectionError { .. } => {
+                        eprintln!("{}", err);
+                        std::process::exit(1);
+                    }
+                    CliError::Other(err) => {
+                        // For other errors, we'll let anyhow handle it with the stack trace
+                        Err(err)
+                    }
                 }
-                CliError::Other(err) => {
-                    // For other errors, we'll let anyhow handle it with the stack trace
-                    Err(err)
-                }
+            } else {
+                eprintln!("{}", err);
+                std::process::exit(1);
             }
         }
     }

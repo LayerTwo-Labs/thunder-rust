@@ -26,8 +26,6 @@ impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ConnectionError { url, source } => {
-                write!(f, "Failed to connect to Thunder node at {}", url)?;
-
                 // First, check if this is a DNS error by examining the full error chain
                 let is_dns_error = {
                     let err_str = source.to_string().to_lowercase();
@@ -65,14 +63,41 @@ impl fmt::Display for CliError {
 
                 // Handle DNS errors first, as they're a special case
                 if is_dns_error {
-                    write!(f, "\n\nDNS resolution failed. Could not resolve the host name.")?;
-                    write!(f, "\nPlease check that:")?;
+                    write!(f, "Unable to connect: DNS resolution failed")?;
+                    write!(f, "\n\nCould not resolve the host name: {}", url.host_str().unwrap_or("unknown"))?;
+                    write!(f, "\n\nPlease check that:")?;
                     write!(f, "\n  1. The hostname part of the URL is correct")?;
                     write!(f, "\n  2. Your network connection is working")?;
                     write!(f, "\n  3. DNS resolution is functioning properly")?;
 
-                    // For DNS errors, we don't add the generic "Make sure the Thunder node is running" message
-                    // as it doesn't make sense for DNS errors
+                    return Ok(());
+                }
+
+                // Check for HTTP status code errors
+                let err_str = source.to_string().to_lowercase();
+                if err_str.contains("404") || err_str.contains("rejected") {
+                    write!(f, "Unable to connect: Server responded with an error")?;
+                    write!(f, "\n\nThe server at {} responded, but it doesn't appear to be a Thunder node.", url)?;
+                    write!(f, "\n\nPlease check that:")?;
+                    write!(f, "\n  1. The URL is correct")?;
+                    write!(f, "\n  2. The server at this address is running Thunder")?;
+                    write!(f, "\n  3. You're using the correct protocol (http:// vs https://)")?;
+
+                    return Ok(());
+                }
+
+                // Check for connection closed errors
+                if err_str.contains("connection closed") ||
+                   err_str.contains("broken pipe") ||
+                   err_str.contains("reset by peer") {
+                    write!(f, "Unable to connect: Connection was closed unexpectedly")?;
+                    write!(f, "\n\nThe server at {} closed the connection.", url)?;
+                    write!(f, "\n\nThis usually means:")?;
+                    write!(f, "\n  1. The server is not a Thunder node")?;
+                    write!(f, "\n  2. You're connecting to the wrong port")?;
+                    write!(f, "\n  3. The server requires a different protocol")?;
+                    write!(f, "\n\nPlease verify the address and port are correct.")?;
+
                     return Ok(());
                 }
 
@@ -80,56 +105,66 @@ impl fmt::Display for CliError {
                 if let Some(io_err) = source.downcast_ref::<io::Error>() {
                     match io_err.kind() {
                         io::ErrorKind::ConnectionRefused => {
-                            write!(f, "\nConnection refused. Please check that:")?;
+                            write!(f, "Unable to connect: Connection refused")?;
+                            write!(f, "\n\nCould not connect to Thunder node at {}", url)?;
+                            write!(f, "\n\nPlease check that:")?;
                             write!(f, "\n  1. The Thunder node is running")?;
                             write!(f, "\n  2. The RPC server is enabled")?;
                             write!(f, "\n  3. The RPC address is correct ({})", url)?;
                             write!(f, "\n  4. There are no firewall rules blocking the connection")?;
-
-                            // Add the generic message for connection refused errors
-                            write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
                         }
                         io::ErrorKind::ConnectionReset => {
-                            write!(f, "\nConnection reset by peer. The server might be overloaded or restarting.")?;
-
-                            // Add the generic message
-                            write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
+                            write!(f, "Unable to connect: Connection reset")?;
+                            write!(f, "\n\nThe connection was reset by the server at {}", url)?;
+                            write!(f, "\n\nThis usually happens when:")?;
+                            write!(f, "\n  1. The server is overloaded")?;
+                            write!(f, "\n  2. The server is restarting")?;
+                            write!(f, "\n  3. There's a network issue between you and the server")?;
+                            write!(f, "\n\nPlease try again in a few moments.")?;
                         }
                         io::ErrorKind::ConnectionAborted => {
-                            write!(f, "\nConnection aborted. The server might have terminated the connection.")?;
-
-                            // Add the generic message
-                            write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
+                            write!(f, "Unable to connect: Connection aborted")?;
+                            write!(f, "\n\nThe connection was aborted while trying to reach {}", url)?;
+                            write!(f, "\n\nThis usually happens when:")?;
+                            write!(f, "\n  1. The server terminated the connection")?;
+                            write!(f, "\n  2. A network device (like a firewall) interrupted the connection")?;
+                            write!(f, "\n\nPlease check your network settings and try again.")?;
                         }
                         io::ErrorKind::TimedOut => {
-                            write!(f, "\nConnection timed out. The server might be unresponsive or behind a firewall.")?;
-
-                            // Add the generic message
-                            write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
+                            write!(f, "Unable to connect: Connection timed out")?;
+                            write!(f, "\n\nThe connection to {} timed out.", url)?;
+                            write!(f, "\n\nThis usually means:")?;
+                            write!(f, "\n  1. The server is not responding")?;
+                            write!(f, "\n  2. A firewall is blocking the connection")?;
+                            write!(f, "\n  3. The network path to the server is congested or down")?;
+                            write!(f, "\n\nPlease check that the server is running and accessible.")?;
                         }
                         io::ErrorKind::AddrNotAvailable => {
-                            write!(f, "\nAddress not available. The specified address cannot be assigned.")?;
-
-                            // Add the generic message
-                            write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
+                            write!(f, "Unable to connect: Address not available")?;
+                            write!(f, "\n\nThe address {} cannot be used.", url)?;
+                            write!(f, "\n\nThis usually happens when:")?;
+                            write!(f, "\n  1. The IP address is not valid on this network")?;
+                            write!(f, "\n  2. The port is already in use or reserved")?;
+                            write!(f, "\n\nPlease try a different address or port.")?;
                         }
                         io::ErrorKind::NotConnected => {
-                            write!(f, "\nNot connected. No connection could be established.")?;
-
-                            // Add the generic message
-                            write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
+                            write!(f, "Unable to connect: Not connected")?;
+                            write!(f, "\n\nCould not establish a connection to {}", url)?;
+                            write!(f, "\n\nPlease check your network connection and try again.")?;
                         }
                         io::ErrorKind::BrokenPipe => {
-                            write!(f, "\nBroken pipe. The connection was unexpectedly closed.")?;
-
-                            // Add the generic message
-                            write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
+                            write!(f, "Unable to connect: Connection broken")?;
+                            write!(f, "\n\nThe connection to {} was unexpectedly closed.", url)?;
+                            write!(f, "\n\nThis usually happens when the server closes the connection.")?;
+                            write!(f, "\n\nPlease check that the server is running and try again.")?;
                         }
                         _ => {
-                            write!(f, "\nIO Error: {} (kind: {:?})", source, io_err.kind())?;
-
-                            // Add the generic message
-                            write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
+                            write!(f, "Unable to connect to Thunder node at {}", url)?;
+                            write!(f, "\n\nAn unexpected network error occurred.")?;
+                            write!(f, "\n\nPlease check that:")?;
+                            write!(f, "\n  1. The Thunder node is running")?;
+                            write!(f, "\n  2. The address is correct")?;
+                            write!(f, "\n  3. Your network connection is working")?;
                         }
                     }
                 } else {
@@ -137,54 +172,67 @@ impl fmt::Display for CliError {
                     let err_str = source.to_string().to_lowercase();
 
                     if err_str.contains("connection refused") ||
-                       err_str.contains("tcp connect error") {
-                        write!(f, "\nConnection refused. Please check that:")?;
+                       err_str.contains("tcp connect error") ||
+                       err_str.contains("connect error") ||
+                       err_str.contains("connect failed") ||
+                       err_str.contains("os error 61") ||
+                       err_str.contains("client error (connect)") {
+                        write!(f, "Unable to connect: Connection refused")?;
+                        write!(f, "\n\nCould not connect to Thunder node at {}", url)?;
+                        write!(f, "\n\nPlease check that:")?;
                         write!(f, "\n  1. The Thunder node is running")?;
                         write!(f, "\n  2. The RPC server is enabled")?;
                         write!(f, "\n  3. The RPC address is correct ({})", url)?;
                         write!(f, "\n  4. There are no firewall rules blocking the connection")?;
-
-                        // Add the generic message for connection refused errors
-                        write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
                     } else if err_str.contains("timeout") ||
                               err_str.contains("timed out") {
-                        write!(f, "\nConnection timed out. The server might be unresponsive or behind a firewall.")?;
-
-                        // Add the generic message for timeout errors
-                        write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
-                    } else if err_str.contains("connection refused") ||
-                              err_str.contains("connect error") ||
-                              err_str.contains("connect failed") {
-                        // This is a more generic check for connection refused errors
-                        write!(f, "\nConnection refused. Please check that:")?;
-                        write!(f, "\n  1. The Thunder node is running")?;
-                        write!(f, "\n  2. The RPC server is enabled")?;
-                        write!(f, "\n  3. The RPC address is correct ({})", url)?;
-                        write!(f, "\n  4. There are no firewall rules blocking the connection")?;
-
-                        // Add the generic message for connection refused errors
-                        write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
+                        write!(f, "Unable to connect: Connection timed out")?;
+                        write!(f, "\n\nThe connection to {} timed out.", url)?;
+                        write!(f, "\n\nThis usually means:")?;
+                        write!(f, "\n  1. The server is not responding")?;
+                        write!(f, "\n  2. A firewall is blocking the connection")?;
+                        write!(f, "\n  3. The network path to the server is congested or down")?;
+                        write!(f, "\n\nPlease check that the server is running and accessible.")?;
                     } else {
-                        // For other errors, provide the details but in a more user-friendly format
-                        let mut source_err = source.source();
-                        if let Some(err) = source_err {
-                            write!(f, "\nError: {}", err)?;
+                        // For other errors, provide a generic but user-friendly message
+                        write!(f, "Unable to connect to Thunder node at {}", url)?;
+                        write!(f, "\n\nAn unexpected error occurred while trying to connect.")?;
+                        write!(f, "\n\nPlease check that:")?;
+                        write!(f, "\n  1. The Thunder node is running")?;
+                        write!(f, "\n  2. The address is correct")?;
+                        write!(f, "\n  3. Your network connection is working")?;
 
-                            // Check if there's a more specific cause
-                            source_err = err.source();
-                            if let Some(err) = source_err {
-                                write!(f, "\nCause: {}", err)?;
-                            }
-                        } else {
-                            write!(f, "\nError: {}", source)?;
+                        // If in verbose mode or for debugging, we can include the technical details
+                        if std::env::var("THUNDER_VERBOSE").is_ok() {
+                            write!(f, "\n\nTechnical details (for support):")?;
+                            write!(f, "\n{}", source)?;
                         }
-
-                        // Add the generic message for other errors
-                        write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
                     }
                 }
             }
-            Self::Other(err) => write!(f, "{}", err)?,
+            Self::Other(err) => {
+                // For other errors, we'll try to make them more user-friendly too
+                let err_str = err.to_string().to_lowercase();
+
+                if err_str.contains("404") || err_str.contains("rejected") {
+                    write!(f, "Unable to connect: Server responded with an error")?;
+                    write!(f, "\n\nThe server responded, but it doesn't appear to be a Thunder node.")?;
+                    write!(f, "\n\nPlease check that:")?;
+                    write!(f, "\n  1. The URL is correct")?;
+                    write!(f, "\n  2. The server at this address is running Thunder")?;
+                    write!(f, "\n  3. You're using the correct protocol (http:// vs https://)")?;
+                } else {
+                    // For truly unknown errors, just pass through but with a nicer format
+                    write!(f, "Error: {}", err)?;
+
+                    // If in verbose mode or for debugging, we can include more technical details
+                    if std::env::var("THUNDER_VERBOSE").is_ok() {
+                        if let Some(source) = err.source() {
+                            write!(f, "\n\nCaused by: {}", source)?;
+                        }
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -322,20 +370,62 @@ fn parse_url(s: &str) -> Result<url::Url, String> {
         // Try to parse the URL as-is
         match url::Url::parse(s) {
             Ok(url) => Ok(url),
-            Err(e) => Err(format!(
-                "Invalid URL '{}': {}. Make sure the URL format is correct (e.g., http://hostname:port).",
-                s, e
-            )),
+            Err(e) => {
+                let error_msg = e.to_string().to_lowercase();
+
+                if error_msg.contains("invalid ip") || error_msg.contains("invalid ipv") {
+                    Err(format!(
+                        "Invalid IP address in URL: '{}'.\n\nPlease provide a valid IP address format.",
+                        s
+                    ))
+                } else if error_msg.contains("invalid port") {
+                    Err(format!(
+                        "Invalid port in URL: '{}'.\n\nPorts must be numbers between 1-65535.",
+                        s
+                    ))
+                } else if error_msg.contains("relative url") || error_msg.contains("empty host") {
+                    Err(format!(
+                        "Invalid URL format: '{}'.\n\nPlease provide a complete URL in the format: http://hostname:port",
+                        s
+                    ))
+                } else {
+                    Err(format!(
+                        "Invalid URL: '{}'.\n\nPlease provide a valid URL in the format: http://hostname:port",
+                        s
+                    ))
+                }
+            }
         }
     } else {
         // Add http:// prefix and try to parse
         let url_with_scheme = format!("http://{}", s);
         match url::Url::parse(&url_with_scheme) {
             Ok(url) => Ok(url),
-            Err(e) => Err(format!(
-                "Invalid URL '{}': {}. Make sure the URL format is correct (e.g., http://hostname:port).",
-                s, e
-            )),
+            Err(e) => {
+                let error_msg = e.to_string().to_lowercase();
+
+                if error_msg.contains("invalid ip") || error_msg.contains("invalid ipv") {
+                    Err(format!(
+                        "Invalid IP address: '{}'.\n\nPlease provide a valid IP address format.",
+                        s
+                    ))
+                } else if error_msg.contains("invalid port") {
+                    Err(format!(
+                        "Invalid port: '{}'.\n\nPorts must be numbers between 1-65535.",
+                        s
+                    ))
+                } else if error_msg.contains("relative url") || error_msg.contains("empty host") {
+                    Err(format!(
+                        "Invalid URL format: '{}'.\n\nPlease provide a complete URL in the format: hostname:port",
+                        s
+                    ))
+                } else {
+                    Err(format!(
+                        "Invalid URL: '{}'.\n\nPlease provide a valid URL in the format: hostname:port",
+                        s
+                    ))
+                }
+            }
         }
     }
 }
@@ -492,7 +582,7 @@ impl Cli {
 
         const DEFAULT_TIMEOUT: u64 = 60;
 
-        let request_id = uuid::Uuid::new_v4().to_string().replace("-", "");
+        let request_id = uuid::Uuid::new_v4().simple().to_string();
 
         tracing::info!("request ID: {}", request_id);
 
