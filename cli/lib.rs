@@ -28,6 +28,54 @@ impl fmt::Display for CliError {
             Self::ConnectionError { url, source } => {
                 write!(f, "Failed to connect to Thunder node at {}", url)?;
 
+                // First, check if this is a DNS error by examining the full error chain
+                let is_dns_error = {
+                    let err_str = source.to_string().to_lowercase();
+                    let is_dns = err_str.contains("dns error") ||
+                                 err_str.contains("lookup") ||
+                                 err_str.contains("nodename nor servname provided") ||
+                                 err_str.contains("not known") ||
+                                 err_str.contains("name resolution") ||
+                                 err_str.contains("host not found") ||
+                                 err_str.contains("no such host");
+
+                    // Also check the error chain for DNS-related errors
+                    if !is_dns {
+                        let mut current_err = source.source();
+                        let mut found_dns_error = false;
+                        while let Some(err) = current_err {
+                            let err_str = err.to_string().to_lowercase();
+                            if err_str.contains("dns error") ||
+                               err_str.contains("lookup") ||
+                               err_str.contains("nodename nor servname provided") ||
+                               err_str.contains("not known") ||
+                               err_str.contains("name resolution") ||
+                               err_str.contains("host not found") ||
+                               err_str.contains("no such host") {
+                                found_dns_error = true;
+                                break;
+                            }
+                            current_err = err.source();
+                        }
+                        found_dns_error
+                    } else {
+                        true
+                    }
+                };
+
+                // Handle DNS errors first, as they're a special case
+                if is_dns_error {
+                    write!(f, "\n\nDNS resolution failed. Could not resolve the host name.")?;
+                    write!(f, "\nPlease check that:")?;
+                    write!(f, "\n  1. The hostname part of the URL is correct")?;
+                    write!(f, "\n  2. Your network connection is working")?;
+                    write!(f, "\n  3. DNS resolution is functioning properly")?;
+
+                    // For DNS errors, we don't add the generic "Make sure the Thunder node is running" message
+                    // as it doesn't make sense for DNS errors
+                    return Ok(());
+                }
+
                 // Check for common connection errors and provide helpful messages
                 if let Some(io_err) = source.downcast_ref::<io::Error>() {
                     match io_err.kind() {
@@ -37,27 +85,51 @@ impl fmt::Display for CliError {
                             write!(f, "\n  2. The RPC server is enabled")?;
                             write!(f, "\n  3. The RPC address is correct ({})", url)?;
                             write!(f, "\n  4. There are no firewall rules blocking the connection")?;
+
+                            // Add the generic message for connection refused errors
+                            write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
                         }
                         io::ErrorKind::ConnectionReset => {
                             write!(f, "\nConnection reset by peer. The server might be overloaded or restarting.")?;
+
+                            // Add the generic message
+                            write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
                         }
                         io::ErrorKind::ConnectionAborted => {
                             write!(f, "\nConnection aborted. The server might have terminated the connection.")?;
+
+                            // Add the generic message
+                            write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
                         }
                         io::ErrorKind::TimedOut => {
                             write!(f, "\nConnection timed out. The server might be unresponsive or behind a firewall.")?;
+
+                            // Add the generic message
+                            write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
                         }
                         io::ErrorKind::AddrNotAvailable => {
                             write!(f, "\nAddress not available. The specified address cannot be assigned.")?;
+
+                            // Add the generic message
+                            write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
                         }
                         io::ErrorKind::NotConnected => {
                             write!(f, "\nNot connected. No connection could be established.")?;
+
+                            // Add the generic message
+                            write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
                         }
                         io::ErrorKind::BrokenPipe => {
                             write!(f, "\nBroken pipe. The connection was unexpectedly closed.")?;
+
+                            // Add the generic message
+                            write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
                         }
                         _ => {
                             write!(f, "\nIO Error: {} (kind: {:?})", source, io_err.kind())?;
+
+                            // Add the generic message
+                            write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
                         }
                     }
                 } else {
@@ -71,15 +143,27 @@ impl fmt::Display for CliError {
                         write!(f, "\n  2. The RPC server is enabled")?;
                         write!(f, "\n  3. The RPC address is correct ({})", url)?;
                         write!(f, "\n  4. There are no firewall rules blocking the connection")?;
-                    } else if err_str.contains("dns error") ||
-                              err_str.contains("lookup") ||
-                              err_str.contains("nodename nor servname provided") ||
-                              err_str.contains("not known") {
-                        write!(f, "\nDNS resolution failed. Could not resolve the host name.")?;
-                        write!(f, "\nPlease check that the host part of the URL is correct.")?;
+
+                        // Add the generic message for connection refused errors
+                        write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
                     } else if err_str.contains("timeout") ||
                               err_str.contains("timed out") {
                         write!(f, "\nConnection timed out. The server might be unresponsive or behind a firewall.")?;
+
+                        // Add the generic message for timeout errors
+                        write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
+                    } else if err_str.contains("connection refused") ||
+                              err_str.contains("connect error") ||
+                              err_str.contains("connect failed") {
+                        // This is a more generic check for connection refused errors
+                        write!(f, "\nConnection refused. Please check that:")?;
+                        write!(f, "\n  1. The Thunder node is running")?;
+                        write!(f, "\n  2. The RPC server is enabled")?;
+                        write!(f, "\n  3. The RPC address is correct ({})", url)?;
+                        write!(f, "\n  4. There are no firewall rules blocking the connection")?;
+
+                        // Add the generic message for connection refused errors
+                        write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
                     } else {
                         // For other errors, provide the details but in a more user-friendly format
                         let mut source_err = source.source();
@@ -94,10 +178,10 @@ impl fmt::Display for CliError {
                         } else {
                             write!(f, "\nError: {}", source)?;
                         }
-                    }
 
-                    // Add a helpful suggestion for all connection errors
-                    write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
+                        // Add the generic message for other errors
+                        write!(f, "\n\nMake sure the Thunder node is running and accessible at {}", url)?;
+                    }
                 }
             }
             Self::Other(err) => write!(f, "{}", err)?,
