@@ -243,9 +243,6 @@ impl Transfer {
             .inner_margin(LayoutDimensions::CONTAINER_PADDING);
 
         frame.show(ui, |ui| {
-            // Add heading for the entire screen
-            ui.layout_heading("Transfer");
-
             // Create a horizontal layout with spacing between panels
             ui.horizontal(|ui| {
                 // Left panel (Deposit)
