@@ -1,6 +1,9 @@
-use eframe::egui::{self, Button};
+use eframe::egui;
 
-use crate::app::App;
+use crate::{
+    app::App,
+    gui::layout_style::{LayoutColors, LayoutDimensions, LayoutHelpers, LayoutUiExt},
+};
 
 #[derive(Debug, Default)]
 pub struct Deposit {
@@ -10,53 +13,60 @@ pub struct Deposit {
 
 impl Deposit {
     pub fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
-        ui.add_sized((110., 10.), |ui: &mut egui::Ui| {
-            ui.horizontal(|ui| {
-                let amount_edit = egui::TextEdit::singleline(&mut self.amount)
-                    .hint_text("amount")
-                    .desired_width(80.);
-                ui.add(amount_edit);
-                ui.label("BTC");
-            })
-            .response
-        });
-        ui.add_sized((110., 10.), |ui: &mut egui::Ui| {
-            ui.horizontal(|ui| {
-                let fee_edit = egui::TextEdit::singleline(&mut self.fee)
-                    .hint_text("fee")
-                    .desired_width(80.);
-                ui.add(fee_edit);
-                ui.label("BTC");
-            })
-            .response
-        });
-        let amount = bitcoin::Amount::from_str_in(
-            &self.amount,
-            bitcoin::Denomination::Bitcoin,
-        );
-        let fee = bitcoin::Amount::from_str_in(
-            &self.fee,
-            bitcoin::Denomination::Bitcoin,
-        );
+        ui.layout_card(|ui| {
+            // Amount field
+            LayoutHelpers::btc_input_field(ui, &mut self.amount, "Amount", "Enter amount");
 
-        if ui
-            .add_enabled(
-                app.is_some() && amount.is_ok() && fee.is_ok(),
-                egui::Button::new("deposit"),
-            )
-            .clicked()
-        {
-            let app = app.unwrap();
-            if let Err(err) = app.deposit(
-                app.wallet.get_new_address().expect("should not happen"),
-                amount.expect("should not happen"),
-                fee.expect("should not happen"),
-            ) {
-                tracing::error!("{err}");
-            } else {
-                *self = Self::default();
+            ui.add_space(LayoutDimensions::ELEMENT_SPACING);
+
+            // Fee field
+            LayoutHelpers::btc_input_field(ui, &mut self.fee, "Fee", "Enter fee");
+
+            // Parse values
+            let amount = bitcoin::Amount::from_str_in(
+                &self.amount,
+                bitcoin::Denomination::Bitcoin,
+            );
+
+            // Show validation feedback for amount
+            if !self.amount.is_empty() && amount.is_err() {
+                ui.add_space(LayoutDimensions::SMALL_SPACING);
+                ui.colored_label(
+                    egui::Color32::from_rgb(255, 0, 0),
+                    "Invalid amount format"
+                );
             }
-        }
+
+            let fee = bitcoin::Amount::from_str_in(
+                &self.fee,
+                bitcoin::Denomination::Bitcoin,
+            );
+
+            // Show validation feedback for fee
+            if !self.fee.is_empty() && fee.is_err() {
+                ui.add_space(LayoutDimensions::SMALL_SPACING);
+                ui.colored_label(
+                    egui::Color32::from_rgb(255, 0, 0),
+                    "Invalid fee format"
+                );
+            }
+
+            // Deposit button
+            ui.add_space(LayoutDimensions::ELEMENT_SPACING);
+            let enabled = app.is_some() && amount.is_ok() && fee.is_ok();
+            if ui.add_enabled(enabled, egui::Button::new("Deposit")).clicked() {
+                let app = app.unwrap();
+                if let Err(err) = app.deposit(
+                    app.wallet.get_new_address().expect("should not happen"),
+                    amount.expect("should not happen"),
+                    fee.expect("should not happen"),
+                ) {
+                    tracing::error!("{err}");
+                } else {
+                    *self = Self::default();
+                }
+            }
+        });
     }
 }
 
@@ -89,17 +99,28 @@ fn create_withdrawal(
 
 impl Withdrawal {
     pub fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
-        ui.add_sized((250., 10.), |ui: &mut egui::Ui| {
+        ui.layout_card(|ui| {
+            // Mainchain address field with generate button
+            ui.add_space(LayoutDimensions::SMALL_SPACING);
+            ui.label("Mainchain Address");
+            ui.add_space(LayoutDimensions::SMALL_SPACING);
+
             ui.horizontal(|ui| {
-                let mainchain_address_edit =
-                    egui::TextEdit::singleline(&mut self.mainchain_address)
-                        .hint_text("mainchain address")
-                        .desired_width(150.);
-                ui.add(mainchain_address_edit);
-                if ui
-                    .add_enabled(app.is_some(), Button::new("generate"))
-                    .clicked()
-                {
+                // Set a maximum length of 62 characters for Bitcoin addresses
+                // This covers all Bitcoin address formats (P2PKH, P2SH, Bech32, etc.)
+                if self.mainchain_address.len() > 62 {
+                    self.mainchain_address.truncate(62);
+                }
+
+                let text_edit = egui::TextEdit::singleline(&mut self.mainchain_address)
+                    .hint_text("Enter mainchain address")
+                    .desired_width(ui.available_width() - 100.0)
+                    .char_limit(62); // Enforce the 62 character limit
+
+                ui.add(text_edit);
+                ui.add_space(LayoutDimensions::SMALL_SPACING);
+
+                if ui.add_enabled(app.is_some(), egui::Button::new("Generate")).clicked() {
                     match app.unwrap().get_new_main_address() {
                         Ok(main_address) => {
                             self.mainchain_address = main_address.to_string();
@@ -110,79 +131,101 @@ impl Withdrawal {
                         }
                     };
                 }
-            })
-            .response
-        });
-        ui.add_sized((110., 10.), |ui: &mut egui::Ui| {
-            ui.horizontal(|ui| {
-                let amount_edit = egui::TextEdit::singleline(&mut self.amount)
-                    .hint_text("amount")
-                    .desired_width(80.);
-                ui.add(amount_edit);
-                ui.label("BTC");
-            })
-            .response
-        });
-        ui.add_sized((110., 10.), |ui: &mut egui::Ui| {
-            ui.horizontal(|ui| {
-                let fee_edit = egui::TextEdit::singleline(&mut self.fee)
-                    .hint_text("fee")
-                    .desired_width(80.);
-                ui.add(fee_edit);
-                ui.label("BTC");
-            })
-            .response
-        });
-        ui.add_sized((110., 10.), |ui: &mut egui::Ui| {
-            ui.horizontal(|ui| {
-                let fee_edit =
-                    egui::TextEdit::singleline(&mut self.mainchain_fee)
-                        .hint_text("mainchain fee")
-                        .desired_width(80.);
-                ui.add(fee_edit);
-                ui.label("BTC");
-            })
-            .response
-        });
-        let mainchain_address: Option<
-            bitcoin::Address<bitcoin::address::NetworkUnchecked>,
-        > = self.mainchain_address.parse().ok();
-        let amount = bitcoin::Amount::from_str_in(
-            &self.amount,
-            bitcoin::Denomination::Bitcoin,
-        );
-        let fee = bitcoin::Amount::from_str_in(
-            &self.fee,
-            bitcoin::Denomination::Bitcoin,
-        );
-        let mainchain_fee = bitcoin::Amount::from_str_in(
-            &self.mainchain_fee,
-            bitcoin::Denomination::Bitcoin,
-        );
+            });
 
-        if ui
-            .add_enabled(
-                app.is_some()
-                    && mainchain_address.is_some()
-                    && amount.is_ok()
-                    && fee.is_ok()
-                    && mainchain_fee.is_ok(),
-                egui::Button::new("withdraw"),
-            )
-            .clicked()
-        {
-            if let Err(err) = create_withdrawal(
-                app.unwrap(),
-                mainchain_address.expect("should not happen"),
-                amount.expect("should not happen"),
-                fee.expect("should not happen"),
-                mainchain_fee.expect("should not happen"),
-            ) {
-                tracing::error!("{err:#}");
-            } else {
-                *self = Self::default();
+            ui.add_space(LayoutDimensions::ELEMENT_SPACING);
+
+            // Amount field
+            LayoutHelpers::btc_input_field(ui, &mut self.amount, "Amount", "Enter amount");
+
+            ui.add_space(LayoutDimensions::ELEMENT_SPACING);
+
+            // Fee field
+            LayoutHelpers::btc_input_field(ui, &mut self.fee, "Fee", "Enter fee");
+
+            ui.add_space(LayoutDimensions::ELEMENT_SPACING);
+
+            // Mainchain fee field
+            LayoutHelpers::btc_input_field(ui, &mut self.mainchain_fee, "Mainchain Fee", "Enter mainchain fee");
+
+            // Parse values
+            let mainchain_address: Option<
+                bitcoin::Address<bitcoin::address::NetworkUnchecked>,
+            > = self.mainchain_address.parse().ok();
+
+            // Show validation feedback for the mainchain address
+            if !self.mainchain_address.is_empty() && mainchain_address.is_none() {
+                ui.add_space(LayoutDimensions::SMALL_SPACING);
+                ui.colored_label(
+                    egui::Color32::from_rgb(255, 0, 0),
+                    "Invalid Bitcoin address format"
+                );
             }
-        }
+
+            let amount = bitcoin::Amount::from_str_in(
+                &self.amount,
+                bitcoin::Denomination::Bitcoin,
+            );
+
+            // Show validation feedback for amount
+            if !self.amount.is_empty() && amount.is_err() {
+                ui.add_space(LayoutDimensions::SMALL_SPACING);
+                ui.colored_label(
+                    egui::Color32::from_rgb(255, 0, 0),
+                    "Invalid amount format"
+                );
+            }
+
+            let fee = bitcoin::Amount::from_str_in(
+                &self.fee,
+                bitcoin::Denomination::Bitcoin,
+            );
+
+            // Show validation feedback for fee
+            if !self.fee.is_empty() && fee.is_err() {
+                ui.add_space(LayoutDimensions::SMALL_SPACING);
+                ui.colored_label(
+                    egui::Color32::from_rgb(255, 0, 0),
+                    "Invalid fee format"
+                );
+            }
+
+            let mainchain_fee = bitcoin::Amount::from_str_in(
+                &self.mainchain_fee,
+                bitcoin::Denomination::Bitcoin,
+            );
+
+            // Show validation feedback for mainchain fee
+            if !self.mainchain_fee.is_empty() && mainchain_fee.is_err() {
+                ui.add_space(LayoutDimensions::SMALL_SPACING);
+                ui.colored_label(
+                    egui::Color32::from_rgb(255, 0, 0),
+                    "Invalid mainchain fee format"
+                );
+            }
+
+            // Withdraw button
+            ui.add_space(LayoutDimensions::ELEMENT_SPACING);
+            let enabled = app.is_some()
+                && mainchain_address.is_some()
+                && amount.is_ok()
+                && fee.is_ok()
+                && mainchain_fee.is_ok();
+
+            if ui.add_enabled(enabled, egui::Button::new("Withdraw")).clicked() {
+                if let Err(err) = create_withdrawal(
+                    app.unwrap(),
+                    mainchain_address.expect("should not happen"),
+                    amount.expect("should not happen"),
+                    fee.expect("should not happen"),
+                    mainchain_fee.expect("should not happen"),
+                ) {
+                    tracing::error!("{err:#}");
+                } else {
+                    *self = Self::default();
+                }
+            }
+        });
     }
 }
 
@@ -194,20 +237,38 @@ pub(super) struct Transfer {
 
 impl Transfer {
     pub fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
-        egui::SidePanel::left("deposit")
-            .exact_width(ui.available_width() / 2.)
-            .resizable(false)
-            .show_inside(ui, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.heading("Deposit");
+        // Set background color for the entire panel
+        let frame = egui::Frame::none()
+            .fill(LayoutColors::BACKGROUND)
+            .inner_margin(LayoutDimensions::CONTAINER_PADDING);
+
+        frame.show(ui, |ui| {
+            // Add heading for the entire screen
+            ui.layout_heading("Transfer");
+
+            // Create a horizontal layout with spacing between panels
+            ui.horizontal(|ui| {
+                // Left panel (Deposit)
+                ui.vertical(|ui| {
+                    let available_width = ui.available_width() / 2.0 - LayoutDimensions::ELEMENT_SPACING;
+                    ui.set_width(available_width);
+
+                    ui.layout_heading("Deposit");
                     self.deposit.show(app, ui);
-                })
+                });
+
+                // Add spacing between panels
+                ui.add_space(LayoutDimensions::SECTION_SPACING);
+
+                // Right panel (Withdrawal)
+                ui.vertical(|ui| {
+                    let available_width = ui.available_width();
+                    ui.set_width(available_width);
+
+                    ui.layout_heading("Withdrawal");
+                    self.withdrawal.show(app, ui);
+                });
             });
-        egui::CentralPanel::default().show_inside(ui, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.heading("Withdrawal");
-                self.withdrawal.show(app, ui);
-            })
         });
     }
 }
