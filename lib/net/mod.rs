@@ -281,6 +281,19 @@ impl Net {
         Ok(())
     }
 
+    pub const SEED_NODE_ADDRS: &[SocketAddr] = {
+        const SIGNET_MINING_SERVER: SocketAddr = SocketAddr::new(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(172, 105, 148, 135)),
+            4000 + THIS_SIDECHAIN as u16,
+        );
+        // thunder.bip300.xyz
+        const BIP300_XYZ: SocketAddr = SocketAddr::new(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(95, 217, 243, 12)),
+            4000 + THIS_SIDECHAIN as u16,
+        );
+        &[SIGNET_MINING_SERVER, BIP300_XYZ]
+    };
+
     pub fn new(
         env: &sneed::Env,
         archive: Archive,
@@ -298,15 +311,11 @@ impl Net {
                 let known_peers =
                     DatabaseUnique::create(env, &mut rwtxn, "known_peers")
                         .map_err(EnvError::from)?;
-                const SEED_NODE_ADDR: SocketAddr = SocketAddr::new(
-                    std::net::IpAddr::V4(std::net::Ipv4Addr::new(
-                        172, 105, 148, 135,
-                    )),
-                    4000 + THIS_SIDECHAIN as u16,
-                );
-                known_peers
-                    .put(&mut rwtxn, &SEED_NODE_ADDR, &())
-                    .map_err(DbError::from)?;
+                for addr in Self::SEED_NODE_ADDRS {
+                    known_peers
+                        .put(&mut rwtxn, addr, &())
+                        .map_err(DbError::from)?;
+                }
                 known_peers
             }
         };
