@@ -137,7 +137,7 @@ where
         let env = {
             let mut env_open_opts = heed::EnvOpenOptions::new();
             env_open_opts
-                .map_size(1024 * 1024 * 1024) // 1GB
+                .map_size(128 * 1024 * 1024 * 1024) // 128 GB
                 .max_dbs(
                     State::NUM_DBS
                         + Archive::NUM_DBS
