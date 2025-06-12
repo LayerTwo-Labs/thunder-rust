@@ -465,6 +465,14 @@ pub struct Tip {
     pub main_block_hash: bitcoin::BlockHash,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum, strum::Display))]
+pub enum Network {
+    #[default]
+    Signet,
+    Regtest,
+}
+
 /// Semver-compatible version
 #[derive(
     BorshSerialize,
