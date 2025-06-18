@@ -28,7 +28,7 @@ pub use hashes::{BlockHash, Hash, M6id, MerkleRoot, Txid, hash};
 pub use transaction::{
     Authorized, AuthorizedTransaction, Content as OutputContent,
     FilledTransaction, GetAddress, GetValue, InPoint, OutPoint, Output,
-    PointedOutput, SpentOutput, Transaction,
+    PointedOutput, PointedOutputRef, SpentOutput, Transaction,
 };
 
 pub const THIS_SIDECHAIN: u8 = 9;

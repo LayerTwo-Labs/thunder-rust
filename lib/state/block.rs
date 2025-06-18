@@ -6,13 +6,13 @@ use rustreexo::accumulator::node_hash::BitcoinNodeHash;
 use sneed::{RoTxn, RwTxn, db::error::Error as DbError};
 
 use crate::{
+    authorization::Authorization,
     state::{Error, State, error},
     types::{
         AccumulatorDiff, AmountOverflowError, Body, FilledTransaction,
         GetAddress as _, GetValue as _, Header, InPoint, MerkleRoot, OutPoint,
         PointedOutput, SpentOutput, Verify as _,
     },
-    wallet::Authorization,
 };
 
 pub fn validate(
@@ -126,7 +126,7 @@ pub fn validate(
         }
     }
     if Authorization::verify_body(body).is_err() {
-        return Err(Error::AuthorizationError);
+        return Err(Error::Authorization);
     }
     let () = accumulator.apply_diff(accumulator_diff)?;
     let roots: Vec<BitcoinNodeHash> = accumulator.get_roots();
