@@ -22,3 +22,9 @@ $ cargo run --bin thunder_app_cli
 # version of the JSON-RPC server. 
 $ cargo run --bin thunder_app -- --headless
 ```
+
+## Benchmarks
+
+```bash
+$ RUSTFLAGS="-C target-cpu=native" cargo bench --package thunder --benches --all-features
+```

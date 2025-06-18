@@ -24,6 +24,8 @@ use crate::{
     util::Watchable,
 };
 
+#[cfg(feature = "bench")]
+pub mod bench;
 mod block;
 mod error;
 mod rollback;
@@ -328,7 +330,7 @@ impl State {
             }
         }
         if Authorization::verify_transaction(transaction).is_err() {
-            return Err(Error::AuthorizationError);
+            return Err(Error::Authorization);
         }
         let fee = self.validate_filled_transaction(&filled_transaction)?;
         Ok(fee)
