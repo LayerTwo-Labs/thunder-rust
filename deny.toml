@@ -274,9 +274,11 @@ allow-git = [
     "https://github.com/Ash-L2L/l2l-openapi.git",
     "https://gitlab.com/A-Manning/leonhard-llc-ops",
     "https://github.com/erikjohnston/ouroboros.git?rev=ea82b33947f60c511dac6eb3815b6af3f6c3f555",
+    "https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git",
     "https://github.com/LayerTwo-Labs/bip300301_enforcer.git",
+    "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git",
     "https://github.com/mit-dci/rustreexo.git",
-    "https://github.com/torkelrogstad/cusf-enforcer-mempool.git",
+    "https://github.com/torkelrogstad/tokio-tracing.git?branch=log-rotation-size",
 ]
 
 [sources.allow-org]

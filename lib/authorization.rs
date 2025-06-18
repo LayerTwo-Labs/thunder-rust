@@ -16,7 +16,7 @@ pub enum Error {
     #[error("borsh serialization error")]
     BorshSerialize(#[from] borsh::io::Error),
     #[error("ed25519_dalek error")]
-    DalekError(#[from] SignatureError),
+    Dalek(#[from] SignatureError),
     #[error(
         "wrong key for address: address = {address},
              hash(verifying_key) = {hash_verifying_key}"
