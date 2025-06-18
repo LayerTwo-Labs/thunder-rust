@@ -25,6 +25,8 @@ use crate::{
     util::Watchable,
 };
 
+#[cfg(feature = "bench")]
+pub mod bench;
 mod block;
 mod error;
 mod rollback;
@@ -356,36 +358,53 @@ impl State {
         Ok(fee)
     }
 
+    #[cfg(not(feature = "bench"))]
     const LIMIT_GROWTH_EXPONENT: f64 = 1.04;
 
-    pub fn body_sigops_limit(height: u32) -> usize {
-        // Starting body size limit is 8MB = 8 * 1024 * 1024 B
-        // 2 input 2 output transaction is 392 B
-        // 2 * ceil(8 * 1024 * 1024 B / 392 B) = 42800
-        const START: usize = 42800;
-        let month = height / (6 * 24 * 30);
-        if month < 120 {
-            (START as f64 * Self::LIMIT_GROWTH_EXPONENT.powi(month as i32))
-                .floor() as usize
+    cfg_if::cfg_if! {
+        if #[cfg(feature = "bench")] {
+            pub fn body_sigops_limit(_height: u32) -> usize {
+                usize::MAX
+            }
         } else {
-            // 1.04 ** 120 = 110.6625
-            // So we are rounding up.
-            START * 111
+            pub fn body_sigops_limit(height: u32) -> usize {
+                // Starting body size limit is 8MB = 8 * 1024 * 1024 B
+                // 2 input 2 output transaction is 392 B
+                // 2 * ceil(8 * 1024 * 1024 B / 392 B) = 42800
+                const START: usize = 42800;
+                let month = height / (6 * 24 * 30);
+                if month < 120 {
+                    (START as f64 * Self::LIMIT_GROWTH_EXPONENT.powi(month as i32))
+                        .floor() as usize
+                } else {
+                    // 1.04 ** 120 = 110.6625
+                    // So we are rounding up.
+                    START * 111
+                }
+            }
         }
     }
 
     // in bytes
-    pub fn body_size_limit(height: u32) -> usize {
-        // 8MB starting body size limit.
-        const START: usize = 8 * 1024 * 1024;
-        let month = height / (6 * 24 * 30);
-        if month < 120 {
-            (START as f64 * Self::LIMIT_GROWTH_EXPONENT.powi(month as i32))
-                .floor() as usize
+    cfg_if::cfg_if! {
+        if #[cfg(feature = "bench")] {
+            pub fn body_size_limit(_height: u32) -> usize {
+                usize::MAX
+            }
         } else {
-            // 1.04 ** 120 = 110.6625
-            // So we are rounding up.
-            START * 111
+            pub fn body_size_limit(height: u32) -> usize {
+                // 8MB starting body size limit.
+                const START: usize = 8 * 1024 * 1024;
+                let month = height / (6 * 24 * 30);
+                if month < 120 {
+                    (START as f64 * Self::LIMIT_GROWTH_EXPONENT.powi(month as i32))
+                    .floor() as usize
+                } else {
+                    // 1.04 ** 120 = 110.6625
+                    // So we are rounding up.
+                    START * 111
+                }
+            }
         }
     }
 
