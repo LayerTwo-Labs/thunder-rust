@@ -12,9 +12,9 @@ use crate::{
     authorization::Authorization,
     state::State,
     types::{
-        Accumulator, AccumulatorDiff, Address, AuthorizedTransaction, Block,
-        Body, GetValue as _, Header, OutPoint, Output, OutputContent,
-        PointedOutputRef, hash,
+        Accumulator, AccumulatorDiff, Address, Block, Body, GetValue as _,
+        Header, OutPoint, Output, OutputContent, PointedOutputRef, Transaction,
+        hash,
         proto::mainchain::{self, TwoWayPegData},
     },
 };
@@ -272,26 +272,24 @@ where
 /// two outputs.
 /// If possible, the tx will have a fee of 1 sat.
 /// Spent outputs are removed from the UTXO set.
-/// Used signers are removed from the signer map.
+/// Used signers are removed from the signer pool, and appended to the
+/// `used_signers` vec.
 /// The newly created outputs are not added to the utxo set or accumulator.
-/// Returns an authorized tx, and the fee.
+/// Returns an unauthorized tx, the fee, and the used signers.
 fn gen_tx<Rng>(
     rng: &mut Rng,
     signers: &mut SignerPool,
     utxo_set: &mut UtxoSet<Rng>,
     accumulator: &Accumulator,
-) -> anyhow::Result<Option<(AuthorizedTransaction, bitcoin::Amount)>>
+    used_signers: &mut Vec<SigningKey>,
+) -> anyhow::Result<Option<(Transaction, bitcoin::Amount)>>
 where
     Rng: rand::CryptoRng + rand::Rng,
 {
     if utxo_set.utxos.is_empty() {
         return Ok(None);
     }
-    let mut res = AuthorizedTransaction {
-        transaction: Default::default(),
-        authorizations: Vec::new(),
-    };
-    let mut used_addrs = Vec::new();
+    let mut res_tx = Transaction::default();
     let mut value_in = Amount::ZERO;
     while let Some((outpoint, output)) = utxo_set.sample_remove() {
         let pointed_output = PointedOutputRef {
@@ -299,46 +297,57 @@ where
             output: &output,
         };
         let utxo_hash = hash(&pointed_output);
-        res.transaction.inputs.push((outpoint, utxo_hash));
+        res_tx.inputs.push((outpoint, utxo_hash));
         value_in += output.get_value();
-        used_addrs.push(output.address);
-        if res.transaction.inputs.len() >= 2 && rng.r#gen() {
+        used_signers.push(signers.remove(&output.address).unwrap());
+        if res_tx.inputs.len() >= 2 && rng.r#gen() {
             break;
         }
     }
-    let input_utxo_hashes: Vec<BitcoinNodeHash> = res
-        .transaction
-        .inputs
-        .iter()
-        .map(|(_, hash)| hash.into())
-        .collect();
-    res.transaction.proof = accumulator.prove(&input_utxo_hashes)?;
+    let input_utxo_hashes: Vec<BitcoinNodeHash> =
+        res_tx.inputs.iter().map(|(_, hash)| hash.into()).collect();
+    res_tx.proof = accumulator.prove(&input_utxo_hashes)?;
     let outputs_value = if value_in > Amount::from_sat(2) {
         value_in - Amount::from_sat(1)
     } else {
         value_in
     };
-    res.transaction.outputs = gen_outputs(rng, signers, outputs_value);
-    // sign tx, remove used signers
-    {
-        use rayon::iter::{
-            IndexedParallelIterator as _, IntoParallelIterator as _,
-            ParallelIterator as _,
-        };
-        let used_signers: Vec<_> = used_addrs
-            .into_iter()
-            .map(|addr| signers.remove(&addr).unwrap())
-            .collect();
-        used_signers
-            .into_par_iter()
-            .map(|sk| Authorization {
-                verifying_key: sk.verifying_key(),
-                signature: crate::authorization::sign(&sk, &res.transaction)
-                    .unwrap(),
-            })
-            .collect_into_vec(&mut res.authorizations);
-    }
-    Ok(Some((res, value_in - outputs_value)))
+    res_tx.outputs = gen_outputs(rng, signers, outputs_value);
+    Ok(Some((res_tx, value_in - outputs_value)))
+}
+
+/// Sign txs in parallel.
+/// There must exist as many signers as tx inputs.
+fn batch_sign_txs(
+    txs: &[Transaction],
+    signers: Vec<SigningKey>,
+) -> anyhow::Result<Vec<Authorization>> {
+    use rayon::iter::{
+        IndexedParallelIterator as _, IntoParallelIterator as _,
+        ParallelIterator as _,
+    };
+    let to_sign: Vec<(&Transaction, SigningKey)> = {
+        let mut to_sign = Vec::with_capacity(signers.len());
+        let mut signers_iter = signers.into_iter();
+        for tx in txs {
+            for _ in 0..tx.inputs.len() {
+                let signer = signers_iter
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("Too few signers"))?;
+                to_sign.push((tx, signer))
+            }
+        }
+        to_sign
+    };
+    let mut res = Vec::with_capacity(to_sign.len());
+    to_sign
+        .into_par_iter()
+        .map(|(tx, sk)| Authorization {
+            verifying_key: sk.verifying_key(),
+            signature: crate::authorization::sign(&sk, tx).unwrap(),
+        })
+        .collect_into_vec(&mut res);
+    Ok(res)
 }
 
 /// Generate a block.
@@ -364,22 +373,27 @@ fn gen_block<Rng>(
 where
     Rng: rand::CryptoRng + rand::Rng,
 {
-    let mut auth_txs = Vec::new();
+    let mut txs = Vec::new();
+    let mut used_signers = Vec::new();
     let mut fees = Amount::ZERO;
     // Generate txs
     {
         for _ in 0..txs_per_block {
             let Some((tx, tx_fee)) =
-                gen_tx(rng, signers, utxo_set, accumulator)?
+                gen_tx(rng, signers, utxo_set, accumulator, &mut used_signers)?
             else {
                 break;
             };
-            auth_txs.push(tx);
+            txs.push(tx);
             fees += tx_fee;
         }
     }
     let coinbase = gen_outputs(rng, signers, fees);
-    let body = Body::new(auth_txs, coinbase);
+    let body = Body {
+        coinbase,
+        authorizations: batch_sign_txs(&txs, used_signers)?,
+        transactions: txs,
+    };
     let merkle_root = body.compute_merkle_root();
     // update UTXO set and accumulator
     {
@@ -552,8 +566,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         b.iter_custom(|iters| {
             let mut res = std::time::Duration::ZERO;
             for _ in 0..iters {
-                let mut setup = Setup::new(&mut rng, 40_000).unwrap();
-                res += connect_blocks(&mut setup, 10_000, 10).unwrap();
+                let mut setup = Setup::new(&mut rng, 400_000).unwrap();
+                res += connect_blocks(&mut setup, 100_000, 5).unwrap();
             }
             res
         })
