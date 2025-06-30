@@ -37,13 +37,48 @@ jobs:
         run: cargo fmt --all -- --check
       
       - name: Cargo check
-        run: cargo check --all-targets --all-features
+        run: cargo check --all-targets
       
       - name: Clippy
-        run: cargo clippy --all-targets --all-features
+        run: cargo clippy --all-targets
       
       - name: Deny
         uses: EmbarkStudios/cargo-deny-action@v2
+
+  benchmarks:
+    name: Benchmarks
+    runs-on: ubuntu-latest-large
+    needs: [check-lint]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: "recursive"
+
+      - name: Install latest nightly toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: x86_64-unknown-linux-gnu
+
+      - name: Run benchmarks
+        id: runBenchmarks
+        run: |
+          RUSTFLAGS="-C target-cpu=native" cargo bench --package thunder --benches --all-features
+
+      - name: Show report
+        run: |
+          MEAN_NANOS=$(jq '.mean | .point_estimate' target/criterion/connect_blocks/new/estimates.json)
+          MEDIAN_NANOS=$(jq '.median | .point_estimate' target/criterion/connect_blocks/new/estimates.json)
+          MEAN_S=$(echo "scale=2; $MEAN_NANOS / 1000000000" | bc -l)
+          MEDIAN_S=$(echo "scale=2; $MEDIAN_NANOS / 1000000000" | bc -l)
+          echo "*************"
+          echo "YOUR SCORE:  ${MEAN_S}"
+          echo "Verified 10x 320mb blocks in ${MEAN_S} seconds (mean) / ${MEDIAN_S} seconds (median)."
+          echo "*************"
 
   integration-test:
     name: Integration test
