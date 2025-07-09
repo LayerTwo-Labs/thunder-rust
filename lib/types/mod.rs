@@ -1,7 +1,7 @@
 use borsh::BorshSerialize;
 use hashlink::{LinkedHashMap, linked_hash_map};
 use rustreexo::accumulator::{
-    mem_forest::MemForest, node_hash::BitcoinNodeHash, proof::Proof,
+    arena_forest::ArenaForest, node_hash::BitcoinNodeHash, proof::Proof,
 };
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -353,7 +353,7 @@ pub struct UtreexoError(String);
 
 #[derive(Debug, Default)]
 #[repr(transparent)]
-pub struct Accumulator(pub MemForest<BitcoinNodeHash>);
+pub struct Accumulator(pub ArenaForest<BitcoinNodeHash>);
 
 impl Accumulator {
     pub fn apply_diff(
@@ -369,7 +369,7 @@ impl Accumulator {
             }
         }
         tracing::trace!(
-            leaves = %self.0.leaves,
+            leaves = %self.0.leaves(),
             roots = ?self.get_roots(),
             insertions = ?insertions,
             deletions = ?deletions,
@@ -380,7 +380,7 @@ impl Accumulator {
             .modify(&insertions, &deletions)
             .map_err(UtreexoError)?;
         tracing::debug!(
-            leaves = %self.0.leaves,
+            leaves = %self.0.leaves(),
             roots = ?self.get_roots(),
             "Applied diff"
         );
@@ -418,12 +418,10 @@ impl<'de> Deserialize<'de> for Accumulator {
     {
         let bytes: Vec<u8> =
             <Vec<_> as Deserialize>::deserialize(deserializer)?;
-        let mem_forest = MemForest::deserialize(&*bytes)
-            .inspect_err(|err| {
-                tracing::debug!("deserialize err: {err}\n bytes: {bytes:?}")
-            })
+        // Use the full ArenaForest deserialization
+        let arena_forest = ArenaForest::deserialize(&*bytes)
             .map_err(<D::Error as serde::de::Error>::custom)?;
-        Ok(Self(mem_forest))
+        Ok(Self(arena_forest))
     }
 }
 
