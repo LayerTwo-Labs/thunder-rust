@@ -1,11 +1,13 @@
 //! Proof generation and verification for the arena forest.
 
+
 use super::super::node_hash::AccumulatorHash;
 use super::forest::ArenaForest;
 
-impl<Hash: AccumulatorHash> ArenaForest<Hash> {
+impl<Hash: AccumulatorHash + std::ops::Deref<Target = [u8; 32]>> ArenaForest<Hash> {
     /// Generate proofs for target hashes.
     pub fn prove(&self, targets: &[Hash]) -> Result<super::super::proof::Proof<Hash>, String> {
+
         let mut positions = Vec::new();
 
         if targets.is_empty() {
@@ -15,24 +17,21 @@ impl<Hash: AccumulatorHash> ArenaForest<Hash> {
             ));
         }
 
-        // Get positions for all target hashes
         for target in targets {
-            let node_idx = self.hash_to_node.get(target).ok_or_else(|| {
-                format!(
-                    "Could not find target hash: {:?}. Available hashes: {} total, leaves: {}",
-                    target,
-                    self.hash_to_node.len(),
-                    self.leaves
-                )
-            })?;
+            let key = super::forest::hash_key(target);
+            let node_idx = self
+                .hash_to_node
+                .get(&key)
+                .and_then(|entries| {
+                    entries.iter().find(|(stored_hash, _)| stored_hash == target).map(|(_, idx)| *idx)
+                })
+                .ok_or_else(|| format!("Target hash not found: {:?}", target))?;
 
-            let position = self.get_pos(*node_idx).map_err(|e| {
-                format!("Could not calculate position for hash {:?}: {}", target, e)
-            })?;
+            let position = self.get_pos(node_idx)
+                .map_err(|e| format!("Position calculation failed: {}", e))?;
             positions.push(position);
         }
 
-        // Calculate proof positions
         let tree_height = super::super::util::tree_rows(self.leaves);
         let needed_positions =
             super::super::util::get_proof_positions(&positions, self.leaves, tree_height);
@@ -57,7 +56,6 @@ impl<Hash: AccumulatorHash> ArenaForest<Hash> {
         proof: &super::super::proof::Proof<Hash>,
         del_hashes: &[Hash],
     ) -> Result<bool, String> {
-        // Get current root hashes
         let roots = self
             .get_roots()
             .iter()

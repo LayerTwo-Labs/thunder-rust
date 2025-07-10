@@ -1,20 +1,4 @@
-//! Arena-based MemForest Implementation
-//!
-//! Implements an arena-based version of MemForest with compact nodes stored in a single Vec
-//! for improved cache locality and efficient hash recomputation via dirty tracking.
-//!
-//! ## Module Structure
-//!
-//! - `types`: Core types and constants
-//! - `node`: ArenaNode implementation
-//! - `forest`: ArenaForest struct and core operations
-//! - `construction`: Tree construction and leaf addition
-//! - `dirty_tracking`: Hash recomputation
-//! - `navigation`: Tree navigation and position calculation
-//! - `deletion`: Leaf deletion and tree restructuring
-//! - `proofs`: Proof generation and verification
-//! - `serialization`: State persistence
-//! - `compatibility`: API compatibility layer
+//! Arena-based utreexo accumulator with SoA layout for cache optimization.
 
 mod compatibility;
 mod construction;
