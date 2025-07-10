@@ -31,28 +31,28 @@ impl ZombieQueue {
             total_tombstoned: 0,
         }
     }
-    
+
     /// Add a tombstoned node to the queue
     pub fn add_zombie(&mut self, node_idx: u32) {
         self.indices.push(node_idx);
         self.total_tombstoned += 1;
     }
-    
+
     /// Check if zombie queue needs flushing
     pub fn needs_flush(&self) -> bool {
         self.indices.len() >= self.threshold
     }
-    
+
     /// Clear the zombie queue (called after flushing)
     pub fn clear(&mut self) {
         self.indices.clear();
     }
-    
+
     /// Get current zombie count
     pub fn len(&self) -> usize {
         self.indices.len()
     }
-    
+
     /// Check if queue is empty
     pub fn is_empty(&self) -> bool {
         self.indices.is_empty()
@@ -70,11 +70,9 @@ impl DirtyQueue {
     /// Create new dirty queue
     #[inline]
     pub fn new() -> Self {
-        Self {
-            inner: Vec::new(),
-        }
+        Self { inner: Vec::new() }
     }
-    
+
     /// Create new dirty queue with pre-allocated capacity
     #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
@@ -82,25 +80,25 @@ impl DirtyQueue {
             inner: Vec::with_capacity(capacity),
         }
     }
-    
+
     /// Push a node for dirty propagation
     #[inline]
     pub fn push(&mut self, node_idx: u32) {
         self.inner.push(node_idx);
     }
-    
+
     /// Check if queue is empty
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
-    
+
     /// Get current queue length
     #[inline]
     pub fn len(&self) -> usize {
         self.inner.len()
     }
-    
+
     /// Clear the queue
     #[inline]
     pub fn clear(&mut self) {
@@ -113,12 +111,12 @@ impl<Hash: AccumulatorHash> ArenaNode<Hash> {
     pub fn is_tombstone(&self) -> bool {
         (self.lr & TOMBSTONE_BIT) != 0
     }
-    
+
     /// Mark node as tombstone
     pub fn mark_tombstone(&mut self) {
         self.lr |= TOMBSTONE_BIT;
     }
-    
+
     /// Clear tombstone flag
     pub fn clear_tombstone(&mut self) {
         self.lr &= !TOMBSTONE_BIT;

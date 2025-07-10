@@ -1,8 +1,7 @@
 //! Dirty node tracking and hash recomputation system.
 
-use rayon::prelude::*;
-
 use bitvec::vec::BitVec;
+use rayon::prelude::*;
 
 use super::super::node_hash::AccumulatorHash;
 use super::forest::ArenaForest;
@@ -36,7 +35,7 @@ impl<Hash: AccumulatorHash> ArenaForest<Hash> {
         }
 
         let node_idx_usize = node_idx as usize;
-        
+
         // Check if already dirty
         if node_idx_usize < self.dirty[level].len() && self.dirty[level][node_idx_usize] {
             return false;
@@ -60,7 +59,7 @@ impl<Hash: AccumulatorHash> ArenaForest<Hash> {
             if idx >= self.level.len() {
                 break;
             }
-            
+
             // Direct level access
             let level = self.level[idx] as usize;
             if !self.mark_if_new(node_idx, level) {
@@ -131,7 +130,7 @@ impl<Hash: AccumulatorHash> ArenaForest<Hash> {
         let mut frontier: SmallVec<[Vec<u32>; 8]> = SmallVec::new();
         for &n in &self.dirty_queue.inner {
             let idx = n as usize;
-            if idx >= self.level.len() { 
+            if idx >= self.level.len() {
                 continue;
             }
 
@@ -167,7 +166,7 @@ impl<Hash: AccumulatorHash> ArenaForest<Hash> {
             }
             level += 1;
         }
-        
+
         Ok(())
     }
 
@@ -179,32 +178,32 @@ impl<Hash: AccumulatorHash> ArenaForest<Hash> {
                 level_vec.clear();
             }
         }
-        
+
         // Reuse persistent root cache
         if self.root_cache.len() < self.hashes.len() {
             self.root_cache.resize(self.hashes.len(), None);
         }
         self.root_cache.fill(None);
-        
+
         let mut active_roots = 0;
-        
+
         // Process dirty nodes
         for level in 0..=self.max_height {
             if level >= self.dirty.len() || self.dirty[level].is_empty() {
                 continue;
             }
-            
+
             for node_idx_usize in self.dirty[level].iter_ones() {
                 if node_idx_usize >= self.hashes.len() {
                     continue;
                 }
-                
+
                 // Skip leaf nodes
                 let lr = self.lr[node_idx_usize];
                 if lr & super::types::LEAF_TYPE_BIT != 0 {
                     continue;
                 }
-                
+
                 // Find root for this node
                 let root_position = if let Some(cached_root) = self.root_cache[node_idx_usize] {
                     cached_root
@@ -216,35 +215,35 @@ impl<Hash: AccumulatorHash> ArenaForest<Hash> {
                         continue;
                     }
                 };
-                
+
                 // Ensure enough root buckets
                 while self.root_levels.len() <= root_position {
                     self.root_levels.push(Vec::new());
                 }
-                
+
                 // Ensure enough levels for this root
                 if self.root_levels[root_position].len() <= level {
                     self.root_levels[root_position]
                         .resize_with(level + 1, || Vec::with_capacity(32));
                 }
-                
+
                 // Check if root was empty before adding node
                 let was_empty = self.root_levels[root_position]
-                    .iter().all(|lvl| lvl.is_empty());
-                
+                    .iter()
+                    .all(|lvl| lvl.is_empty());
+
                 // Add node to bucket
                 self.root_levels[root_position][level].push(node_idx_usize as u32);
-                
+
                 // Track active root count
                 if was_empty {
                     active_roots += 1;
                 }
             }
         }
-        
+
         active_roots
     }
-
 }
 
 impl<Hash: AccumulatorHash + Send + Sync> ArenaForest<Hash> {
@@ -259,7 +258,7 @@ impl<Hash: AccumulatorHash + Send + Sync> ArenaForest<Hash> {
 
             // Collect dirty nodes for parallel processing
             let dirty_indices: Vec<usize> = self.dirty[level].iter_ones().collect();
-            
+
             // Parallel hash computation
             let hash_updates: Vec<(usize, Hash)> = dirty_indices
                 .par_iter()
@@ -320,41 +319,41 @@ impl<Hash: AccumulatorHash + Send + Sync> ArenaForest<Hash> {
         if active_roots == 0 {
             return;
         }
-        
+
         // Process each root in parallel
         self.root_levels.par_iter().for_each(|root_levels| {
             if root_levels.is_empty() {
                 return;
             }
-            
+
             // Process levels sequentially within this root
             for level_nodes in root_levels.iter() {
                 if level_nodes.is_empty() {
                     continue;
                 }
-                
+
                 // Process nodes sequentially to maintain dependency order
                 for &node_idx in level_nodes.iter() {
                     let idx = node_idx as usize;
                     if idx >= self.hashes.len() {
                         continue;
                     }
-                    
+
                     // Safe Rust for most logic
                     let lr = self.lr[idx];
                     if lr & super::types::LEAF_TYPE_BIT != 0 {
                         continue;
                     }
-                    
+
                     let left_idx = (lr & super::types::INDEX_MASK) as usize;
                     let right_idx = self.rr[idx] as usize;
-                    
+
                     if left_idx < self.hashes.len() && right_idx < self.hashes.len() {
                         // Compute new hash from children
                         let left_hash = self.hashes[left_idx];
                         let right_hash = self.hashes[right_idx];
                         let new_hash = Hash::parent_hash(&left_hash, &right_hash);
-                        
+
                         // SAFETY: Root subtrees are disjoint, no data races
                         unsafe {
                             *self.hashes.as_ptr().add(idx).cast_mut() = new_hash;
@@ -363,7 +362,7 @@ impl<Hash: AccumulatorHash + Send + Sync> ArenaForest<Hash> {
                 }
             }
         });
-        
+
         self.clear_dirty();
     }
 
@@ -379,27 +378,27 @@ impl<Hash: AccumulatorHash + Send + Sync> ArenaForest<Hash> {
     /// Choose optimal recomputation strategy based on heuristics.
     pub fn recompute_dirty_hashes_adaptive(&mut self) {
         let total_dirty: usize = self.dirty.iter().map(|bitvec| bitvec.count_ones()).sum();
-        
+
         if total_dirty == 0 {
             return;
         }
 
         let phys_cores = num_cpus::get_physical().max(1);
         let sequential_threshold = 12 * phys_cores;
-        
+
         // For small workloads, use sequential processing
         if total_dirty < sequential_threshold {
             self.recompute_dirty_hashes_sequential();
             return;
         }
-        
+
         // For medium workloads, try level-wise parallel first
         let per_root_threshold = 64 * phys_cores;
-        
+
         if total_dirty >= per_root_threshold {
             // For large workloads, try per-root parallelism
             let active_roots = self.bucket_dirty_once();
-            
+
             // Use per-root when we have many distinct roots
             if active_roots >= phys_cores {
                 // Use pre-built buckets to avoid double bucketing
@@ -407,7 +406,7 @@ impl<Hash: AccumulatorHash + Send + Sync> ArenaForest<Hash> {
                 return;
             }
         }
-        
+
         // Default to level-wise parallelism
         self.recompute_dirty_hashes_parallel();
     }
