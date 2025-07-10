@@ -1,10 +1,10 @@
 //! Serialization and deserialization for ArenaForest state persistence.
 
-use hashbrown::HashMap;
 use std::io::Read;
 use std::io::Write;
 
 use bitvec::vec::BitVec;
+use hashbrown::HashMap;
 use smallvec::SmallVec;
 
 use super::super::node_hash::AccumulatorHash;
@@ -38,9 +38,13 @@ impl<Hash: AccumulatorHash + std::ops::Deref<Target = [u8; 32]>> ArenaForest<Has
             }
         }
 
-        let total_entries: usize = self.hash_to_node.values().map(|entries| entries.len()).sum();
+        let total_entries: usize = self
+            .hash_to_node
+            .values()
+            .map(|entries| entries.len())
+            .sum();
         writer.write_all(&(total_entries as u64).to_le_bytes())?;
-        
+
         for entries in self.hash_to_node.values() {
             for (hash, node_idx) in entries {
                 hash.write(&mut writer)?;
@@ -74,7 +78,7 @@ impl<Hash: AccumulatorHash + std::ops::Deref<Target = [u8; 32]>> ArenaForest<Has
         let mut rr = Vec::with_capacity(nodes_count as usize);
         let mut parent = Vec::with_capacity(nodes_count as usize);
         let mut level = Vec::with_capacity(nodes_count as usize);
-        
+
         for _ in 0..nodes_count {
             let hash = Hash::read(&mut reader)?;
             let lr_val = read_u32(&mut reader)?;
@@ -109,7 +113,10 @@ impl<Hash: AccumulatorHash + std::ops::Deref<Target = [u8; 32]>> ArenaForest<Has
             let hash = Hash::read(&mut reader)?;
             let node_idx = read_u32(&mut reader)?;
             let key = super::forest::hash_key(&hash);
-            hash_to_node.entry(key).or_insert_with(SmallVec::new).push((hash, node_idx));
+            hash_to_node
+                .entry(key)
+                .or_insert_with(SmallVec::new)
+                .push((hash, node_idx));
         }
 
         let dirty = vec![BitVec::new()];

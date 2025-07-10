@@ -20,7 +20,10 @@ impl<Hash: AccumulatorHash + Send + Sync + std::ops::Deref<Target = [u8; 32]>> A
 
         // Hash-to-node insertion with collision handling
         let key = super::forest::hash_key(&hash);
-        self.hash_to_node.entry(key).or_insert_with(SmallVec::new).push((hash, current_idx));
+        self.hash_to_node
+            .entry(key)
+            .or_insert_with(SmallVec::new)
+            .push((hash, current_idx));
 
         let mut leaves = self.leaves;
 
@@ -103,7 +106,7 @@ impl<Hash: AccumulatorHash + Send + Sync + std::ops::Deref<Target = [u8; 32]>> A
         // Use queue optimization for large operations
         let total_operations = add.len() + del.len();
         const QUEUE_THRESHOLD: usize = 32;
-        
+
         if total_operations >= QUEUE_THRESHOLD {
             // Large workload: use queue-based processing
             self.modify_with_queue(add, del)
@@ -128,7 +131,7 @@ impl<Hash: AccumulatorHash + Send + Sync + std::ops::Deref<Target = [u8; 32]>> A
             self.flush_zombies()?;
         }
 
-        // Flush dirty queue before hash recomputation  
+        // Flush dirty queue before hash recomputation
         self.flush_dirty_queue()?;
 
         // Recompute dirty hashes
@@ -137,7 +140,7 @@ impl<Hash: AccumulatorHash + Send + Sync + std::ops::Deref<Target = [u8; 32]>> A
         Ok(())
     }
 
-    /// Modify with direct marking (for small workloads) 
+    /// Modify with direct marking (for small workloads)
     fn modify_direct(&mut self, add: &[Hash], del: &[Hash]) -> Result<(), String> {
         // Process deletions first
         self.delete_leaves(del)?;

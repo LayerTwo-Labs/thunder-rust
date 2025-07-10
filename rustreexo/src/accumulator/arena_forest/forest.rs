@@ -10,7 +10,10 @@ use smallvec::SmallVec;
 
 use super::super::node_hash::AccumulatorHash;
 use super::super::node_hash::BitcoinNodeHash;
-use super::types::{ArenaNode, DirtyQueue, TOMBSTONE_BIT, ZombieQueue};
+use super::types::ArenaNode;
+use super::types::DirtyQueue;
+use super::types::ZombieQueue;
+use super::types::TOMBSTONE_BIT;
 
 /// Fast hash-to-node map using 8-byte keys with collision handling
 type FastMap<Hash> = HashMap<u64, SmallVec<[(Hash, u32); 2]>>;
@@ -148,7 +151,6 @@ impl<Hash: AccumulatorHash> ArenaForest<Hash> {
         self.dirty_queue.len()
     }
 
-
     /// Returns the number of leaves in the forest
     #[inline]
     pub fn leaves(&self) -> u64 {
@@ -210,12 +212,12 @@ impl<Hash: AccumulatorHash> ArenaForest<Hash> {
         self.rr.push(node.rr);
         self.parent.push(node.parent);
         self.level.push(node.level);
-        
+
         debug_assert_eq!(self.hashes.len(), self.lr.len());
         debug_assert_eq!(self.hashes.len(), self.rr.len());
         debug_assert_eq!(self.hashes.len(), self.parent.len());
         debug_assert_eq!(self.hashes.len(), self.level.len());
-        
+
         idx
     }
 }

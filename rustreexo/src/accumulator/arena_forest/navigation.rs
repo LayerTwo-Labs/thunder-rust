@@ -167,11 +167,11 @@ impl<Hash: AccumulatorHash> ArenaForest<Hash> {
     #[inline]
     pub(crate) fn find_root_of_node(&self, node_idx: u32) -> Option<usize> {
         let mut current_idx = node_idx;
-        
+
         while let Some(parent_idx) = self.find_parent_of_node(current_idx) {
             current_idx = parent_idx;
         }
-        
+
         for (root_position, &root_option) in self.roots.iter().enumerate() {
             if let Some(root_idx) = root_option {
                 if root_idx == current_idx {
@@ -179,8 +179,7 @@ impl<Hash: AccumulatorHash> ArenaForest<Hash> {
                 }
             }
         }
-        
+
         None
     }
-
 }

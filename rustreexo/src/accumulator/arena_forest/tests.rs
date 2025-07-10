@@ -1,15 +1,15 @@
 //! Test modules for ArenaForest implementation.
 
-use std::str::FromStr;
 use std::convert::TryFrom;
+use std::str::FromStr;
 
 use serde::Deserialize;
 
 use super::*;
 use crate::accumulator::node_hash::AccumulatorHash;
 use crate::accumulator::node_hash::BitcoinNodeHash;
-use crate::accumulator::util::hash_from_u8;
 use crate::accumulator::proof::Proof;
+use crate::accumulator::util::hash_from_u8;
 // Removed unused import
 
 #[test]
@@ -129,7 +129,9 @@ fn comprehensive_add_prove_delete_verify_regression() {
     // Delete 2 leaves (first and third)
     let leaves_to_delete = vec![leaves[0], leaves[2]];
 
-    forest.modify(&[], &leaves_to_delete).expect("Deletion failed");
+    forest
+        .modify(&[], &leaves_to_delete)
+        .expect("Deletion failed");
 
     // Verify old proofs for deleted leaves fail
     for (leaf_hash, proof) in &leaf_proofs {
@@ -166,17 +168,15 @@ fn comprehensive_add_prove_delete_verify_regression() {
 
     for leaf_hash in remaining_leaves.iter() {
         match forest.prove(&[*leaf_hash]) {
-            Ok(proof) => {
-                match forest.verify(&proof, &[*leaf_hash]) {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        panic!("New proof verification failed");
-                    }
-                    Err(e) => {
-                        panic!("New proof verification error: {}", e);
-                    }
+            Ok(proof) => match forest.verify(&proof, &[*leaf_hash]) {
+                Ok(true) => {}
+                Ok(false) => {
+                    panic!("New proof verification failed");
                 }
-            }
+                Err(e) => {
+                    panic!("New proof verification error: {}", e);
+                }
+            },
             Err(e) => {
                 panic!("New proof generation failed: {}", e);
             }
@@ -191,17 +191,15 @@ fn comprehensive_add_prove_delete_verify_regression() {
     // Verify new proofs pass
     for leaf_hash in new_leaves.iter() {
         match forest.prove(&[*leaf_hash]) {
-            Ok(proof) => {
-                match forest.verify(&proof, &[*leaf_hash]) {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        panic!("New proof verification failed");
-                    }
-                    Err(e) => {
-                        panic!("New proof verification error: {}", e);
-                    }
+            Ok(proof) => match forest.verify(&proof, &[*leaf_hash]) {
+                Ok(true) => {}
+                Ok(false) => {
+                    panic!("New proof verification failed");
                 }
-            }
+                Err(e) => {
+                    panic!("New proof verification error: {}", e);
+                }
+            },
             Err(e) => {
                 panic!("Proof generation failed for new leaf: {}", e);
             }
@@ -215,8 +213,12 @@ fn comprehensive_add_prove_delete_verify_regression() {
         .cloned()
         .chain(new_leaves.iter().cloned())
         .collect();
-    let proof = forest.prove(&all_remaining_leaves).expect("Batch proof generation failed");
-    assert!(forest.verify(&proof, &all_remaining_leaves).expect("Batch proof verification failed"));
+    let proof = forest
+        .prove(&all_remaining_leaves)
+        .expect("Batch proof generation failed");
+    assert!(forest
+        .verify(&proof, &all_remaining_leaves)
+        .expect("Batch proof verification failed"));
 }
 
 #[test]
@@ -225,16 +227,22 @@ fn single_leaf_edge_case_test() {
     let leaf = hash_from_u8(100);
 
     // Add single leaf
-    forest.modify(&[leaf], &[]).expect("Failed to add single leaf");
+    forest
+        .modify(&[leaf], &[])
+        .expect("Failed to add single leaf");
 
     // Prove single leaf
     let proof = forest.prove(&[leaf]).expect("Failed to prove single leaf");
 
     // Verify single leaf proof
-    assert!(forest.verify(&proof, &[leaf]).expect("Failed to verify single leaf"));
+    assert!(forest
+        .verify(&proof, &[leaf])
+        .expect("Failed to verify single leaf"));
 
     // Delete single leaf
-    forest.modify(&[], &[leaf]).expect("Failed to delete single leaf");
+    forest
+        .modify(&[], &[leaf])
+        .expect("Failed to delete single leaf");
 
     // Verify forest state after deletion
     assert_eq!(forest.leaves(), 1); // Leaf count is monotonic
@@ -262,8 +270,12 @@ fn large_forest_stress_test() {
     for indices in test_cases.iter() {
         let test_leaves: Vec<BitcoinNodeHash> = indices.iter().map(|&idx| leaves[idx]).collect();
 
-        let proof = forest.prove(&test_leaves).expect("Failed to generate proof");
-        assert!(forest.verify(&proof, &test_leaves).expect("Failed to verify proof"));
+        let proof = forest
+            .prove(&test_leaves)
+            .expect("Failed to generate proof");
+        assert!(forest
+            .verify(&proof, &test_leaves)
+            .expect("Failed to verify proof"));
     }
 }
 
@@ -273,22 +285,30 @@ fn test_adaptive_threshold_behavior() {
 
     // Test with small workload
     let small_leaves: Vec<BitcoinNodeHash> = (0..4).map(|i| hash_from_u8(i as u8)).collect();
-    forest.modify(&small_leaves, &[]).expect("Failed to add small leaves");
+    forest
+        .modify(&small_leaves, &[])
+        .expect("Failed to add small leaves");
 
     // Force some dirty state
     let leaf_to_delete = small_leaves[0];
-    forest.modify(&[], &[leaf_to_delete]).expect("Failed to delete leaf");
+    forest
+        .modify(&[], &[leaf_to_delete])
+        .expect("Failed to delete leaf");
 
     // Test adaptive method
     forest.recompute_dirty_hashes_adaptive();
 
     // Test with larger workload
     let large_leaves: Vec<BitcoinNodeHash> = (10..200).map(|i| hash_from_u8(i as u8)).collect();
-    forest.modify(&large_leaves, &[]).expect("Failed to add large leaves");
+    forest
+        .modify(&large_leaves, &[])
+        .expect("Failed to add large leaves");
 
     // Create more dirty state
     let leaves_to_delete: Vec<BitcoinNodeHash> = large_leaves.iter().take(10).cloned().collect();
-    forest.modify(&[], &leaves_to_delete).expect("Failed to delete leaves");
+    forest
+        .modify(&[], &leaves_to_delete)
+        .expect("Failed to delete leaves");
 
     // Test adaptive method with larger workload
     forest.recompute_dirty_hashes_adaptive();
@@ -380,27 +400,29 @@ fn run_single_addition_case_arena(case: TestCase) {
         .iter()
         .map(|preimage| hash_from_u8(*preimage))
         .collect::<Vec<_>>();
-    
+
     let mut forest = ArenaForest::new();
-    forest.modify(&hashes, &[]).expect("Test ArenaForest should be valid");
-    
+    forest
+        .modify(&hashes, &[])
+        .expect("Test ArenaForest should be valid");
+
     // Check root count matches
     assert_eq!(forest.get_roots().len(), case.expected_roots.len());
-    
+
     // Convert expected roots from strings to BitcoinNodeHash
     let expected_roots = case
         .expected_roots
         .iter()
         .map(|root| BitcoinNodeHash::from_str(root).unwrap())
         .collect::<Vec<_>>();
-    
+
     // Get actual roots from ArenaForest
     let actual_roots = forest
         .get_roots()
         .iter()
         .map(|root| root.get_data())
         .collect::<Vec<_>>();
-    
+
     assert_eq!(expected_roots, actual_roots, "Test case failed {:?}", case);
 }
 
@@ -410,7 +432,7 @@ fn run_case_with_deletion_arena(case: TestCase) {
         .iter()
         .map(|preimage| hash_from_u8(*preimage))
         .collect::<Vec<_>>();
-    
+
     // Get the target values (positions) to delete
     let dels = case
         .target_values
@@ -419,37 +441,60 @@ fn run_case_with_deletion_arena(case: TestCase) {
         .iter()
         .map(|pos| hashes[*pos as usize])
         .collect::<Vec<_>>();
-    
+
     let mut forest = ArenaForest::new();
-    forest.modify(&hashes, &[]).expect("Test ArenaForest should be valid");
-    forest.modify(&[], &dels).expect("Deletion should still be valid");
-    
+    forest
+        .modify(&hashes, &[])
+        .expect("Test ArenaForest should be valid");
+    forest
+        .modify(&[], &dels)
+        .expect("Deletion should still be valid");
+
     // Convert expected roots from strings to BitcoinNodeHash
     let expected_roots = case
         .expected_roots
         .iter()
         .map(|root| BitcoinNodeHash::from_str(root).unwrap())
         .collect::<Vec<_>>();
-    
+
     // Get actual roots from ArenaForest
     let actual_roots = forest
         .get_roots()
         .iter()
         .map(|root| root.get_data())
         .collect::<Vec<_>>();
-    
+
     // For deletion tests, we need to be more careful about comparing roots
     // ArenaForest might generate empty roots in different positions than MemForest
     // Let's compare only the non-empty roots
-    let non_empty_expected: Vec<_> = expected_roots.iter().filter(|r| !r.is_empty()).cloned().collect();
-    let non_empty_actual: Vec<_> = actual_roots.iter().filter(|r| !r.is_empty()).cloned().collect();
-    
+    let non_empty_expected: Vec<_> = expected_roots
+        .iter()
+        .filter(|r| !r.is_empty())
+        .cloned()
+        .collect();
+    let non_empty_actual: Vec<_> = actual_roots
+        .iter()
+        .filter(|r| !r.is_empty())
+        .cloned()
+        .collect();
+
     // Both should have the same non-empty roots
-    assert_eq!(non_empty_expected.len(), non_empty_actual.len(), "Different number of non-empty roots: {:?}", case);
-    
+    assert_eq!(
+        non_empty_expected.len(),
+        non_empty_actual.len(),
+        "Different number of non-empty roots: {:?}",
+        case
+    );
+
     // Check that all non-empty roots match (order might be different)
     for expected_root in &non_empty_expected {
-        assert!(non_empty_actual.contains(expected_root), "Expected root {:?} not found in actual roots {:?} for case {:?}", expected_root, non_empty_actual, case);
+        assert!(
+            non_empty_actual.contains(expected_root),
+            "Expected root {:?} not found in actual roots {:?} for case {:?}",
+            expected_root,
+            non_empty_actual,
+            case
+        );
     }
 }
 
@@ -460,24 +505,24 @@ fn run_single_proof_case_arena(case: ProofTestCase) {
         .into_iter()
         .map(|root| BitcoinNodeHash::from_str(root.as_str()).expect("Test case hash is valid"))
         .collect::<Vec<_>>();
-    
+
     // Convert target preimages to hashes
     let del_hashes = case
         .target_preimages
         .into_iter()
         .map(hash_from_u8)
         .collect::<Vec<_>>();
-    
+
     // Convert proof hashes from strings to BitcoinNodeHash
     let proof_hashes = case
         .proofhashes
         .into_iter()
         .map(|hash| BitcoinNodeHash::from_str(hash.as_str()).expect("Test case hash is valid"))
         .collect::<Vec<_>>();
-    
+
     // Create a proof with the targets and proof hashes
     let proof = super::super::proof::Proof::new(case.targets, proof_hashes);
-    
+
     // For verification, we need to use a Stump-like structure
     // Since ArenaForest doesn't directly support stump-style verification,
     // we'll create a temporary stump for verification
@@ -485,7 +530,7 @@ fn run_single_proof_case_arena(case: ProofTestCase) {
         leaves: case.numleaves as u64,
         roots,
     };
-    
+
     let expected = case.expected;
     let result = stump.verify(&proof, &del_hashes);
     assert_eq!(Ok(expected), result, "Proof verification test failed");
@@ -496,14 +541,14 @@ fn run_single_proof_case_arena(case: ProofTestCase) {
 fn arena_forest_run_tests_from_cases() {
     let contents = std::fs::read_to_string("test_values/test_cases.json")
         .expect("Something went wrong reading the file");
-    let tests = serde_json::from_str::<TestsJSON>(contents.as_str())
-        .expect("JSON deserialization error");
-    
+    let tests =
+        serde_json::from_str::<TestsJSON>(contents.as_str()).expect("JSON deserialization error");
+
     // Run all insertion tests
     for test_case in tests.insertion_tests {
         run_single_addition_case_arena(test_case);
     }
-    
+
     // Run all deletion tests
     for test_case in tests.deletion_tests {
         run_case_with_deletion_arena(test_case);
@@ -514,13 +559,13 @@ fn arena_forest_run_tests_from_cases() {
 fn arena_forest_test_proof_verify() {
     let contents = std::fs::read_to_string("test_values/test_cases.json")
         .expect("Something went wrong reading the file");
-    let values: serde_json::Value = 
+    let values: serde_json::Value =
         serde_json::from_str(contents.as_str()).expect("JSON deserialization error");
-    
+
     let tests = values["proof_tests"].as_array().unwrap();
     for test in tests {
-        let case = serde_json::from_value::<ProofTestCase>(test.clone())
-            .expect("Invalid proof test case");
+        let case =
+            serde_json::from_value::<ProofTestCase>(test.clone()).expect("Invalid proof test case");
         run_single_proof_case_arena(case);
     }
 }
@@ -598,18 +643,19 @@ fn test_arena_serialization_roundtrip() {
     assert_eq!(forest.get_roots().len(), 1);
     assert!(!forest.get_roots()[0].get_data().is_empty());
     assert_eq!(forest.leaves(), 16);
-    
+
     forest.modify(&[], &hashes).expect("modify should work");
     assert_eq!(forest.get_roots().len(), 1);
     assert!(forest.get_roots()[0].get_data().is_empty());
     assert_eq!(forest.leaves(), 16);
-    
+
     let mut serialized = Vec::<u8>::new();
-    forest.serialize(&mut serialized).expect("serialize should work");
-    let deserialized = ArenaForest::<BitcoinNodeHash>::deserialize(&*serialized)
-        .expect("deserialize should work");
+    forest
+        .serialize(&mut serialized)
+        .expect("serialize should work");
+    let deserialized =
+        ArenaForest::<BitcoinNodeHash>::deserialize(&*serialized).expect("deserialize should work");
     assert_eq!(deserialized.get_roots().len(), 1);
     assert!(deserialized.get_roots()[0].get_data().is_empty());
     assert_eq!(deserialized.leaves(), 16);
 }
-

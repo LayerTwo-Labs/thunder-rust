@@ -1,6 +1,5 @@
 //! Deletion operations for leaf nodes and tree restructuring.
 
-
 use super::super::node_hash::AccumulatorHash;
 use super::forest::ArenaForest;
 use super::types::ArenaNode;
@@ -17,7 +16,10 @@ impl<Hash: AccumulatorHash + std::ops::Deref<Target = [u8; 32]>> ArenaForest<Has
                 .hash_to_node
                 .get(&key)
                 .and_then(|entries| {
-                    entries.iter().find(|(stored_hash, _)| stored_hash == hash).map(|(_, idx)| *idx)
+                    entries
+                        .iter()
+                        .find(|(stored_hash, _)| stored_hash == hash)
+                        .map(|(_, idx)| *idx)
                 })
                 .ok_or_else(|| format!("Hash not found for deletion: {:?}", hash))?;
 
@@ -29,7 +31,7 @@ impl<Hash: AccumulatorHash + std::ops::Deref<Target = [u8; 32]>> ArenaForest<Has
 
             // Mark as tombstone instead of immediate deletion
             self.mark_tombstone(node_idx);
-            
+
             // Remove from hash_to_node map
             if let Some(entries) = self.hash_to_node.get_mut(&key) {
                 entries.retain(|(stored_hash, _)| stored_hash != hash);
@@ -55,7 +57,7 @@ impl<Hash: AccumulatorHash + std::ops::Deref<Target = [u8; 32]>> ArenaForest<Has
 
         // Collect all zombie indices for processing
         let zombie_indices: Vec<u32> = self.zombies.indices.clone();
-        
+
         // Process zombies in reverse position order to avoid conflicts
         let mut zombies_with_positions: Vec<(u64, u32)> = Vec::new();
         for &zombie_idx in &zombie_indices {
@@ -63,7 +65,7 @@ impl<Hash: AccumulatorHash + std::ops::Deref<Target = [u8; 32]>> ArenaForest<Has
                 zombies_with_positions.push((position, zombie_idx));
             }
         }
-        
+
         // Sort by position (highest positions first)
         zombies_with_positions.sort_by(|a, b| b.0.cmp(&a.0));
 
@@ -73,17 +75,17 @@ impl<Hash: AccumulatorHash + std::ops::Deref<Target = [u8; 32]>> ArenaForest<Has
             if !self.is_tombstone(node_idx) {
                 continue;
             }
-            
+
             // Perform actual deletion and restructuring
             self.delete_single_leaf_immediate(position, node_idx)?;
         }
 
         // Clear the zombie queue
         self.zombies.clear();
-        
+
         // Flush dirty queue for batch optimization
         self.flush_dirty_queue()?;
-        
+
         Ok(())
     }
 
@@ -115,7 +117,7 @@ impl<Hash: AccumulatorHash + std::ops::Deref<Target = [u8; 32]>> ArenaForest<Has
                         }
                     }
                 }
-                
+
                 if let Some(root_pos) = found_root_pos {
                     let empty_node = ArenaNode::new_leaf(Hash::empty());
                     let empty_idx = self.allocate_node(empty_node);
@@ -131,7 +133,7 @@ impl<Hash: AccumulatorHash + std::ops::Deref<Target = [u8; 32]>> ArenaForest<Has
                 let parent_idx_usize = parent_idx as usize;
                 let parent_lr = self.lr[parent_idx_usize] & super::types::INDEX_MASK;
                 let parent_rr = self.rr[parent_idx_usize];
-                
+
                 if parent_lr == node_idx {
                     if parent_rr == super::types::NULL_INDEX {
                         return Err(format!("Parent {} missing right sibling", parent_idx));
@@ -143,7 +145,10 @@ impl<Hash: AccumulatorHash + std::ops::Deref<Target = [u8; 32]>> ArenaForest<Has
                     }
                     parent_lr
                 } else {
-                    return Err(format!("Node {} is not a child of parent {}", node_idx, parent_idx));
+                    return Err(format!(
+                        "Node {} is not a child of parent {}",
+                        node_idx, parent_idx
+                    ));
                 }
             }
         };
@@ -153,28 +158,36 @@ impl<Hash: AccumulatorHash + std::ops::Deref<Target = [u8; 32]>> ArenaForest<Has
             // Internal case: splice sibling into grandparent
             let grand_idx_usize = grand_idx as usize;
             let parent_idx_unwrapped = parent_idx.unwrap();
-            
+
             let grand_lr = self.lr[grand_idx_usize] & super::types::INDEX_MASK;
             if grand_lr == parent_idx_unwrapped {
                 self.lr[grand_idx_usize] = sibling_idx;
             } else {
                 self.rr[grand_idx_usize] = sibling_idx;
             }
-            
+
             self.parent[sibling_idx as usize] = grand_idx;
             self.level[sibling_idx as usize] = self.level[parent_idx_unwrapped as usize];
-            
+
             self.queue_for_dirty_propagation(grand_idx);
         } else {
             // Root case: promote sibling to new root
             let parent_idx_unwrapped = parent_idx.unwrap();
-            let root_pos = self.roots.iter().position(|r| *r == Some(parent_idx_unwrapped))
-                .ok_or_else(|| format!("Parent root {} not found in roots array", parent_idx_unwrapped))?;
-            
+            let root_pos = self
+                .roots
+                .iter()
+                .position(|r| *r == Some(parent_idx_unwrapped))
+                .ok_or_else(|| {
+                    format!(
+                        "Parent root {} not found in roots array",
+                        parent_idx_unwrapped
+                    )
+                })?;
+
             self.roots[root_pos] = Some(sibling_idx);
             self.parent[sibling_idx as usize] = NULL_INDEX;
             self.level[sibling_idx as usize] = self.level[parent_idx_unwrapped as usize];
-            
+
             self.queue_for_dirty_propagation(sibling_idx);
         }
 

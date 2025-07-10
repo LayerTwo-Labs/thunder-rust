@@ -1,13 +1,11 @@
 //! Proof generation and verification for the arena forest.
 
-
 use super::super::node_hash::AccumulatorHash;
 use super::forest::ArenaForest;
 
 impl<Hash: AccumulatorHash + std::ops::Deref<Target = [u8; 32]>> ArenaForest<Hash> {
     /// Generate proofs for target hashes.
     pub fn prove(&self, targets: &[Hash]) -> Result<super::super::proof::Proof<Hash>, String> {
-
         let mut positions = Vec::new();
 
         if targets.is_empty() {
@@ -23,11 +21,15 @@ impl<Hash: AccumulatorHash + std::ops::Deref<Target = [u8; 32]>> ArenaForest<Has
                 .hash_to_node
                 .get(&key)
                 .and_then(|entries| {
-                    entries.iter().find(|(stored_hash, _)| stored_hash == target).map(|(_, idx)| *idx)
+                    entries
+                        .iter()
+                        .find(|(stored_hash, _)| stored_hash == target)
+                        .map(|(_, idx)| *idx)
                 })
                 .ok_or_else(|| format!("Target hash not found: {:?}", target))?;
 
-            let position = self.get_pos(node_idx)
+            let position = self
+                .get_pos(node_idx)
                 .map_err(|e| format!("Position calculation failed: {}", e))?;
             positions.push(position);
         }
