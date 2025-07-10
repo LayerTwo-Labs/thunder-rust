@@ -185,6 +185,18 @@ where
         })
     }
 
+    /// Start a read txn, that can be used with the node's component DBs.
+    pub fn read_txn(&self) -> Result<sneed::RoTxn<'_>, Error> {
+        self.env
+            .read_txn()
+            .map_err(|err| EnvError::from(err).into())
+    }
+
+    /// Access the node's state storage
+    pub fn state(&self) -> &State {
+        &self.state
+    }
+
     /// Borrow the CUSF mainchain client, and execute the provided future.
     /// The CUSF mainchain client will be locked while the future is running.
     pub async fn with_cusf_mainchain<F, Output>(&self, f: F) -> Output
@@ -449,15 +461,13 @@ where
         Ok((returned_transactions, fee))
     }
 
+    /// Get pending withdrawal bundle, and bundle height
     pub fn get_pending_withdrawal_bundle(
         &self,
-    ) -> Result<Option<WithdrawalBundle>, Error> {
+    ) -> Result<Option<(WithdrawalBundle, u32)>, Error> {
         let txn = self.env.read_txn().map_err(EnvError::from)?;
-        let bundle = self
-            .state
-            .get_pending_withdrawal_bundle(&txn)?
-            .map(|(bundle, _)| bundle);
-        Ok(bundle)
+        let res = self.state.get_pending_withdrawal_bundle(&txn)?;
+        Ok(res)
     }
 
     pub fn remove_from_mempool(&self, txid: Txid) -> Result<(), Error> {

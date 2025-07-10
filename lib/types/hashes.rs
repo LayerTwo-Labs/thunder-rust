@@ -223,6 +223,27 @@ impl std::fmt::Display for M6id {
     }
 }
 
+impl FromStr for M6id {
+    type Err = <bitcoin::Txid as FromStr>::Err;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        bitcoin::Txid::from_str(s).map(Self)
+    }
+}
+
+impl utoipa::PartialSchema for M6id {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        let obj =
+            utoipa::openapi::Object::with_type(utoipa::openapi::Type::String);
+        utoipa::openapi::RefOr::T(utoipa::openapi::Schema::Object(obj))
+    }
+}
+
+impl utoipa::ToSchema for M6id {
+    fn name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("M6id")
+    }
+}
+
 pub fn hash<T>(data: &T) -> Hash
 where
     T: BorshSerialize,

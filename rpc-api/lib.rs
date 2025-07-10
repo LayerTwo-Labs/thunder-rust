@@ -4,16 +4,25 @@ use std::net::SocketAddr;
 
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use l2l_openapi::open_api;
+use serde::{Deserialize, Serialize};
 use thunder::{
     net::Peer,
     types::{
-        Address, MerkleRoot, OutPoint, Output, OutputContent, PointedOutput,
-        Txid, WithdrawalBundle, schema as thunder_schema,
+        Address, M6id, MerkleRoot, OutPoint, Output, OutputContent,
+        PointedOutput, Txid, WithdrawalBundle, WithdrawalBundleStatusInfo,
+        schema as thunder_schema,
     },
     wallet::Balance,
 };
+use utoipa::ToSchema;
 
 mod schema;
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct PendingWithdrawalBundle {
+    pub bundle: WithdrawalBundle,
+    pub bundle_height: u32,
+}
 
 #[open_api(ref_schemas[
     Address, MerkleRoot, OutPoint, Output, OutputContent, Txid,
@@ -47,6 +56,12 @@ pub trait Rpc {
         value_sats: u64,
         fee_sats: u64,
     ) -> RpcResult<bitcoin::Txid>;
+
+    /// Estimate next withdrawal bundle
+    #[method(name = "estimate_next_withdrawal_bundle")]
+    async fn estimate_next_withdrawal_bundle(
+        &self,
+    ) -> RpcResult<Option<WithdrawalBundle>>;
 
     /// Format a deposit address
     #[method(name = "format_deposit_address")]
@@ -106,6 +121,13 @@ pub trait Rpc {
     #[method(name = "get_wallet_utxos")]
     async fn get_wallet_utxos(&self) -> RpcResult<Vec<PointedOutput>>;
 
+    /// Get information about a withdrawal bundle
+    #[method(name = "get_withdrawal_bundle")]
+    async fn get_withdrawal_bundle(
+        &self,
+        m6id: M6id,
+    ) -> RpcResult<Option<WithdrawalBundleStatusInfo>>;
+
     /// Get the current block count
     #[method(name = "getblockcount")]
     async fn getblockcount(&self) -> RpcResult<u32>;
@@ -135,11 +157,10 @@ pub trait Rpc {
     async fn openapi_schema(&self) -> RpcResult<utoipa::openapi::OpenApi>;
 
     /// Get pending withdrawal bundle
-    #[open_api_method(output_schema(ToSchema))]
     #[method(name = "pending_withdrawal_bundle")]
     async fn pending_withdrawal_bundle(
         &self,
-    ) -> RpcResult<Option<WithdrawalBundle>>;
+    ) -> RpcResult<Option<PendingWithdrawalBundle>>;
 
     /// Remove a tx from the mempool
     #[open_api_method(output_schema(ToSchema))]

@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use fallible_iterator::FallibleIterator;
+use fallible_iterator::{FallibleIterator, IntoFallibleIterator};
 use sneed::{RoTxn, RwTxn, db::error::Error as DbError};
 
 use crate::{
@@ -18,11 +18,17 @@ use crate::{
     },
 };
 
-fn collect_withdrawal_bundle(
-    state: &State,
-    rotxn: &RoTxn,
+/// Collect a withdrawal bundle, from the provided UTXOs.
+/// This can be used to estimate the next withdrawal bundle, by providing
+/// UTXOs that are not spent by the current pending withdrawal bundle.
+fn collect_withdrawal_bundle_from_utxos<Utxos>(
+    utxos: Utxos,
     block_height: u32,
-) -> Result<Option<WithdrawalBundle>, Error> {
+) -> Result<Option<WithdrawalBundle>, Error>
+where
+    Utxos: IntoFallibleIterator<Item = (OutPoint, Output)>,
+    Error: From<Utxos::Error>,
+{
     // Weight of a bundle with 0 outputs.
     const BUNDLE_0_WEIGHT: u64 = 504;
     // Weight of a single output.
@@ -38,12 +44,8 @@ fn collect_withdrawal_bundle(
         bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         AggregatedWithdrawal,
     >::new();
-    let () = state
-        .utxos
-        .iter(rotxn)
-        .map_err(DbError::from)?
-        .map_err(|err| DbError::from(err).into())
-        .for_each(|(outpoint, output)| {
+    let () = utxos.into_fallible_iter().map_err(Error::from).for_each(
+        |(outpoint, output)| {
             if let OutputContent::Withdrawal {
                 value,
                 ref main_address,
@@ -70,7 +72,8 @@ fn collect_withdrawal_bundle(
                 aggregated.spend_utxos.insert(outpoint, output);
             }
             Ok::<_, Error>(())
-        })?;
+        },
+    )?;
     if address_to_aggregated_withdrawal.is_empty() {
         return Ok(None);
     }
@@ -98,6 +101,47 @@ fn collect_withdrawal_bundle(
     let bundle =
         WithdrawalBundle::new(block_height, fee, spend_utxos, bundle_outputs)?;
     Ok(Some(bundle))
+}
+
+fn collect_withdrawal_bundle(
+    state: &State,
+    rotxn: &RoTxn,
+    block_height: u32,
+) -> Result<Option<WithdrawalBundle>, Error> {
+    let utxos = state
+        .utxos
+        .iter(rotxn)
+        .map_err(DbError::from)?
+        .map_err(DbError::from);
+    collect_withdrawal_bundle_from_utxos(utxos, block_height)
+}
+
+/// Estimate the *next* pending withdrawal bundle. If no pending withdrawal
+/// bundle exists, this is equivalent to collecting a withdrawal bundle.
+pub fn estimate_next_withdrawal_bundle(
+    state: &State,
+    rotxn: &RoTxn,
+) -> Result<Option<WithdrawalBundle>, Error> {
+    let bundle_height = state
+        .try_get_height(rotxn)?
+        .map(|height| height + 1)
+        .unwrap_or(0);
+    let Some((pending_withdrawal_bundle, _)) =
+        state.get_pending_withdrawal_bundle(rotxn)?
+    else {
+        return collect_withdrawal_bundle(state, rotxn, bundle_height);
+    };
+    let utxos = state
+        .utxos
+        .iter(rotxn)
+        .map_err(DbError::from)?
+        .map_err(DbError::from)
+        .filter(|(outpoint, _)| {
+            Ok(!pending_withdrawal_bundle
+                .spend_utxos()
+                .contains_key(outpoint))
+        });
+    collect_withdrawal_bundle_from_utxos(utxos, bundle_height)
 }
 
 fn connect_withdrawal_bundle_submitted(

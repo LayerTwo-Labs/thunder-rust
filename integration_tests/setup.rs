@@ -279,7 +279,7 @@ impl Sidechain for PostSetup {
             self.rpc_client.pending_withdrawal_bundle().await?.ok_or(
                 Self::CreateWithdrawalError::PendingWithdrawalBundleNotFound,
             )?;
-        let m6id = pending_withdrawal_bundle.compute_m6id();
+        let m6id = pending_withdrawal_bundle.bundle.compute_m6id();
         Ok(bip300301_enforcer_lib::types::M6id(m6id.0))
     }
 }

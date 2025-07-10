@@ -138,7 +138,9 @@ impl Header {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema,
+)]
 pub enum WithdrawalBundleStatus {
     Confirmed,
     Failed,
@@ -255,6 +257,36 @@ impl WithdrawalBundle {
     pub fn tx(&self) -> &bitcoin::Transaction {
         &self.tx
     }
+}
+
+/// Information we have regarding a withdrawal bundle
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub enum WithdrawalBundleInfo {
+    /// Withdrawal bundle is known
+    Known(WithdrawalBundle),
+    /// Withdrawal bundle is unknown but unconfirmed / failed
+    Unknown,
+    /// If an unknown withdrawal bundle is confirmed, ALL UTXOs are
+    /// considered spent.
+    UnknownConfirmed {
+        spend_utxos: BTreeMap<OutPoint, Output>,
+    },
+}
+
+impl WithdrawalBundleInfo {
+    pub fn is_known(&self) -> bool {
+        match self {
+            Self::Known(_) => true,
+            Self::Unknown | Self::UnknownConfirmed { .. } => false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct WithdrawalBundleStatusInfo {
+    pub status: WithdrawalBundleStatus,
+    pub status_height: u32,
+    pub bundle_info: WithdrawalBundleInfo,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

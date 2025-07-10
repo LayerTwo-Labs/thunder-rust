@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 use http::HeaderMap;
 use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder};
 
-use thunder::types::{Address, Txid};
+use thunder::types::{Address, M6id, Txid};
 use thunder_app_rpc_api::RpcClient;
 use tracing_subscriber::layer::SubscriberExt as _;
 
@@ -23,6 +23,8 @@ pub enum Command {
         #[arg(long)]
         fee_sats: u64,
     },
+    /// Estimate next withdrawal bundle
+    EstimateNextWithdrawalBundle,
     /// Format a deposit address
     FormatDepositAddress { address: Address },
     /// Generate a mnemonic seed phrase
@@ -45,6 +47,8 @@ pub enum Command {
     GetWalletAddresses,
     /// Get wallet UTXOs
     GetWalletUtxos,
+    /// Get information about a withdrawal bundle
+    GetWithdrawalBundle { m6id: M6id },
     /// Get the current block count
     GetBlockcount,
     /// Get the height of the latest failed withdrawal bundle
@@ -134,6 +138,11 @@ where
                 .await?;
             format!("{txid}")
         }
+        Command::EstimateNextWithdrawalBundle => {
+            let withdrawal_bundle =
+                rpc_client.estimate_next_withdrawal_bundle().await?;
+            serde_json::to_string_pretty(&withdrawal_bundle)?
+        }
         Command::FormatDepositAddress { address } => {
             rpc_client.format_deposit_address(address).await?
         }
@@ -166,6 +175,11 @@ where
         Command::GetWalletUtxos => {
             let utxos = rpc_client.get_wallet_utxos().await?;
             serde_json::to_string_pretty(&utxos)?
+        }
+        Command::GetWithdrawalBundle { m6id } => {
+            let bundle_status_info =
+                rpc_client.get_withdrawal_bundle(m6id).await?;
+            serde_json::to_string_pretty(&bundle_status_info)?
         }
         Command::GetBlockcount => {
             let blockcount = rpc_client.getblockcount().await?;

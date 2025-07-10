@@ -9,10 +9,10 @@ pub struct Withdrawals {}
 impl Withdrawals {
     pub fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
         ui.heading("Pending withdrawals");
-        let bundle = app.and_then(|app| {
+        let pending_withdrawal_bundle = app.and_then(|app| {
             app.node.get_pending_withdrawal_bundle().ok().flatten()
         });
-        if let Some(bundle) = bundle {
+        if let Some((bundle, _)) = pending_withdrawal_bundle {
             let mut spent_utxos: Vec<_> = bundle.spend_utxos().iter().collect();
             spent_utxos.sort_by_key(|(outpoint, _)| format!("{outpoint}"));
             egui::Grid::new("bundle_utxos")

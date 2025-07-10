@@ -8,7 +8,10 @@ use jsonrpsee::{
 };
 use thunder::{
     net::Peer,
-    types::{Address, PointedOutput, Txid, WithdrawalBundle},
+    types::{
+        Address, M6id, PointedOutput, Txid, WithdrawalBundle,
+        WithdrawalBundleStatusInfo,
+    },
     wallet::Balance,
 };
 use thunder_app_rpc_api::RpcServer;
@@ -63,6 +66,17 @@ impl RpcServer for RpcServerImpl {
 
     async fn connect_peer(&self, addr: SocketAddr) -> RpcResult<()> {
         self.app.node.connect_peer(addr).map_err(custom_err)
+    }
+
+    async fn estimate_next_withdrawal_bundle(
+        &self,
+    ) -> RpcResult<Option<WithdrawalBundle>> {
+        let rotxn = self.app.node.read_txn().map_err(custom_err)?;
+        self.app
+            .node
+            .state()
+            .estimate_next_withdrawal_bundle(&rotxn)
+            .map_err(custom_err)
     }
 
     async fn format_deposit_address(
@@ -151,6 +165,18 @@ impl RpcServer for RpcServerImpl {
         Ok(utxos)
     }
 
+    async fn get_withdrawal_bundle(
+        &self,
+        m6id: M6id,
+    ) -> RpcResult<Option<WithdrawalBundleStatusInfo>> {
+        let rotxn = self.app.node.read_txn().map_err(custom_err)?;
+        self.app
+            .node
+            .state()
+            .try_get_latest_withdrawal_bundle_status_info(&rotxn, &m6id)
+            .map_err(custom_err)
+    }
+
     async fn getblockcount(&self) -> RpcResult<u32> {
         let height = self.app.node.try_get_height().map_err(custom_err)?;
         let block_count = height.map_or(0, |height| height + 1);
@@ -196,11 +222,17 @@ impl RpcServer for RpcServerImpl {
 
     async fn pending_withdrawal_bundle(
         &self,
-    ) -> RpcResult<Option<WithdrawalBundle>> {
-        self.app
-            .node
-            .get_pending_withdrawal_bundle()
-            .map_err(custom_err)
+    ) -> RpcResult<Option<thunder_app_rpc_api::PendingWithdrawalBundle>> {
+        match self.app.node.get_pending_withdrawal_bundle() {
+            Ok(Some((bundle, bundle_height))) => {
+                Ok(Some(thunder_app_rpc_api::PendingWithdrawalBundle {
+                    bundle,
+                    bundle_height,
+                }))
+            }
+            Ok(None) => Ok(None),
+            Err(err) => Err(custom_err(err)),
+        }
     }
 
     async fn openapi_schema(&self) -> RpcResult<utoipa::openapi::OpenApi> {

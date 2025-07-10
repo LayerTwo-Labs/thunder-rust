@@ -1,10 +1,9 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use fallible_iterator::FallibleIterator;
 use futures::Stream;
 use heed::types::SerdeBincode;
 use rustreexo::accumulator::{node_hash::BitcoinNodeHash, proof::Proof};
-use serde::{Deserialize, Serialize};
 use sneed::{
     DatabaseUnique, RoTxn, RwTxn, UnitKey,
     db::error::{self as db_error, Error as DbError},
@@ -19,7 +18,8 @@ use crate::{
         AuthorizedTransaction, BlockHash, Body, FilledTransaction, GetAddress,
         GetValue, Header, InPoint, M6id, OutPoint, Output, PointedOutput,
         SpentOutput, Transaction, VERSION, Verify, Version, WithdrawalBundle,
-        WithdrawalBundleStatus, proto::mainchain::TwoWayPegData,
+        WithdrawalBundleInfo, WithdrawalBundleStatus,
+        WithdrawalBundleStatusInfo, proto::mainchain::TwoWayPegData,
     },
     util::Watchable,
 };
@@ -33,29 +33,6 @@ pub use error::Error;
 use rollback::RollBack;
 
 pub const WITHDRAWAL_BUNDLE_FAILURE_GAP: u32 = 4;
-
-/// Information we have regarding a withdrawal bundle
-#[derive(Debug, Deserialize, Serialize)]
-enum WithdrawalBundleInfo {
-    /// Withdrawal bundle is known
-    Known(WithdrawalBundle),
-    /// Withdrawal bundle is unknown but unconfirmed / failed
-    Unknown,
-    /// If an unknown withdrawal bundle is confirmed, ALL UTXOs are
-    /// considered spent.
-    UnknownConfirmed {
-        spend_utxos: BTreeMap<OutPoint, Output>,
-    },
-}
-
-impl WithdrawalBundleInfo {
-    fn is_known(&self) -> bool {
-        match self {
-            Self::Known(_) => true,
-            Self::Unknown | Self::UnknownConfirmed { .. } => false,
-        }
-    }
-}
 
 #[derive(Clone)]
 pub struct State {
@@ -212,6 +189,25 @@ impl State {
         Ok(Some((bundle_status.height, latest_failed_m6id)))
     }
 
+    /// Get latest withdrawal bundle status info, if it exists
+    pub fn try_get_latest_withdrawal_bundle_status_info(
+        &self,
+        rotxn: &RoTxn,
+        m6id: &M6id,
+    ) -> Result<Option<WithdrawalBundleStatusInfo>, db_error::TryGet> {
+        let Some((bundle_info, status)) =
+            self.withdrawal_bundles.try_get(rotxn, m6id)?
+        else {
+            return Ok(None);
+        };
+        let latest_status = status.latest();
+        Ok(Some(WithdrawalBundleStatusInfo {
+            status: latest_status.value,
+            status_height: latest_status.height,
+            bundle_info,
+        }))
+    }
+
     /// Get the current Utreexo accumulator
     pub fn get_accumulator(&self, rotxn: &RoTxn) -> Result<Accumulator, Error> {
         let accumulator = self
@@ -276,15 +272,20 @@ impl State {
         })
     }
 
+    /// Estimate the next withdrawal bundle
+    pub fn estimate_next_withdrawal_bundle(
+        &self,
+        rotxn: &RoTxn,
+    ) -> Result<Option<WithdrawalBundle>, Error> {
+        two_way_peg_data::estimate_next_withdrawal_bundle(self, rotxn)
+    }
+
     /// Get pending withdrawal bundle and block height
     pub fn get_pending_withdrawal_bundle(
         &self,
-        txn: &RoTxn,
+        rotxn: &RoTxn,
     ) -> Result<Option<(WithdrawalBundle, u32)>, Error> {
-        Ok(self
-            .pending_withdrawal_bundle
-            .try_get(txn, &())
-            .map_err(DbError::from)?)
+        Ok(self.pending_withdrawal_bundle.try_get(rotxn, &())?)
     }
 
     pub fn validate_filled_transaction(
