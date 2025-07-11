@@ -2,8 +2,8 @@ use std::net::SocketAddr;
 
 use bitcoin::Amount;
 use jsonrpsee::{
-    core::{RpcResult, async_trait},
-    server::{RpcServiceBuilder, Server},
+    core::{RpcResult, async_trait, middleware::RpcServiceBuilder},
+    server::Server,
     types::ErrorObject,
 };
 use thunder::{
