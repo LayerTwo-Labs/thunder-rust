@@ -849,36 +849,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "bip300301"
-version = "0.1.1"
-source = "git+https://github.com/Ash-L2L/bip300301.git?rev=8603b40520e432ccff27164a484647aa4a0be250#8603b40520e432ccff27164a484647aa4a0be250"
-dependencies = [
- "base64 0.22.1",
- "bitcoin",
- "educe",
- "hashlink 0.10.0",
- "hex 0.4.3",
- "http 1.3.1",
- "jsonrpsee",
- "monostate",
- "serde",
- "serde_json",
- "serde_with",
- "thiserror 2.0.12",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "bip300301_enforcer_integration_tests"
 version = "0.3.4"
-source = "git+https://github.com/LayerTwo-Labs/bip300301_enforcer?rev=ae376cbe83da87f8487eceb407e8c3109aa49d4d#ae376cbe83da87f8487eceb407e8c3109aa49d4d"
+source = "git+https://github.com/LayerTwo-Labs/bip300301_enforcer?rev=efc538e2b10619a2984acb197b9392cb17e05313#efc538e2b10619a2984acb197b9392cb17e05313"
 dependencies = [
  "anyhow",
  "bdk_wallet",
- "bip300301",
  "bip300301_enforcer_lib",
  "bitcoin",
+ "bitcoin-jsonrpsee",
  "cfg-if",
  "cusf-enforcer-mempool",
  "dotenvy",
@@ -904,7 +883,7 @@ dependencies = [
 [[package]]
 name = "bip300301_enforcer_lib"
 version = "0.3.4"
-source = "git+https://github.com/LayerTwo-Labs/bip300301_enforcer?rev=ae376cbe83da87f8487eceb407e8c3109aa49d4d#ae376cbe83da87f8487eceb407e8c3109aa49d4d"
+source = "git+https://github.com/LayerTwo-Labs/bip300301_enforcer?rev=efc538e2b10619a2984acb197b9392cb17e05313#efc538e2b10619a2984acb197b9392cb17e05313"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -915,8 +894,8 @@ dependencies = [
  "bdk_esplora",
  "bdk_wallet",
  "bincode",
- "bip300301",
  "bitcoin",
+ "bitcoin-jsonrpsee",
  "bitcoin-send-tx-p2p",
  "blake3",
  "byteorder",
@@ -1031,6 +1010,26 @@ name = "bitcoin-io"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b47c4ab7a93edb0c7198c5535ed9b52b63095f4e9b45279c6736cec4b856baf"
+
+[[package]]
+name = "bitcoin-jsonrpsee"
+version = "0.1.1"
+source = "git+https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git?rev=36b5f67f69ed25a0a003f0cb82e9c5663fc0f2f2#36b5f67f69ed25a0a003f0cb82e9c5663fc0f2f2"
+dependencies = [
+ "base64 0.22.1",
+ "bitcoin",
+ "educe",
+ "hashlink 0.10.0",
+ "hex 0.4.3",
+ "http 1.3.1",
+ "jsonrpsee",
+ "monostate",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "thiserror 2.0.12",
+ "tracing",
+]
 
 [[package]]
 name = "bitcoin-send-tx-p2p"
@@ -1623,12 +1622,12 @@ dependencies = [
 [[package]]
 name = "cusf-enforcer-mempool"
 version = "0.2.0"
-source = "git+https://github.com/torkelrogstad/cusf-enforcer-mempool.git?rev=58227511cc63f9ac448a5ecfbb38b743dad5367a#58227511cc63f9ac448a5ecfbb38b743dad5367a"
+source = "git+https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git?rev=a135b448031bd8e6ca7fac9104a782e7380dced7#a135b448031bd8e6ca7fac9104a782e7380dced7"
 dependencies = [
  "anyhow",
  "async-trait",
- "bip300301",
  "bitcoin",
+ "bitcoin-jsonrpsee",
  "blake3",
  "borsh",
  "chrono",
@@ -3569,9 +3568,9 @@ dependencies = [
 
 [[package]]
 name = "jsonrpsee"
-version = "0.24.9"
+version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37b26c20e2178756451cfeb0661fb74c47dd5988cb7e3939de7e9241fd604d42"
+checksum = "1fba77a59c4c644fd48732367624d1bcf6f409f9c9a286fbc71d2f1fc0b2ea16"
 dependencies = [
  "jsonrpsee-client-transport",
  "jsonrpsee-core",
@@ -3587,9 +3586,9 @@ dependencies = [
 
 [[package]]
 name = "jsonrpsee-client-transport"
-version = "0.24.9"
+version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bacb85abf4117092455e1573625e21b8f8ef4dec8aff13361140b2dc266cdff2"
+checksum = "a2a320a3f1464e4094f780c4d48413acd786ce5627aaaecfac9e9c7431d13ae1"
 dependencies = [
  "base64 0.22.1",
  "futures-channel",
@@ -3602,7 +3601,7 @@ dependencies = [
  "rustls-pki-types",
  "rustls-platform-verifier",
  "soketto",
- "thiserror 1.0.69",
+ "thiserror 2.0.12",
  "tokio",
  "tokio-rustls 0.26.2",
  "tokio-util",
@@ -3612,9 +3611,9 @@ dependencies = [
 
 [[package]]
 name = "jsonrpsee-core"
-version = "0.24.9"
+version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "456196007ca3a14db478346f58c7238028d55ee15c1df15115596e411ff27925"
+checksum = "693c93cbb7db25f4108ed121304b671a36002c2db67dff2ee4391a688c738547"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3626,24 +3625,24 @@ dependencies = [
  "jsonrpsee-types",
  "parking_lot",
  "pin-project",
- "rand 0.8.5",
+ "rand 0.9.1",
  "rustc-hash 2.1.1",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.12",
  "tokio",
  "tokio-stream",
+ "tower 0.5.2",
  "tracing",
  "wasm-bindgen-futures",
 ]
 
 [[package]]
 name = "jsonrpsee-http-client"
-version = "0.24.9"
+version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c872b6c9961a4ccc543e321bb5b89f6b2d2c7fe8b61906918273a3333c95400c"
+checksum = "6962d2bd295f75e97dd328891e58fce166894b974c1f7ce2e7597f02eeceb791"
 dependencies = [
- "async-trait",
  "base64 0.22.1",
  "http-body 1.0.1",
  "hyper 1.6.0",
@@ -3655,18 +3654,17 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.12",
  "tokio",
- "tower 0.4.13",
- "tracing",
+ "tower 0.5.2",
  "url",
 ]
 
 [[package]]
 name = "jsonrpsee-proc-macros"
-version = "0.24.9"
+version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e65763c942dfc9358146571911b0cd1c361c2d63e2d2305622d40d36376ca80"
+checksum = "2fa4f5daed39f982a1bb9d15449a28347490ad42b212f8eaa2a2a344a0dce9e9"
 dependencies = [
  "heck 0.5.0",
  "proc-macro-crate",
@@ -3677,9 +3675,9 @@ dependencies = [
 
 [[package]]
 name = "jsonrpsee-server"
-version = "0.24.9"
+version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55e363146da18e50ad2b51a0a7925fc423137a0b1371af8235b1c231a0647328"
+checksum = "d38b0bcf407ac68d241f90e2d46041e6a06988f97fe1721fb80b91c42584fae6"
 dependencies = [
  "futures-util",
  "http 1.3.1",
@@ -3694,47 +3692,49 @@ dependencies = [
  "serde",
  "serde_json",
  "soketto",
- "thiserror 1.0.69",
+ "thiserror 2.0.12",
  "tokio",
  "tokio-stream",
  "tokio-util",
- "tower 0.4.13",
+ "tower 0.5.2",
  "tracing",
 ]
 
 [[package]]
 name = "jsonrpsee-types"
-version = "0.24.9"
+version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08a8e70baf945b6b5752fc8eb38c918a48f1234daf11355e07106d963f860089"
+checksum = "66df7256371c45621b3b7d2fb23aea923d577616b9c0e9c0b950a6ea5c2be0ca"
 dependencies = [
  "http 1.3.1",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.12",
 ]
 
 [[package]]
 name = "jsonrpsee-wasm-client"
-version = "0.24.9"
+version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6558a9586cad43019dafd0b6311d0938f46efc116b34b28c74778bc11a2edf6"
+checksum = "6b67695cbcf4653f39f8f8738925547e0e23fd9fe315bccf951097b9f6a38781"
 dependencies = [
  "jsonrpsee-client-transport",
  "jsonrpsee-core",
  "jsonrpsee-types",
+ "tower 0.5.2",
 ]
 
 [[package]]
 name = "jsonrpsee-ws-client"
-version = "0.24.9"
+version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01b3323d890aa384f12148e8d2a1fd18eb66e9e7e825f9de4fa53bcc19b93eef"
+checksum = "2da2694c9ff271a9d3ebfe520f6b36820e85133a51be77a3cb549fd615095261"
 dependencies = [
  "http 1.3.1",
  "jsonrpsee-client-transport",
  "jsonrpsee-core",
  "jsonrpsee-types",
+ "tower 0.5.2",
  "url",
 ]
 
@@ -3767,7 +3767,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 [[package]]
 name = "l2l-openapi"
 version = "0.1.0"
-source = "git+https://github.com/Ash-L2L/l2l-openapi?rev=38c42ee637d083f1cdc807b546f6930b880dcad9#38c42ee637d083f1cdc807b546f6930b880dcad9"
+source = "git+https://github.com/Ash-L2L/l2l-openapi?rev=5f8fb2237c95725731d5fb10542098303d82e215#5f8fb2237c95725731d5fb10542098303d82e215"
 dependencies = [
  "jsonrpsee",
  "l2l-openapi-macros",
@@ -3777,7 +3777,7 @@ dependencies = [
 [[package]]
 name = "l2l-openapi-macros"
 version = "0.1.0"
-source = "git+https://github.com/Ash-L2L/l2l-openapi?rev=38c42ee637d083f1cdc807b546f6930b880dcad9#38c42ee637d083f1cdc807b546f6930b880dcad9"
+source = "git+https://github.com/Ash-L2L/l2l-openapi?rev=5f8fb2237c95725731d5fb10542098303d82e215#5f8fb2237c95725731d5fb10542098303d82e215"
 dependencies = [
  "proc-macro2",
  "proc_macro_roids",
@@ -6548,7 +6548,7 @@ dependencies = [
  "tokio-util",
  "tonic 0.12.3",
  "tonic-health",
- "tower 0.4.13",
+ "tower 0.5.2",
  "tower-http",
  "tracing",
  "tracing-appender",
@@ -7012,8 +7012,7 @@ dependencies = [
 [[package]]
 name = "tracing-appender"
 version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3566e8ce28cc0a3fe42519fc80e6b4c943cc4c8cef275620eb8dac2d3d4e06cf"
+source = "git+https://github.com/torkelrogstad/tokio-tracing.git?branch=log-rotation-size#8681c36e6f17951834d5ef7b8bf58a3a3ecb21ac"
 dependencies = [
  "crossbeam-channel",
  "thiserror 1.0.69",
