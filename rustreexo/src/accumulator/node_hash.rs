@@ -220,7 +220,6 @@ impl BitcoinNodeHash {
     pub fn new(inner: [u8; 32]) -> Self {
         BitcoinNodeHash::Some(inner)
     }
-
 }
 
 impl AccumulatorHash for BitcoinNodeHash {
@@ -259,7 +258,7 @@ impl AccumulatorHash for BitcoinNodeHash {
         let mut buf = [0u8; 64];
         buf[..32].copy_from_slice(&**left);
         buf[32..].copy_from_slice(&**right);
-        
+
         let hash = blake3::hash(&buf);
         BitcoinNodeHash::Some(*hash.as_bytes())
     }
@@ -332,7 +331,7 @@ mod test {
         // Updated expected hash for BLAKE3 - this will need to be computed
         // For now, just test that it produces a valid hash
         assert!(matches!(parent_hash, BitcoinNodeHash::Some(_)));
-        
+
         // Test consistency - same inputs should produce same outputs
         let parent_hash2 = BitcoinNodeHash::parent_hash(&hash1, &hash2);
         assert_eq!(parent_hash, parent_hash2);
