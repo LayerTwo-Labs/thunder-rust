@@ -121,9 +121,14 @@ impl<Hash: AccumulatorHash + Send + Sync + std::ops::Deref<Target = [u8; 32]>> A
         // Process deletions first
         self.delete_leaves(del)?;
 
-        // Add new leaves with queue
-        for &hash in add {
-            self.add_single_queued(hash);
+        // Batch add new leaves for better performance
+        if add.len() >= 4 {
+            self.add_leaves_batch(add);
+        } else {
+            // For small batches, use individual additions
+            for &hash in add {
+                self.add_single_queued(hash);
+            }
         }
 
         // Flush any remaining zombies
@@ -159,5 +164,108 @@ impl<Hash: AccumulatorHash + Send + Sync + std::ops::Deref<Target = [u8; 32]>> A
         self.recompute_dirty_hashes_adaptive();
 
         Ok(())
+    }
+
+    /// Add multiple leaves using batch allocation for optimal performance.
+    ///
+    /// This method pre-allocates all leaf nodes at once, then processes them individually
+    /// for tree construction. This reduces cache misses during the initial allocation phase.
+    fn add_leaves_batch(&mut self, hashes: &[Hash]) {
+        if hashes.is_empty() {
+            return;
+        }
+
+        // Create all leaf nodes for batch allocation
+        let leaf_nodes: SmallVec<[ArenaNode<Hash>; 32]> = hashes
+            .iter()
+            .map(|&hash| ArenaNode::new_leaf(hash))
+            .collect();
+
+        // Batch allocate all leaf nodes
+        let start_idx = self.allocate_nodes_batch(&leaf_nodes);
+
+        // Process each leaf individually for tree construction and hash mapping
+        for (i, &hash) in hashes.iter().enumerate() {
+            let leaf_idx = start_idx + i as u32;
+
+            // Hash-to-node insertion with collision handling
+            let key = super::forest::hash_key(&hash);
+            self.hash_to_node
+                .entry(key)
+                .or_insert_with(SmallVec::new)
+                .push((hash, leaf_idx));
+
+            // Process this leaf through the tree construction algorithm
+            self.process_leaf_addition(leaf_idx, true); // use_queue = true for large workloads
+        }
+    }
+
+    /// Process a pre-allocated leaf through the tree construction algorithm.
+    ///
+    /// This is the tree construction logic extracted from add_single_impl,
+    /// designed to work with a leaf that has already been allocated.
+    fn process_leaf_addition(&mut self, mut current_idx: u32, use_queue: bool) {
+        let mut leaves = self.leaves;
+
+        // Combine while leaves & 1 != 0 (utreexo algorithm)
+        while leaves & 1 != 0 {
+            // Pop root from end
+            let root_idx = if let Some(root_option) = self.roots.pop() {
+                if let Some(idx) = root_option {
+                    // Check for empty root
+                    if (idx as usize) < self.hashes.len()
+                        && self.hashes[idx as usize] == Hash::empty()
+                    {
+                        leaves >>= 1;
+                        continue;
+                    }
+                    idx
+                } else {
+                    // Skip None entries
+                    leaves >>= 1;
+                    continue;
+                }
+            } else {
+                // No more roots
+                break;
+            };
+
+            // Create parent: parent_hash(root, current)
+            let root_hash = self.hashes[root_idx as usize];
+            let current_hash = self.hashes[current_idx as usize];
+            let parent_hash = Hash::parent_hash(&root_hash, &current_hash);
+
+            let root_level = self.level[root_idx as usize];
+            let current_level = self.level[current_idx as usize];
+            let parent_level = std::cmp::max(root_level, current_level) + 1;
+
+            // Create parent node with root=left, current=right
+            let parent_idx = self.allocate_node(ArenaNode::new_internal(
+                parent_hash,
+                root_idx,
+                current_idx,
+                parent_level,
+            ));
+
+            // Maintain parent pointers
+            self.parent[root_idx as usize] = parent_idx;
+            self.parent[current_idx as usize] = parent_idx;
+
+            // Handle dirty propagation based on strategy
+            if use_queue {
+                self.queue_for_dirty_propagation(parent_idx);
+            } else {
+                self.mark_dirty_ancestors(parent_idx);
+            }
+
+            current_idx = parent_idx;
+            leaves >>= 1;
+        }
+
+        // Push final node as root
+        self.roots.push(Some(current_idx));
+
+        // Increment leaf count
+        self.leaves += 1;
     }
 }
