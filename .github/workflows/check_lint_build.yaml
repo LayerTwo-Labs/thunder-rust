@@ -36,9 +36,6 @@ jobs:
       - name: Rustfmt
         run: cargo fmt --all -- --check
       
-      - name: Cargo check
-        run: cargo check --all-targets
-      
       - name: Clippy
         run: cargo clippy --all-targets
       
