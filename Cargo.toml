@@ -19,7 +19,7 @@ bitcoin = "0.32.5"
 clap = { version = "4.5.4" }
 futures = { version = "0.3.30", default-features = false }
 http = "1.2.0"
-jsonrpsee = { version = "0.24.7", features = ["tracing"] }
+jsonrpsee = { version = "0.25.1", features = ["tracing"] }
 parking_lot = "0.12.1"
 prost = "0.13.3"
 rustreexo = "0.4.0"
@@ -39,16 +39,16 @@ uuid = "1.13.1"
 [workspace.dependencies.bip300301_enforcer_lib]
 default-features = false
 git = "https://github.com/LayerTwo-Labs/bip300301_enforcer"
-rev = "b0ad8331712f35497b238a69ac93dcf8059867dc"
+rev = "efc538e2b10619a2984acb197b9392cb17e05313"
 
 [workspace.dependencies.bip300301_enforcer_integration_tests]
 default-features = false
 git = "https://github.com/LayerTwo-Labs/bip300301_enforcer"
-rev = "b0ad8331712f35497b238a69ac93dcf8059867dc"
+rev = "efc538e2b10619a2984acb197b9392cb17e05313"
 
 [workspace.dependencies.l2l-openapi]
 git = "https://github.com/Ash-L2L/l2l-openapi"
-rev = "38c42ee637d083f1cdc807b546f6930b880dcad9"
+rev = "5f8fb2237c95725731d5fb10542098303d82e215"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
