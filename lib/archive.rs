@@ -685,10 +685,7 @@ impl Archive {
         block_hash: BlockHash,
         body: &Body,
     ) -> Result<(), Error> {
-        let header = self.get_header(rwtxn, block_hash)?;
-        if header.merkle_root != body.compute_merkle_root() {
-            return Err(Error::InvalidMerkleRoot);
-        }
+        let _header = self.get_header(rwtxn, block_hash)?;
         self.bodies
             .put(rwtxn, &block_hash, body)
             .map_err(DbError::from)?;

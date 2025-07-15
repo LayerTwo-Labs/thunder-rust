@@ -3,8 +3,9 @@ use thiserror::Error;
 use transitive::Transitive;
 
 use crate::types::{
-    AmountOverflowError, AmountUnderflowError, BlockHash, M6id, MerkleRoot,
-    OutPoint, Txid, UtreexoError, WithdrawalBundleError,
+    AmountOverflowError, AmountUnderflowError, BlockHash,
+    ComputeMerkleRootError, M6id, MerkleRoot, OutPoint, Txid, UtreexoError,
+    WithdrawalBundleError,
 };
 
 #[derive(Debug, Error)]
@@ -48,6 +49,8 @@ pub enum Error {
     BodyTooLarge,
     #[error(transparent)]
     BorshSerialize(borsh::io::Error),
+    #[error(transparent)]
+    ComputeMerkleRoot(#[from] ComputeMerkleRootError),
     #[error(transparent)]
     Db(#[from] sneed::Error),
     #[error(

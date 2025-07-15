@@ -20,9 +20,9 @@ use crate::{
     state::{self, State},
     types::{
         Accumulator, Address, AmountOverflowError, AmountUnderflowError,
-        AuthorizedTransaction, BlockHash, BmmResult, Body, GetValue, Header,
-        OutPoint, Output, SpentOutput, Tip, Transaction, Txid,
-        WithdrawalBundle,
+        Authorized, AuthorizedTransaction, BlockHash, BmmResult, Body,
+        FilledTransaction, GetValue, Header, OutPoint, Output, SpentOutput,
+        Tip, Transaction, Txid, WithdrawalBundle,
         proto::{self, mainchain},
     },
     util::Watchable,
@@ -399,36 +399,43 @@ where
     pub fn get_transactions(
         &self,
         number: usize,
-    ) -> Result<(Vec<AuthorizedTransaction>, bitcoin::Amount), Error> {
-        let mut txn = self.env.write_txn().map_err(EnvError::from)?;
-        let transactions = self.mempool.take(&txn, number)?;
+    ) -> Result<(Vec<Authorized<FilledTransaction>>, bitcoin::Amount), Error>
+    {
+        let mut rwtxn = self.env.write_txn().map_err(EnvError::from)?;
+        let transactions = self.mempool.take(&rwtxn, number)?;
         let mut fee = bitcoin::Amount::ZERO;
         let mut returned_transactions = vec![];
         let mut spent_utxos = HashSet::new();
-        for transaction in &transactions {
+        for transaction in transactions {
             let inputs: HashSet<_> =
                 transaction.transaction.inputs.iter().copied().collect();
             if !spent_utxos.is_disjoint(&inputs) {
                 // UTXO double spent
                 self.mempool
-                    .delete(&mut txn, transaction.transaction.txid())?;
+                    .delete(&mut rwtxn, transaction.transaction.txid())?;
                 continue;
             }
-            if self.state.validate_transaction(&txn, transaction).is_err() {
+            if self
+                .state
+                .validate_transaction(&rwtxn, &transaction)
+                .is_err()
+            {
                 self.mempool
-                    .delete(&mut txn, transaction.transaction.txid())?;
+                    .delete(&mut rwtxn, transaction.transaction.txid())?;
                 continue;
             }
             let filled_transaction = self
                 .state
-                .fill_transaction(&txn, &transaction.transaction)?;
+                .fill_authorized_transaction(&rwtxn, transaction)?;
             let value_in: bitcoin::Amount = filled_transaction
+                .transaction
                 .spent_utxos
                 .iter()
                 .map(GetValue::get_value)
                 .checked_sum()
                 .ok_or(AmountOverflowError)?;
             let value_out: bitcoin::Amount = filled_transaction
+                .transaction
                 .transaction
                 .outputs
                 .iter()
@@ -442,10 +449,17 @@ where
                         .ok_or(AmountOverflowError)?,
                 )
                 .ok_or(AmountUnderflowError)?;
-            returned_transactions.push(transaction.clone());
-            spent_utxos.extend(transaction.transaction.inputs.clone());
+            spent_utxos.extend(
+                filled_transaction
+                    .transaction
+                    .transaction
+                    .inputs
+                    .iter()
+                    .cloned(),
+            );
+            returned_transactions.push(filled_transaction);
         }
-        txn.commit().map_err(RwTxnError::from)?;
+        rwtxn.commit().map_err(RwTxnError::from)?;
         Ok((returned_transactions, fee))
     }
 

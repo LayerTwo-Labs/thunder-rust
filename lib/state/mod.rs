@@ -16,10 +16,11 @@ use crate::{
     authorization::Authorization,
     types::{
         Accumulator, Address, AmountOverflowError, AmountUnderflowError,
-        AuthorizedTransaction, BlockHash, Body, FilledTransaction, GetAddress,
-        GetValue, Header, InPoint, M6id, OutPoint, Output, PointedOutput,
-        SpentOutput, Transaction, VERSION, Verify, Version, WithdrawalBundle,
-        WithdrawalBundleStatus, proto::mainchain::TwoWayPegData,
+        Authorized, AuthorizedTransaction, BlockHash, Body, FilledTransaction,
+        GetAddress, GetValue, Header, InPoint, M6id, MerkleRoot, OutPoint,
+        Output, PointedOutput, SpentOutput, Transaction, VERSION, Verify,
+        Version, WithdrawalBundle, WithdrawalBundleStatus,
+        proto::mainchain::TwoWayPegData,
     },
     util::Watchable,
 };
@@ -254,18 +255,15 @@ impl State {
         Ok(proof)
     }
 
-    pub fn fill_transaction(
+    fn fill_transaction(
         &self,
-        txn: &RoTxn,
+        rotxn: &RoTxn,
         transaction: &Transaction,
     ) -> Result<FilledTransaction, Error> {
         let mut spent_utxos = vec![];
         for (outpoint, _) in &transaction.inputs {
-            let utxo = self
-                .utxos
-                .try_get(txn, outpoint)
-                .map_err(DbError::from)?
-                .ok_or(Error::NoUtxo {
+            let utxo =
+                self.utxos.try_get(rotxn, outpoint)?.ok_or(Error::NoUtxo {
                     outpoint: *outpoint,
                 })?;
             spent_utxos.push(utxo);
@@ -273,6 +271,20 @@ impl State {
         Ok(FilledTransaction {
             spent_utxos,
             transaction: transaction.clone(),
+        })
+    }
+
+    pub fn fill_authorized_transaction(
+        &self,
+        rotxn: &RoTxn,
+        transaction: AuthorizedTransaction,
+    ) -> Result<Authorized<FilledTransaction>, Error> {
+        let filled_tx =
+            self.fill_transaction(rotxn, &transaction.transaction)?;
+        let authorizations = transaction.authorizations;
+        Ok(Authorized {
+            transaction: filled_tx,
+            authorizations,
         })
     }
 
@@ -442,7 +454,7 @@ impl State {
         rotxn: &RoTxn,
         header: &Header,
         body: &Body,
-    ) -> Result<bitcoin::Amount, Error> {
+    ) -> Result<(bitcoin::Amount, MerkleRoot), Error> {
         block::validate(self, rotxn, header, body)
     }
 
@@ -451,7 +463,7 @@ impl State {
         rwtxn: &mut RwTxn,
         header: &Header,
         body: &Body,
-    ) -> Result<(), Error> {
+    ) -> Result<MerkleRoot, Error> {
         block::connect(self, rwtxn, header, body)
     }
 
