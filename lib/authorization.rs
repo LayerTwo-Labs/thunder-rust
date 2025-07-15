@@ -1,5 +1,6 @@
 use borsh::BorshSerialize;
-use rayon::iter::{IntoParallelRefIterator as _, ParallelIterator as _};
+// use rayon::iter::{IntoParallelRefIterator as _, ParallelIterator as _};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -16,7 +17,7 @@ pub enum Error {
     #[error("borsh serialization error")]
     BorshSerialize(#[from] borsh::io::Error),
     #[error("ed25519_dalek error")]
-    Dalek(#[from] SignatureError),
+    DalekError(#[from] SignatureError),
     #[error(
         "wrong key for address: address = {address},
              hash(verifying_key) = {hash_verifying_key}"
@@ -88,10 +89,9 @@ impl Verify for Authorization {
 }
 
 pub fn get_address(verifying_key: &VerifyingKey) -> Address {
-    let mut hasher = blake3::Hasher::new();
-    let mut reader = hasher.update(&verifying_key.to_bytes()).finalize_xof();
+    let hash = blake3::hash(&verifying_key.to_bytes());
     let mut output: [u8; 20] = [0; 20];
-    reader.fill(&mut output);
+    output.copy_from_slice(&hash.as_bytes()[..20]);
     Address(output)
 }
 
@@ -126,73 +126,38 @@ pub fn verify_authorized_transaction(
 }
 
 pub fn verify_authorizations(body: &Body) -> Result<(), Error> {
-    let input_numbers = body
-        .transactions
-        .iter()
-        .map(|transaction| transaction.inputs.len());
+    if body.authorizations.is_empty() {
+        return Ok(());
+    }
     let serialized_transactions: Vec<Vec<u8>> = body
         .transactions
         .par_iter()
         .map(borsh::to_vec)
         .collect::<Result<_, _>>()?;
-    let serialized_transactions =
-        serialized_transactions.iter().map(Vec::as_slice);
-    let messages = input_numbers.zip(serialized_transactions).flat_map(
-        |(input_number, serialized_transaction)| {
-            std::iter::repeat_n(serialized_transaction, input_number)
-        },
-    );
 
-    let pairs = body.authorizations.iter().zip(messages).collect::<Vec<_>>();
-
-    let num_threads = rayon::current_num_threads();
-    let num_authorizations = body.authorizations.len();
-    let package_size = num_authorizations / num_threads;
-    let mut packages: Vec<Package> = Vec::with_capacity(num_threads);
-    for i in 0..num_threads {
-        let mut package = Package {
-            messages: Vec::with_capacity(package_size),
-            signatures: Vec::with_capacity(package_size),
-            verifying_keys: Vec::with_capacity(package_size),
-        };
-        for (authorization, message) in
-            &pairs[i * package_size..(i + 1) * package_size]
-        {
-            package.messages.push(*message);
-            package.signatures.push(authorization.signature);
-            package.verifying_keys.push(authorization.verifying_key);
+    let mut pairs: Vec<(&[u8], &Authorization)> =
+        Vec::with_capacity(body.authorizations.len());
+    let mut auth_iter = body.authorizations.iter();
+    for (tx_idx, tx) in body.transactions.iter().enumerate() {
+        let tx_bytes = &serialized_transactions[tx_idx];
+        for _ in 0..tx.inputs.len() {
+            pairs.push((tx_bytes, auth_iter.next().unwrap()));
         }
-        packages.push(package);
     }
-    for (authorization, message) in &pairs[num_threads * package_size..] {
-        packages[num_threads - 1].messages.push(*message);
-        packages[num_threads - 1]
-            .signatures
-            .push(authorization.signature);
-        packages[num_threads - 1]
-            .verifying_keys
-            .push(authorization.verifying_key);
-    }
-    assert_eq!(
-        packages.iter().map(|p| p.signatures.len()).sum::<usize>(),
-        body.authorizations.len()
-    );
-    packages
-        .par_iter()
-        .map(
-            |Package {
-                 messages,
-                 signatures,
-                 verifying_keys,
-             }| {
-                ed25519_dalek::verify_batch(
-                    messages,
-                    signatures,
-                    verifying_keys,
-                )
-            },
-        )
-        .collect::<Result<(), SignatureError>>()?;
+
+    assert_eq!(pairs.len(), body.authorizations.len());
+
+    pairs.par_chunks(16384).try_for_each(|chunk| {
+        let (messages, authorizations): (Vec<&[u8]>, Vec<&Authorization>) =
+            chunk.iter().copied().unzip();
+        let signatures: Vec<Signature> =
+            authorizations.iter().map(|a| a.signature).collect();
+        let verifying_keys: Vec<VerifyingKey> =
+            authorizations.iter().map(|a| a.verifying_key).collect();
+
+        ed25519_dalek::verify_batch(&messages, &signatures, &verifying_keys)
+    })?;
+
     Ok(())
 }
 
