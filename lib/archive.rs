@@ -153,9 +153,10 @@ impl Archive {
                     < Version {
                         major: 0,
                         minor: 12,
-                        patch: 0,
+                        patch: 7,
                     } =>
             {
+                // Merkle root structure changed in 0.12.7
                 // `deposits` and `main_bmm_commitments` were removed in
                 // 0.12.0, and `main_block_infos` was added
                 return Err(Error::IncompatibleVersion {
