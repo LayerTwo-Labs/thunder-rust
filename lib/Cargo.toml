@@ -30,6 +30,7 @@ hashlink = { version = "0.10.0", features = ["serde_impl"] }
 heed = "0.21.0"
 hex = { version = "0.4.3", features = ["serde"] }
 jsonrpsee = { workspace = true }
+merkle-cbt = "0.3.2"
 nonempty = { version = "0.11.0", features = ["serialize"] }
 parking_lot = { workspace = true }
 prost = { workspace = true }

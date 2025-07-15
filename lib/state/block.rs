@@ -8,9 +8,9 @@ use sneed::{RoTxn, RwTxn, db::error::Error as DbError};
 use crate::{
     state::{Error, State, error},
     types::{
-        AccumulatorDiff, AmountOverflowError, Body, GetAddress as _,
-        GetValue as _, Header, InPoint, OutPoint, PointedOutput, SpentOutput,
-        Verify as _,
+        AccumulatorDiff, AmountOverflowError, Body, FilledTransaction,
+        GetAddress as _, GetValue as _, Header, InPoint, MerkleRoot, OutPoint,
+        PointedOutput, SpentOutput, Verify as _,
     },
     wallet::Authorization,
 };
@@ -20,7 +20,7 @@ pub fn validate(
     rotxn: &RoTxn,
     header: &Header,
     body: &Body,
-) -> Result<bitcoin::Amount, Error> {
+) -> Result<(bitcoin::Amount, MerkleRoot), Error> {
     let tip_hash = state.try_get_tip(rotxn)?;
     if header.prev_side_hash != tip_hash {
         let err = error::InvalidHeader::PrevSideHash {
@@ -43,16 +43,17 @@ pub fn validate(
         .try_get(rotxn, &())
         .map_err(DbError::from)?
         .unwrap_or_default();
+    let filled_transactions: Vec<_> = body
+        .transactions
+        .iter()
+        .map(|t| state.fill_transaction(rotxn, t))
+        .collect::<Result<_, _>>()?;
+    let merkle_root = Body::compute_merkle_root(
+        body.coinbase.as_slice(),
+        filled_transactions.as_slice(),
+    )?;
     let mut accumulator_diff = AccumulatorDiff::default();
     let mut coinbase_value = bitcoin::Amount::ZERO;
-    let merkle_root = body.compute_merkle_root();
-    if merkle_root != header.merkle_root {
-        let err = Error::InvalidBody {
-            expected: merkle_root,
-            computed: header.merkle_root,
-        };
-        return Err(err);
-    }
     for (vout, output) in body.coinbase.iter().enumerate() {
         coinbase_value = coinbase_value
             .checked_add(output.get_value())
@@ -67,13 +68,15 @@ pub fn validate(
         };
         accumulator_diff.insert((&pointed_output).into());
     }
+    if merkle_root != header.merkle_root {
+        let err = Error::InvalidBody {
+            expected: header.merkle_root,
+            computed: merkle_root,
+        };
+        return Err(err);
+    }
     let mut total_fees = bitcoin::Amount::ZERO;
     let mut spent_utxos = HashSet::new();
-    let filled_transactions: Vec<_> = body
-        .transactions
-        .iter()
-        .map(|t| state.fill_transaction(rotxn, t))
-        .collect::<Result<_, _>>()?;
     for filled_transaction in &filled_transactions {
         let txid = filled_transaction.transaction.txid();
         // hashes of spent utxos, used to verify the utreexo proof
@@ -130,7 +133,7 @@ pub fn validate(
     if roots != header.roots {
         return Err(Error::UtreexoRootsMismatch);
     }
-    Ok(total_fees)
+    Ok((total_fees, merkle_root))
 }
 
 pub fn connect(
@@ -138,7 +141,7 @@ pub fn connect(
     rwtxn: &mut RwTxn,
     header: &Header,
     body: &Body,
-) -> Result<(), Error> {
+) -> Result<MerkleRoot, Error> {
     let tip_hash = state.try_get_tip(rwtxn)?;
     if tip_hash != header.prev_side_hash {
         let err = error::InvalidHeader::PrevSideHash {
@@ -147,23 +150,14 @@ pub fn connect(
         };
         return Err(Error::InvalidHeader(err));
     }
-    let merkle_root = body.compute_merkle_root();
-    if merkle_root != header.merkle_root {
-        let err = Error::InvalidBody {
-            expected: merkle_root,
-            computed: header.merkle_root,
-        };
-        return Err(err);
-    }
     let mut accumulator = state
         .utreexo_accumulator
-        .try_get(rwtxn, &())
-        .map_err(DbError::from)?
+        .try_get(rwtxn, &())?
         .unwrap_or_default();
     let mut accumulator_diff = AccumulatorDiff::default();
     for (vout, output) in body.coinbase.iter().enumerate() {
         let outpoint = OutPoint::Coinbase {
-            merkle_root,
+            merkle_root: header.merkle_root,
             vout: vout as u32,
         };
         let pointed_output = PointedOutput {
@@ -171,25 +165,22 @@ pub fn connect(
             output: output.clone(),
         };
         accumulator_diff.insert((&pointed_output).into());
-        state
-            .utxos
-            .put(rwtxn, &outpoint, output)
-            .map_err(DbError::from)?;
+        state.utxos.put(rwtxn, &outpoint, output)?;
     }
+    let mut filled_txs: Vec<FilledTransaction> = Vec::new();
     for transaction in &body.transactions {
+        let mut spent_utxos = Vec::new();
         let txid = transaction.txid();
         for (vin, (outpoint, utxo_hash)) in
             transaction.inputs.iter().enumerate()
         {
-            let spent_output = state
-                .utxos
-                .try_get(rwtxn, outpoint)
-                .map_err(DbError::from)?
-                .ok_or(Error::NoUtxo {
+            let spent_output =
+                state.utxos.try_get(rwtxn, outpoint)?.ok_or(Error::NoUtxo {
                     outpoint: *outpoint,
                 })?;
+
             accumulator_diff.remove(utxo_hash.into());
-            state.utxos.delete(rwtxn, outpoint).map_err(DbError::from)?;
+            state.utxos.delete(rwtxn, outpoint)?;
             let spent_output = SpentOutput {
                 output: spent_output,
                 inpoint: InPoint::Regular {
@@ -197,10 +188,8 @@ pub fn connect(
                     vin: vin as u32,
                 },
             };
-            state
-                .stxos
-                .put(rwtxn, outpoint, &spent_output)
-                .map_err(DbError::from)?;
+            state.stxos.put(rwtxn, outpoint, &spent_output)?;
+            spent_utxos.push(spent_output.output);
         }
         for (vout, output) in transaction.outputs.iter().enumerate() {
             let outpoint = OutPoint::Regular {
@@ -212,28 +201,32 @@ pub fn connect(
                 output: output.clone(),
             };
             accumulator_diff.insert((&pointed_output).into());
-            state
-                .utxos
-                .put(rwtxn, &outpoint, output)
-                .map_err(DbError::from)?;
+            state.utxos.put(rwtxn, &outpoint, output)?;
         }
+        let filled_tx = FilledTransaction {
+            spent_utxos,
+            transaction: transaction.clone(),
+        };
+        filled_txs.push(filled_tx);
+    }
+    let merkle_root = Body::compute_merkle_root(
+        body.coinbase.as_slice(),
+        filled_txs.as_slice(),
+    )?;
+    if merkle_root != header.merkle_root {
+        let err = Error::InvalidBody {
+            expected: header.merkle_root,
+            computed: merkle_root,
+        };
+        return Err(err);
     }
     let block_hash = header.hash();
     let height = state.try_get_height(rwtxn)?.map_or(0, |height| height + 1);
-    state
-        .tip
-        .put(rwtxn, &(), &block_hash)
-        .map_err(DbError::from)?;
-    state
-        .height
-        .put(rwtxn, &(), &height)
-        .map_err(DbError::from)?;
+    state.tip.put(rwtxn, &(), &block_hash)?;
+    state.height.put(rwtxn, &(), &height)?;
     let () = accumulator.apply_diff(accumulator_diff)?;
-    state
-        .utreexo_accumulator
-        .put(rwtxn, &(), &accumulator)
-        .map_err(DbError::from)?;
-    Ok(())
+    state.utreexo_accumulator.put(rwtxn, &(), &accumulator)?;
+    Ok(merkle_root)
 }
 
 pub fn disconnect_tip(
@@ -253,14 +246,6 @@ pub fn disconnect_tip(
             computed: header.hash(),
         };
         return Err(Error::InvalidHeader(err));
-    }
-    let merkle_root = body.compute_merkle_root();
-    if merkle_root != header.merkle_root {
-        let err = Error::InvalidBody {
-            expected: merkle_root,
-            computed: header.merkle_root,
-        };
-        return Err(err);
     }
     let mut accumulator = state
         .utreexo_accumulator
@@ -329,7 +314,7 @@ pub fn disconnect_tip(
         .rev()
         .try_for_each(|(vout, output)| {
             let outpoint = OutPoint::Coinbase {
-                merkle_root,
+                merkle_root: header.merkle_root,
                 vout: vout as u32,
             };
             let pointed_output = PointedOutput {

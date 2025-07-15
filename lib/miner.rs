@@ -60,7 +60,7 @@ where
             )
             .await?;
         tracing::info!("attempt BMM: created TX: {txid}");
-        assert_eq!(header.merkle_root, body.compute_merkle_root());
+        // assert_eq!(header.merkle_root, body.compute_merkle_root());
         self.block = Some((header, body));
         Ok(txid)
     }

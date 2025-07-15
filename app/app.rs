@@ -32,12 +32,12 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("miner error")]
     Miner(#[from] miner::Error),
+    #[error(transparent)]
+    ModifyMemForest(#[from] thunder::types::ModifyMemForestError),
     #[error("node error")]
     Node(#[source] Box<node::Error>),
     #[error("No CUSF mainchain wallet client")]
     NoCusfMainchainWalletClient,
-    #[error("Utreexo error: {0}")]
-    Utreexo(String),
     #[error("Unable to verify existence of CUSF mainchain service(s) at {url}")]
     VerifyMainchainServices {
         url: Box<url::Url>,
@@ -328,7 +328,29 @@ impl App {
                 content: types::OutputContent::Value(tx_fees),
             }],
         };
-        let body = types::Body::new(txs, coinbase);
+        let (merkle_root, roots) = {
+            let mut accumulator = self.node.get_tip_accumulator()?;
+            let txs = txs
+                .iter()
+                .map(|authorized_tx| authorized_tx.transaction.clone())
+                .collect::<Vec<_>>();
+            let merkle_root = thunder::types::Body::modify_memforest(
+                &coinbase,
+                &txs,
+                &mut accumulator.0,
+            )?;
+            let roots = accumulator
+                .0
+                .get_roots()
+                .iter()
+                .map(|root| root.get_data())
+                .collect();
+            (merkle_root, roots)
+        };
+        let body = {
+            let txs = txs.into_iter().map(|tx| tx.into()).collect();
+            types::Body::new(txs, coinbase)
+        };
         let prev_side_hash = self.node.try_get_best_hash()?;
         let prev_main_hash = {
             let mut miner_write = miner.write().await;
@@ -337,19 +359,8 @@ impl App {
             drop(miner_write);
             prev_main_hash
         };
-        let roots = {
-            let mut accumulator = self.node.get_tip_accumulator()?;
-            body.modify_memforest(&mut accumulator.0)
-                .map_err(Error::Utreexo)?;
-            accumulator
-                .0
-                .get_roots()
-                .iter()
-                .map(|root| root.get_data())
-                .collect()
-        };
         let header = types::Header {
-            merkle_root: body.compute_merkle_root(),
+            merkle_root,
             roots,
             prev_side_hash,
             prev_main_hash,

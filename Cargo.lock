@@ -4036,6 +4036,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "merkle-cbt"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "171d2f700835121c3b04ccf0880882987a050fd5c7ae88148abf537d33dd3a56"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "merlin"
 version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6479,6 +6488,7 @@ dependencies = [
  "heed",
  "hex 0.4.3",
  "jsonrpsee",
+ "merkle-cbt",
  "nonempty",
  "parking_lot",
  "prost",

@@ -13,6 +13,10 @@ use std::{
 use thiserror::Error;
 use utoipa::ToSchema;
 
+use crate::{
+    authorization::Authorization, types::transaction::ComputeFeeError,
+};
+
 mod address;
 pub mod hashes;
 pub mod proto;
@@ -22,9 +26,9 @@ mod transaction;
 pub use address::Address;
 pub use hashes::{BlockHash, Hash, M6id, MerkleRoot, Txid, hash};
 pub use transaction::{
-    AuthorizedTransaction, Body, Content as OutputContent, FilledTransaction,
-    GetAddress, GetValue, InPoint, OutPoint, Output, PointedOutput,
-    SpentOutput, Transaction, Verify,
+    Authorized, AuthorizedTransaction, Content as OutputContent,
+    FilledTransaction, GetAddress, GetValue, InPoint, OutPoint, Output,
+    PointedOutput, SpentOutput, Transaction,
 };
 
 pub const THIS_SIDECHAIN: u8 = 9;
@@ -438,6 +442,327 @@ impl Serialize for Accumulator {
             .map_err(<S::Error as serde::ser::Error>::custom)?;
         <Vec<_> as Serialize>::serialize(&bytes, serializer)
     }
+}
+
+/// Hash to get a [`CmbtNode`] inner commitment for a leaf value
+#[derive(Debug)]
+struct CbmtLeafPreCommitment<'a> {
+    fee: bitcoin::Amount,
+    /// Canonical size of the tx
+    canonical_size: u64,
+    tx: &'a Transaction,
+}
+
+impl<'a> BorshSerialize for CbmtLeafPreCommitment<'a> {
+    fn serialize<W: std::io::Write>(
+        &self,
+        writer: &mut W,
+    ) -> std::io::Result<()> {
+        let Self {
+            fee,
+            canonical_size,
+            tx,
+        } = self;
+        BorshSerialize::serialize(&fee.to_sat(), writer)?;
+        BorshSerialize::serialize(canonical_size, writer)?;
+        BorshSerialize::serialize(tx, writer)
+    }
+}
+
+/// Hash to get a [`CmbtNode`] inner commitment for a non-leaf value
+#[derive(Debug)]
+struct CbmtNodePreCommitment {
+    /// left child inner commitment
+    left_commitment: Hash,
+    /// Sum of child tx fees
+    fees: bitcoin::Amount,
+    /// Sum of canonical sizes of child txs
+    canonical_size: u64,
+    /// left child inner commitment
+    right_commitment: Hash,
+}
+
+impl BorshSerialize for CbmtNodePreCommitment {
+    fn serialize<W: std::io::Write>(
+        &self,
+        writer: &mut W,
+    ) -> std::io::Result<()> {
+        let Self {
+            left_commitment,
+            fees,
+            canonical_size,
+            right_commitment,
+        } = self;
+        BorshSerialize::serialize(left_commitment, writer)?;
+        BorshSerialize::serialize(&fees.to_sat(), writer)?;
+        BorshSerialize::serialize(canonical_size, writer)?;
+        BorshSerialize::serialize(right_commitment, writer)
+    }
+}
+
+// Internal node of a CBMT
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct CbmtNode {
+    // Commitment to child nodes or leaf value
+    commitment: Hash,
+    // Sum of fees for child nodes or leaf value
+    fees: bitcoin::Amount,
+    // Sum of canonical tx sizes for child nodes or leaf value
+    canonical_size: u64,
+    // CBT index, see https://github.com/nervosnetwork/merkle-tree/blob/5d1898263e7167560fdaa62f09e8d52991a1c712/README.md#tree-struct
+    // This is required so that `CbmtNode` can be `Ord` correctly
+    index: usize,
+}
+
+impl PartialOrd for CbmtNode {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for CbmtNode {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.index.cmp(&other.index)
+    }
+}
+
+// Marker type for merging branch commitments with
+// * branch fee totals
+// * branch canonical size totals
+struct MergeFeeSizeTotal;
+
+impl merkle_cbt::merkle_tree::Merge for MergeFeeSizeTotal {
+    type Item = CbmtNode;
+
+    fn merge(lnode: &Self::Item, rnode: &Self::Item) -> Self::Item {
+        let fees = lnode.fees + rnode.fees;
+        let canonical_size = lnode.canonical_size + rnode.canonical_size;
+        // see https://github.com/nervosnetwork/merkle-tree/blob/5d1898263e7167560fdaa62f09e8d52991a1c712/README.md#tree-struct
+        assert_eq!(lnode.index + 1, rnode.index);
+        let index = (lnode.index - 1) / 2;
+        let commitment = hashes::hash(&CbmtNodePreCommitment {
+            left_commitment: lnode.commitment,
+            fees,
+            canonical_size,
+            right_commitment: lnode.commitment,
+        });
+        Self::Item {
+            commitment,
+            fees,
+            canonical_size,
+            index,
+        }
+    }
+}
+
+// Complete binary merkle tree with annotated fee and canonical size totals
+type CbmtWithFeeTotal = merkle_cbt::CBMT<CbmtNode, MergeFeeSizeTotal>;
+
+#[derive(Debug, Error)]
+#[error("failed to compute fee for `{txid}`")]
+struct ComputeMerkleRootErrorInner {
+    txid: Txid,
+    source: ComputeFeeError,
+}
+
+#[derive(Debug, Error)]
+#[error("failed to compute merkle root")]
+#[repr(transparent)]
+pub struct ComputeMerkleRootError(#[from] ComputeMerkleRootErrorInner);
+
+#[derive(Debug, Error)]
+pub enum ModifyMemForestError {
+    #[error(transparent)]
+    ComputeMerkleRoot(#[from] ComputeMerkleRootError),
+    #[error(transparent)]
+    Utreexo(#[from] UtreexoError),
+}
+
+#[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct Body {
+    pub coinbase: Vec<Output>,
+    pub transactions: Vec<Transaction>,
+    pub authorizations: Vec<Authorization>,
+}
+
+impl Body {
+    pub fn new(
+        authorized_transactions: Vec<AuthorizedTransaction>,
+        coinbase: Vec<Output>,
+    ) -> Self {
+        let mut authorizations = Vec::with_capacity(
+            authorized_transactions
+                .iter()
+                .map(|t| t.transaction.inputs.len())
+                .sum(),
+        );
+        let mut transactions =
+            Vec::with_capacity(authorized_transactions.len());
+        for at in authorized_transactions.into_iter() {
+            authorizations.extend(at.authorizations);
+            transactions.push(at.transaction);
+        }
+        Self {
+            coinbase,
+            transactions,
+            authorizations,
+        }
+    }
+
+    pub fn authorized_transactions(&self) -> Vec<AuthorizedTransaction> {
+        let mut authorizations_iter = self.authorizations.iter();
+        self.transactions
+            .iter()
+            .map(|tx| {
+                let mut authorizations = Vec::with_capacity(tx.inputs.len());
+                for _ in 0..tx.inputs.len() {
+                    let auth = authorizations_iter.next().unwrap();
+                    authorizations.push(auth.clone());
+                }
+                AuthorizedTransaction {
+                    transaction: tx.clone(),
+                    authorizations,
+                }
+            })
+            .collect()
+    }
+
+    pub fn compute_merkle_root(
+        coinbase: &[Output],
+        txs: &[FilledTransaction],
+    ) -> Result<MerkleRoot, ComputeMerkleRootError> {
+        let CbmtNode {
+            commitment: txs_root,
+            ..
+        } = {
+            let n_txs = txs.len();
+            let leaves: Vec<_> = txs
+                .iter()
+                .enumerate()
+                .map(|(idx, tx)| {
+                    let fees = tx.get_fee().map_err(|err| {
+                        ComputeMerkleRootErrorInner {
+                            txid: tx.transaction.txid(),
+                            source: err,
+                        }
+                    })?;
+                    let canonical_size = tx.transaction.canonical_size();
+                    let leaf_pre_commitment = CbmtLeafPreCommitment {
+                        fee: fees,
+                        canonical_size,
+                        tx: &tx.transaction,
+                    };
+                    Ok::<_, ComputeMerkleRootError>(CbmtNode {
+                        commitment: hashes::hash(&leaf_pre_commitment),
+                        fees,
+                        canonical_size,
+                        // see https://github.com/nervosnetwork/merkle-tree/blob/5d1898263e7167560fdaa62f09e8d52991a1c712/README.md#tree-struct
+                        index: (idx + n_txs) - 1,
+                    })
+                })
+                .collect::<Result<_, _>>()?;
+            CbmtWithFeeTotal::build_merkle_root(leaves.as_slice())
+        };
+        // FIXME: Compute actual merkle root instead of just a hash.
+        let coinbase_root = hashes::hash(&coinbase);
+        // TODO: Should this include `total_fees`?
+        let root = hashes::hash(&(coinbase_root, txs_root)).into();
+        Ok(root)
+    }
+
+    // Modifies the memforest, without checking tx proofs
+    pub fn modify_memforest(
+        coinbase: &[Output],
+        txs: &[FilledTransaction],
+        memforest: &mut MemForest<BitcoinNodeHash>,
+    ) -> Result<MerkleRoot, ModifyMemForestError> {
+        // New leaves for the accumulator
+        let mut accumulator_add = Vec::<BitcoinNodeHash>::new();
+        // Accumulator leaves to delete
+        let mut accumulator_del = Vec::<BitcoinNodeHash>::new();
+        let merkle_root = Self::compute_merkle_root(coinbase, txs)?;
+        for (vout, output) in coinbase.iter().enumerate() {
+            let outpoint = OutPoint::Coinbase {
+                merkle_root,
+                vout: vout as u32,
+            };
+            let pointed_output = PointedOutput {
+                outpoint,
+                output: output.clone(),
+            };
+            accumulator_add.push((&pointed_output).into());
+        }
+        for tx in txs {
+            let txid = tx.transaction.txid();
+            for (_, utxo_hash) in tx.transaction.inputs.iter() {
+                accumulator_del.push(utxo_hash.into());
+            }
+            for (vout, output) in tx.transaction.outputs.iter().enumerate() {
+                let outpoint = OutPoint::Regular {
+                    txid,
+                    vout: vout as u32,
+                };
+                let pointed_output = PointedOutput {
+                    outpoint,
+                    output: output.clone(),
+                };
+                accumulator_add.push((&pointed_output).into());
+            }
+        }
+        let () = memforest
+            .modify(&accumulator_add, &accumulator_del)
+            .map_err(UtreexoError)?;
+        Ok(merkle_root)
+    }
+
+    pub fn get_inputs(&self) -> Vec<OutPoint> {
+        self.transactions
+            .iter()
+            .flat_map(|tx| tx.inputs.iter().map(|(outpoint, _)| outpoint))
+            .copied()
+            .collect()
+    }
+
+    pub fn get_outputs(
+        coinbase: &[Output],
+        txs: &[FilledTransaction],
+    ) -> Result<HashMap<OutPoint, Output>, ComputeMerkleRootError> {
+        let mut res = HashMap::new();
+        let merkle_root = Self::compute_merkle_root(coinbase, txs)?;
+        for (vout, output) in coinbase.iter().enumerate() {
+            let vout = vout as u32;
+            let outpoint = OutPoint::Coinbase { merkle_root, vout };
+            res.insert(outpoint, output.clone());
+        }
+        for tx in txs {
+            let txid = tx.transaction.txid();
+            for (vout, output) in tx.transaction.outputs.iter().enumerate() {
+                let vout = vout as u32;
+                let outpoint = OutPoint::Regular { txid, vout };
+                res.insert(outpoint, output.clone());
+            }
+        }
+        Ok(res)
+    }
+
+    pub fn get_coinbase_value(
+        &self,
+    ) -> Result<bitcoin::Amount, AmountOverflowError> {
+        use bitcoin::amount::CheckedSum as _;
+        self.coinbase
+            .iter()
+            .map(|output| output.get_value())
+            .checked_sum()
+            .ok_or(AmountOverflowError)
+    }
+}
+
+pub trait Verify {
+    type Error;
+    fn verify_transaction(
+        transaction: &AuthorizedTransaction,
+    ) -> Result<(), Self::Error>;
+    fn verify_body(body: &Body) -> Result<(), Self::Error>;
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
