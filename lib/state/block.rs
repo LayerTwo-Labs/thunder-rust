@@ -68,46 +68,51 @@ pub fn validate(
         accumulator_diff.insert((&pointed_output).into());
     }
     let mut total_fees = bitcoin::Amount::ZERO;
-    let mut spent_utxos = HashSet::new();
+    // Pre-allocate with known capacity
+    let total_inputs: usize = body.transactions.iter().map(|t| t.inputs.len()).sum();
+    let mut spent_utxos = HashSet::with_capacity(total_inputs);
     let filled_transactions: Vec<_> = body
         .transactions
         .iter()
         .map(|t| state.fill_transaction(rotxn, t))
         .collect::<Result<_, _>>()?;
+    // In the validation loop, reuse vectors to reduce allocations
+    let mut spent_utxo_hashes = Vec::with_capacity(32); // Reasonable default capacity
+    
     for filled_transaction in &filled_transactions {
-        let txid = filled_transaction.transaction.txid();
-        // hashes of spent utxos, used to verify the utreexo proof
-        let mut spent_utxo_hashes = Vec::<BitcoinNodeHash>::new();
-        for (outpoint, utxo_hash) in &filled_transaction.transaction.inputs {
-            if spent_utxos.contains(outpoint) {
-                return Err(Error::UtxoDoubleSpent);
-            }
-            spent_utxos.insert(*outpoint);
-            spent_utxo_hashes.push(utxo_hash.into());
-            accumulator_diff.remove(utxo_hash.into());
+    let txid = filled_transaction.transaction.txid();
+    spent_utxo_hashes.clear(); // Reuse the vector
+    
+    for (outpoint, utxo_hash) in &filled_transaction.transaction.inputs {
+        if spent_utxos.contains(outpoint) {
+            return Err(Error::UtxoDoubleSpent);
         }
-        for (vout, output) in
-            filled_transaction.transaction.outputs.iter().enumerate()
-        {
-            let outpoint = OutPoint::Regular {
-                txid,
-                vout: vout as u32,
-            };
-            let pointed_output = PointedOutput {
-                outpoint,
-                output: output.clone(),
-            };
-            accumulator_diff.insert((&pointed_output).into());
-        }
-        total_fees = total_fees
-            .checked_add(state.validate_filled_transaction(filled_transaction)?)
-            .ok_or(AmountOverflowError)?;
-        // verify utreexo proof
-        if !accumulator
-            .verify(&filled_transaction.transaction.proof, &spent_utxo_hashes)?
-        {
-            return Err(Error::UtreexoProofFailed { txid });
-        }
+        spent_utxos.insert(*outpoint);
+        spent_utxo_hashes.push(utxo_hash.into());
+        accumulator_diff.remove(utxo_hash.into());
+    }
+    for (vout, output) in
+        filled_transaction.transaction.outputs.iter().enumerate()
+    {
+        let outpoint = OutPoint::Regular {
+            txid,
+            vout: vout as u32,
+        };
+        let pointed_output = PointedOutput {
+            outpoint,
+            output: output.clone(),
+        };
+        accumulator_diff.insert((&pointed_output).into());
+    }
+    total_fees = total_fees
+        .checked_add(state.validate_filled_transaction(filled_transaction)?)
+        .ok_or(AmountOverflowError)?;
+    // verify utreexo proof
+    if !accumulator
+        .verify(&filled_transaction.transaction.proof, &spent_utxo_hashes)?
+    {
+        return Err(Error::UtreexoProofFailed { txid });
+    }
     }
     if coinbase_value > total_fees {
         return Err(Error::NotEnoughFees);

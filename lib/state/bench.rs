@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, path::Path, sync::RwLock};
 
 use bitcoin::Amount;
 use criterion::Criterion;
@@ -7,6 +7,8 @@ use hashlink::{LinkedHashMap, LinkedHashSet};
 use rand_chacha::ChaCha20Rng;
 use rustreexo::accumulator::node_hash::BitcoinNodeHash;
 use sneed::{Env, EnvError};
+use once_cell::sync::Lazy;
+use ed25519_dalek::VerifyingKey;
 
 use crate::{
     authorization::Authorization,
@@ -18,6 +20,22 @@ use crate::{
         proto::mainchain::{self, TwoWayPegData},
     },
 };
+
+static ADDRESS_CACHE: Lazy<RwLock<HashMap<VerifyingKey, Address>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+
+pub fn get_address_cached(verifying_key: &VerifyingKey) -> Address {
+    {
+        let cache = ADDRESS_CACHE.read().unwrap();
+        if let Some(&addr) = cache.get(verifying_key) {
+            return addr;
+        }
+    }
+
+    let addr = crate::authorization::get_address(verifying_key);
+    ADDRESS_CACHE.write().unwrap().insert(*verifying_key, addr);
+    addr
+}
 
 /// Generate an empty genesis block
 fn genesis_block<Rng>(rng: &mut Rng) -> Block
@@ -45,7 +63,7 @@ where
     Rng: rand::CryptoRng + rand::Rng,
 {
     let sk = SigningKey::generate(rng);
-    let addr = crate::authorization::get_address(&sk.verifying_key());
+    let addr = get_address_cached(&sk.verifying_key());
     (addr, sk)
 }
 
@@ -543,7 +561,9 @@ fn connect_blocks(
             txs_per_block,
         )?;
         let start = std::time::Instant::now();
+        // Current:
         let mut rwtxn = setup.env.write_txn()?;
+        
         setup
             .state
             .validate_block(&rwtxn, &block.header, &block.body)?;
@@ -576,6 +596,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             let mut res = std::time::Duration::ZERO;
             for _ in 0..iters {
                 let mut setup = Setup::new(&mut rng, 400_000).unwrap();
+                // Add memoization:
+                // let initial_state = setup.clone();  // Cache initial state
                 res += connect_blocks(&mut setup, 100_000, 5).unwrap();
             }
             res
