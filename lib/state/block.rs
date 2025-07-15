@@ -2,18 +2,154 @@
 
 use std::collections::HashSet;
 
-use rustreexo::accumulator::node_hash::BitcoinNodeHash;
+use rayon::prelude::*;
+use rustreexo::accumulator::{node_hash::BitcoinNodeHash, stump::Stump};
 use sneed::{RoTxn, RwTxn, db::error::Error as DbError};
 
 use crate::{
     authorization::Authorization,
     state::{Error, State, error},
     types::{
-        AccumulatorDiff, AmountOverflowError, Body, GetAddress as _,
-        GetValue as _, Header, InPoint, OutPoint, PointedOutput, SpentOutput,
-        Verify as _,
+        AccumulatorDiff, AmountOverflowError, Body, FilledTransaction,
+        GetAddress as _, GetValue as _, Header, InPoint, OutPoint,
+        PointedOutput, SpentOutput, Verify as _,
     },
 };
+
+/// Parallel proof verification using thread-safe Stump accumulator with fixed-size chunking
+/// Returns true if all proofs are valid, false if any fail
+fn verify_proofs_parallel(
+    stump: &Stump<BitcoinNodeHash>,
+    filled_transactions: &[FilledTransaction],
+) -> Result<bool, Error> {
+    // For small transaction counts, use simple parallel iteration
+    if filled_transactions.len() <= 10 {
+        return verify_proofs_simple_parallel(stump, filled_transactions);
+    }
+
+    // Create fixed-size chunks of 10 transactions each
+    let chunks: Vec<&[FilledTransaction]> =
+        filled_transactions.chunks(10).collect();
+
+    tracing::debug!(
+        "Using {} chunks for {} transactions (10 txs per chunk)",
+        chunks.len(),
+        filled_transactions.len()
+    );
+
+    // Process chunks in parallel - each chunk runs on a separate thread
+    let results: Vec<_> = chunks
+        .par_iter()
+        .enumerate()
+        .map(|(chunk_id, chunk)| {
+            tracing::trace!(
+                "Processing chunk {} ({} txs)", 
+                chunk_id,
+                chunk.len()
+            );
+            // Verify all transactions in this chunk sequentially
+            // This provides better cache locality and reduces thread contention
+            for filled_transaction in *chunk {
+                let spent_utxo_hashes: Vec<BitcoinNodeHash> = filled_transaction
+                    .transaction
+                    .inputs
+                    .iter()
+                    .map(|(_, utxo_hash)| utxo_hash.into())
+                    .collect();
+                let result = stump.verify(&filled_transaction.transaction.proof, &spent_utxo_hashes);
+                match result {
+                    Ok(true) => continue,  // This proof verified successfully
+                    Ok(false) => {
+                        tracing::warn!(
+                            "Proof verification failed for transaction {} in chunk {}", 
+                            filled_transaction.transaction.txid(),
+                            chunk_id
+                        );
+                        return Ok(false);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Proof verification error for transaction {} in chunk {}: {}", 
+                            filled_transaction.transaction.txid(),
+                            chunk_id,
+                            e
+                        );
+                        return Err(Error::UtreexoProofFailed {
+                            txid: filled_transaction.transaction.txid()
+                        });
+                    }
+                }
+            }
+            Ok(true)  // All transactions in this chunk verified successfully
+        })
+        .collect();
+
+    // Check if all chunks succeeded
+    for result in results {
+        match result {
+            Ok(true) => continue,
+            Ok(false) => return Ok(false),
+            Err(e) => return Err(e),
+        }
+    }
+
+    Ok(true)
+}
+
+/// Simple parallel verification for small transaction counts
+fn verify_proofs_simple_parallel(
+    stump: &Stump<BitcoinNodeHash>,
+    filled_transactions: &[FilledTransaction],
+) -> Result<bool, Error> {
+    let results: Vec<_> = filled_transactions
+        .par_iter()
+        .map(|filled_transaction| {
+            let spent_utxo_hashes: Vec<BitcoinNodeHash> = filled_transaction
+                .transaction
+                .inputs
+                .iter()
+                .map(|(_, utxo_hash)| utxo_hash.into())
+                .collect();
+
+            let result = stump.verify(
+                &filled_transaction.transaction.proof,
+                &spent_utxo_hashes,
+            );
+
+            match result {
+                Ok(is_valid) => {
+                    if !is_valid {
+                        tracing::warn!(
+                            "Proof verification failed for transaction {}",
+                            filled_transaction.transaction.txid()
+                        );
+                    }
+                    Ok(is_valid)
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Proof verification error for transaction {}: {}",
+                        filled_transaction.transaction.txid(),
+                        e
+                    );
+                    Err(Error::UtreexoProofFailed {
+                        txid: filled_transaction.transaction.txid(),
+                    })
+                }
+            }
+        })
+        .collect();
+
+    for result in results {
+        match result {
+            Ok(true) => continue,
+            Ok(false) => return Ok(false),
+            Err(e) => return Err(e),
+        }
+    }
+
+    Ok(true)
+}
 
 pub fn validate(
     state: &State,
@@ -74,18 +210,19 @@ pub fn validate(
         .iter()
         .map(|t| state.fill_transaction(rotxn, t))
         .collect::<Result<_, _>>()?;
+
+    // Validate basic transaction constraints and accumulator diffs
     for filled_transaction in &filled_transactions {
         let txid = filled_transaction.transaction.txid();
-        // hashes of spent utxos, used to verify the utreexo proof
-        let mut spent_utxo_hashes = Vec::<BitcoinNodeHash>::new();
+
         for (outpoint, utxo_hash) in &filled_transaction.transaction.inputs {
             if spent_utxos.contains(outpoint) {
                 return Err(Error::UtxoDoubleSpent);
             }
             spent_utxos.insert(*outpoint);
-            spent_utxo_hashes.push(utxo_hash.into());
             accumulator_diff.remove(utxo_hash.into());
         }
+
         for (vout, output) in
             filled_transaction.transaction.outputs.iter().enumerate()
         {
@@ -102,11 +239,18 @@ pub fn validate(
         total_fees = total_fees
             .checked_add(state.validate_filled_transaction(filled_transaction)?)
             .ok_or(AmountOverflowError)?;
-        // verify utreexo proof
-        if !accumulator
-            .verify(&filled_transaction.transaction.proof, &spent_utxo_hashes)?
-        {
-            return Err(Error::UtreexoProofFailed { txid });
+    }
+
+    // Parallel proof verification using thread-safe Stump
+    if !filled_transactions.is_empty() {
+        let stump = accumulator.to_stump();
+        if !verify_proofs_parallel(&stump, &filled_transactions)? {
+            return Err(Error::UtreexoProofFailed {
+                txid: filled_transactions
+                    .first()
+                    .map(|tx| tx.transaction.txid())
+                    .unwrap_or_default(),
+            });
         }
     }
     if coinbase_value > total_fees {

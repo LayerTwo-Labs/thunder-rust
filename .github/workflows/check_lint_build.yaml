@@ -25,7 +25,7 @@ jobs:
       - name: Install latest nightly toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly
+          toolchain: nightly-2025-06-30
           components: rustfmt, clippy
 
       - name: Rust Cache
@@ -57,7 +57,7 @@ jobs:
       - name: Install latest nightly toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly
+          toolchain: nightly-2025-06-30
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -116,7 +116,7 @@ jobs:
       - name: Install latest nightly toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly
+          toolchain: nightly-2025-06-30
           target: x86_64-pc-windows-gnu
 
       - name: Rust Cache (electrs)
@@ -183,7 +183,7 @@ jobs:
       - name: Install latest nightly toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly
+          toolchain: nightly-2025-06-30
           target: ${{ matrix.name }}
 
       - name: Rust Cache
