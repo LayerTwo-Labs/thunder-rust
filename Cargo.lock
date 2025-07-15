@@ -6806,6 +6806,7 @@ dependencies = [
  "hex 0.4.3",
  "jsonrpsee 0.24.9",
  "nonempty",
+ "once_cell",
  "parking_lot",
  "prost",
  "prost-build",

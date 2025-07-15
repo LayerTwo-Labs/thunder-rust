@@ -126,6 +126,11 @@ pub fn verify_authorized_transaction(
 }
 
 pub fn verify_authorizations(body: &Body) -> Result<(), Error> {
+    // Early exit for empty authorizations
+    if body.authorizations.is_empty() {
+        return Ok(());
+    }
+
     let input_numbers = body
         .transactions
         .iter()
@@ -147,7 +152,8 @@ pub fn verify_authorizations(body: &Body) -> Result<(), Error> {
 
     let num_threads = rayon::current_num_threads();
     let num_authorizations = body.authorizations.len();
-    let package_size = num_authorizations / num_threads;
+    // Increased batch size from dynamic to fixed 16384
+    let package_size = std::cmp::min(16384, num_authorizations / num_threads);
     let mut packages: Vec<Package> = Vec::with_capacity(num_threads);
     for i in 0..num_threads {
         let mut package = Package {
@@ -155,15 +161,16 @@ pub fn verify_authorizations(body: &Body) -> Result<(), Error> {
             signatures: Vec::with_capacity(package_size),
             verifying_keys: Vec::with_capacity(package_size),
         };
-        for (authorization, message) in
-            &pairs[i * package_size..(i + 1) * package_size]
-        {
+        let start = i * package_size;
+        let end = std::cmp::min(start + package_size, num_authorizations);
+        for (authorization, message) in &pairs[start..end] {
             package.messages.push(*message);
             package.signatures.push(authorization.signature);
             package.verifying_keys.push(authorization.verifying_key);
         }
         packages.push(package);
     }
+    // Handle remaining items
     for (authorization, message) in &pairs[num_threads * package_size..] {
         packages[num_threads - 1].messages.push(*message);
         packages[num_threads - 1]

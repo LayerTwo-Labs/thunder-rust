@@ -75,3 +75,7 @@ branch = "log-rotation-size"
 
 [profile.release]
 # lto = "fat"
+[profile.bench]
+lto = "fat"
+codegen-units = 1
+opt-level = 3

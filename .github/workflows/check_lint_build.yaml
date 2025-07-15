@@ -8,7 +8,7 @@ on:
       - '*'
   workflow_dispatch:
 
-name: Check, Lint, Build
+name: Benchmark
 
 env:
   CARGO_TERM_COLOR: always
@@ -48,7 +48,7 @@ jobs:
   benchmarks:
     name: Benchmarks
     runs-on: ubuntu-latest
-    needs: [check-lint]
+    # needs: [check-lint]
     steps:
       - uses: actions/checkout@v4
         with:
