@@ -4,11 +4,9 @@ pkgs.mkShell {
   buildInputs = with pkgs; [
     autoconf
     automake
-    bc
     boost
     db4
     gcc
-    jq
     libevent
     libtool
     openssl

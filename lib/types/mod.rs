@@ -2,6 +2,7 @@ use borsh::BorshSerialize;
 use hashlink::{LinkedHashMap, linked_hash_map};
 use rustreexo::accumulator::{
     mem_forest::MemForest, node_hash::BitcoinNodeHash, proof::Proof,
+    stump::Stump,
 };
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -408,6 +409,15 @@ impl Accumulator {
         del_hashes: &[BitcoinNodeHash],
     ) -> Result<bool, UtreexoError> {
         self.0.verify(proof, del_hashes).map_err(UtreexoError)
+    }
+
+    /// Create a thread-safe Stump from this accumulator's data
+    /// The Stump can be safely shared between threads for parallel verification
+    pub fn to_stump(&self) -> Stump<BitcoinNodeHash> {
+        Stump {
+            leaves: self.0.leaves,
+            roots: self.get_roots(),
+        }
     }
 }
 
