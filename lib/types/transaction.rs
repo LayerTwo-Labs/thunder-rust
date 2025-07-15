@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use bitcoin::amount::CheckedSum;
 use borsh::BorshSerialize;
 use rustreexo::accumulator::{
-    mem_forest::MemForest, node_hash::BitcoinNodeHash, proof::Proof,
+    arena_forest::ArenaForest, node_hash::BitcoinNodeHash, proof::Proof,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -496,7 +496,7 @@ impl Body {
     // Modifies the memforest, without checking tx proofs
     pub fn modify_memforest(
         &self,
-        memforest: &mut MemForest<BitcoinNodeHash>,
+        memforest: &mut ArenaForest<BitcoinNodeHash>,
     ) -> Result<(), String> {
         // New leaves for the accumulator
         let mut accumulator_add = Vec::<BitcoinNodeHash>::new();

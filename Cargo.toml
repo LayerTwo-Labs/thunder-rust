@@ -75,3 +75,6 @@ branch = "log-rotation-size"
 
 [profile.release]
 # lto = "fat"
+
+[patch.crates-io]
+rustreexo = { path = "rustreexo" }
