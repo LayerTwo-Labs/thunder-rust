@@ -1,6 +1,6 @@
 //! Connect and disconnect blocks
 
-use std::collections::HashSet;
+use std::{collections::HashSet, ops::Deref};
 
 use rustreexo::accumulator::node_hash::BitcoinNodeHash;
 use sneed::{RoTxn, RwTxn, db::error::Error as DbError};
@@ -15,6 +15,18 @@ use crate::{
     },
 };
 
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+
+struct SyncRoTxn<'a>(&'a sneed::RoTxn<'a>);
+
+unsafe impl<'a> Sync for SyncRoTxn<'a> {}
+
+impl<'a> Deref for SyncRoTxn<'a> {
+    type Target = sneed::RoTxn<'a>;
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
 pub fn validate(
     state: &State,
     rotxn: &RoTxn,
@@ -69,10 +81,11 @@ pub fn validate(
     }
     let mut total_fees = bitcoin::Amount::ZERO;
     let mut spent_utxos = HashSet::new();
+    let synxrotxn = SyncRoTxn(rotxn);
     let filled_transactions: Vec<_> = body
         .transactions
-        .iter()
-        .map(|t| state.fill_transaction(rotxn, t))
+        .par_iter()
+        .map(|t| state.fill_transaction(&synxrotxn, t))
         .collect::<Result<_, _>>()?;
     for filled_transaction in &filled_transactions {
         let txid = filled_transaction.transaction.txid();

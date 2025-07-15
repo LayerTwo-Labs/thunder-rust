@@ -74,4 +74,11 @@ git = "https://github.com/torkelrogstad/tokio-tracing.git"
 branch = "log-rotation-size"
 
 [profile.release]
-# lto = "fat"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[profile.bench]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
