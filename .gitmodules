@@ -1,3 +1,6 @@
 [submodule "proto"]
 	path = proto
 	url = https://github.com/LayerTwo-Labs/cusf_sidechain_proto.git
+[submodule "rustreexo"]
+	path = rustreexo
+	url = https://github.com/giaki3003/rustreexo
