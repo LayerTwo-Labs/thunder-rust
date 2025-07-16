@@ -1026,7 +1026,6 @@ checksum = "0b47c4ab7a93edb0c7198c5535ed9b52b63095f4e9b45279c6736cec4b856baf"
 [[package]]
 name = "bitcoin-jsonrpsee"
 version = "0.1.1"
-source = "git+https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git?rev=4135b234cbc49b4cc49206c3261e04098d972343#4135b234cbc49b4cc49206c3261e04098d972343"
 dependencies = [
  "base64 0.22.1",
  "bitcoin",
@@ -1040,7 +1039,6 @@ dependencies = [
  "serde_json",
  "serde_with",
  "thiserror 2.0.12",
- "tokio",
  "tracing",
 ]
 

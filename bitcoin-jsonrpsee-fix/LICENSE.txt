@@ -1,0 +1,3 @@
+All rights reserved unless otherwise noted.
+
+This software makes use of the Unicode Data Files and/or Software under the Unicode License Agreement.

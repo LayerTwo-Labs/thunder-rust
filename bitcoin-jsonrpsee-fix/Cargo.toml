@@ -1,0 +1,37 @@
+[package]
+name = "bitcoin-jsonrpsee"
+version = "0.1.1"
+edition = "2021"
+license-file = "LICENSE.txt"
+publish = false
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+base64 = "0.22.1"
+bitcoin = { version = "0.32.2", features = ["serde"] }
+hashlink = { version = "0.10.0", features = ["serde_impl"] }
+hex = { version = "0.4.3", features = ["serde"] }
+http = "1.1.0"
+jsonrpsee = { version = "0.25.1", features = ["client", "macros"] }
+monostate = "0.1.13"
+serde = { version = "1.0.183", features = ["alloc", "derive"] }
+serde_json = "1.0.104"
+thiserror = "2.0.9"
+tracing = { version = "0.1.40", optional = true }
+
+[dependencies.educe]
+version = "0.6.0"
+default-features = false
+features = ["Clone", "Debug"]
+
+[dependencies.serde_with]
+version = "3.8.1"
+default-features = false
+features = ["hex", "macros"]
+
+[dev-dependencies]
+serde_path_to_error = "0.1.16"
+
+[features]
+tracing = ["jsonrpsee/tracing", "dep:tracing"]
