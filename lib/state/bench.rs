@@ -557,12 +557,21 @@ fn connect_blocks(
     Ok(res)
 }
 
-const SEED_PREIMAGE: &[u8] = b"connect-blocks-benchmark";
+static SEED_PREIMAGE: std::sync::LazyLock<[u8; 32]> =
+    std::sync::LazyLock::new(|| {
+        use std::str::FromStr;
+        const BITCOIN_BLOCK_905787_HASH_HEX: &str =
+            "000000000000000000010f7ae70a7ffaf286770e9e70fef83f3f2ce8aea55c00";
+        *bitcoin::BlockHash::from_str(BITCOIN_BLOCK_905787_HASH_HEX)
+            .unwrap()
+            .as_ref()
+    });
 
 pub fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("connect_blocks", |b| {
         use rand::SeedableRng as _;
-        let mut rng = rand_chacha::ChaCha20Rng::from_seed(hash(SEED_PREIMAGE));
+        let mut rng =
+            rand_chacha::ChaCha20Rng::from_seed(hash(&*SEED_PREIMAGE));
         b.iter_custom(|iters| {
             let mut res = std::time::Duration::ZERO;
             for _ in 0..iters {
