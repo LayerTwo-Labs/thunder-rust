@@ -18,7 +18,7 @@ use tracing::instrument;
 use crate::{
     archive::Archive,
     state::State,
-    types::{AuthorizedTransaction, Network, THIS_SIDECHAIN, VERSION, Version},
+    types::{AuthorizedTransaction, THIS_SIDECHAIN, VERSION, Version},
 };
 
 pub mod error;
@@ -150,26 +150,6 @@ pub fn make_server_endpoint(
 // None indicates that the stream has ended
 pub type PeerInfoRx =
     mpsc::UnboundedReceiver<(SocketAddr, Option<PeerConnectionInfo>)>;
-
-const SIGNET_SEED_NODE_ADDRS: &[SocketAddr] = {
-    const SIGNET_MINING_SERVER: SocketAddr = SocketAddr::new(
-        std::net::IpAddr::V4(std::net::Ipv4Addr::new(172, 105, 148, 135)),
-        4000 + THIS_SIDECHAIN as u16,
-    );
-    // thunder.bip300.xyz
-    const BIP300_XYZ: SocketAddr = SocketAddr::new(
-        std::net::IpAddr::V4(std::net::Ipv4Addr::new(95, 217, 243, 12)),
-        4000 + THIS_SIDECHAIN as u16,
-    );
-    &[SIGNET_MINING_SERVER, BIP300_XYZ]
-};
-
-const fn seed_node_addrs(network: Network) -> &'static [SocketAddr] {
-    match network {
-        Network::Signet => SIGNET_SEED_NODE_ADDRS,
-        Network::Regtest => &[],
-    }
-}
 
 // Keep track of peer state
 // Exchange metadata
@@ -317,28 +297,38 @@ impl Net {
     pub fn new(
         env: &sneed::Env,
         archive: Archive,
-        network: Network,
         state: State,
         bind_addr: SocketAddr,
     ) -> Result<(Self, PeerInfoRx), Error> {
         let (server, _) = make_server_endpoint(bind_addr)?;
         let active_peers = Arc::new(RwLock::new(HashMap::new()));
-        let mut rwtxn = env.write_txn()?;
-        let known_peers =
-            match DatabaseUnique::open(env, &rwtxn, "known_peers")? {
-                Some(known_peers) => known_peers,
-                None => {
-                    let known_peers =
-                        DatabaseUnique::create(env, &mut rwtxn, "known_peers")?;
-                    for seed_node_addr in seed_node_addrs(network) {
-                        known_peers.put(&mut rwtxn, seed_node_addr, &())?;
-                    }
+        let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
+        let known_peers = match DatabaseUnique::open(env, &rwtxn, "known_peers")
+            .map_err(EnvError::from)?
+        {
+            Some(known_peers) => known_peers,
+            None => {
+                let known_peers =
+                    DatabaseUnique::create(env, &mut rwtxn, "known_peers")
+                        .map_err(EnvError::from)?;
+                for addr in Self::SEED_NODE_ADDRS {
                     known_peers
+                        .put(&mut rwtxn, addr, &())
+                        .map_err(DbError::from)?;
                 }
-            };
-        let version = DatabaseUnique::create(env, &mut rwtxn, "net_version")?;
-        if version.try_get(&rwtxn, &())?.is_none() {
-            version.put(&mut rwtxn, &(), &*VERSION)?;
+                known_peers
+            }
+        };
+        let version = DatabaseUnique::create(env, &mut rwtxn, "net_version")
+            .map_err(EnvError::from)?;
+        if version
+            .try_get(&rwtxn, &())
+            .map_err(DbError::from)?
+            .is_none()
+        {
+            version
+                .put(&mut rwtxn, &(), &*VERSION)
+                .map_err(DbError::from)?;
         }
         rwtxn.commit().map_err(RwTxnError::from)?;
         let (peer_info_tx, peer_info_rx) = mpsc::unbounded();
@@ -373,9 +363,10 @@ impl Net {
                     tracing::warn!(
                         %addr, "new net: known peer with invalid remote address, removing"
                     );
-                    let mut rwtxn = env.write_txn()?;
-                    net.known_peers.delete(&mut rwtxn, &peer_addr).map_err(DbError::from)?;
-                    rwtxn.commit()?;
+                    let mut tx = env.write_txn().map_err(EnvError::from)?;
+                    net.known_peers.delete(&mut tx, &peer_addr).map_err(DbError::from)?;
+                    tx.commit().map_err(RwTxnError::from)?;
+
                     tracing::info!(
                         %addr,
                         "new net: removed known peer with invalid remote address"

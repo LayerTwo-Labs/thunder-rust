@@ -55,6 +55,8 @@ pub enum SetupError {
     ReservePort(#[from] reserve_port::Error),
     #[error(transparent)]
     RpcClient(#[from] jsonrpsee::core::ClientError),
+    #[error("Timeout: Thunder RPC server not responding")]
+    RpcTimeout,
 }
 
 #[derive(Debug, Error)]
@@ -101,7 +103,8 @@ impl PostSetup {
         let ((), ()) = future::try_join(
             self.rpc_client.mine(None).map_err(BmmError::from),
             async {
-                sleep(Duration::from_secs(1)).await;
+                // debug: Sleep 1 sec way to long.
+                sleep(Duration::from_millis(30)).await;
                 mine::<Self>(post_setup, 1, Some(true))
                     .await
                     .map_err(BmmError::from)
@@ -173,9 +176,31 @@ impl Sidechain for PostSetup {
                 }
             });
         tracing::debug!("Started thunder");
-        sleep(Duration::from_secs(1)).await;
+        // sleep(Duration::from_secs(1)).await;
+        // let rpc_client = jsonrpsee::http_client::HttpClient::builder()
+        //     .build(format!("http://127.0.0.1:{}", reserved_ports.rpc.port()))?;
+
+        // debug: Wait until the RPC server is ready
         let rpc_client = jsonrpsee::http_client::HttpClient::builder()
             .build(format!("http://127.0.0.1:{}", reserved_ports.rpc.port()))?;
+
+        const MAX_WAIT_MS: u64 = 5000; // Max 5 sec
+        const POLL_INTERVAL_MS: u64 = 200;
+
+        let mut waited_ms = 0;
+        loop {
+            match rpc_client.getblockcount().await {
+                Ok(_) => break, // RPC ready
+                Err(_) if waited_ms >= MAX_WAIT_MS => {
+                    return Err(Self::SetupError::RpcTimeout);
+                }
+                Err(_) => {
+                    sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
+                    waited_ms += POLL_INTERVAL_MS;
+                }
+            }
+        }
+
         tracing::debug!("Generating mnemonic seed phrase");
         let mnemonic = rpc_client.generate_mnemonic().await?;
         tracing::debug!("Setting mnemonic seed phrase");

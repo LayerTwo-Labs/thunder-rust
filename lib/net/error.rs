@@ -1,9 +1,8 @@
 use std::net::{IpAddr, SocketAddr};
 
 use fatality::fatality;
-use sneed::{db, env, rwtxn};
+use sneed::DbError;
 use thiserror::Error;
-use transitive::Transitive;
 
 use crate::net::PeerConnectionError;
 
@@ -38,14 +37,7 @@ pub enum AcceptConnection {
     ServerEndpointClosed,
 }
 
-#[allow(clippy::duplicated_attributes)]
-#[derive(Debug, Error, Transitive)]
-#[transitive(from(db::error::Put, db::Error))]
-#[transitive(from(db::error::TryGet, db::Error))]
-#[transitive(from(env::error::CreateDb, env::Error))]
-#[transitive(from(env::error::OpenDb, env::Error))]
-#[transitive(from(env::error::WriteTxn, env::Error))]
-#[transitive(from(rwtxn::error::Commit, rwtxn::Error))]
+#[derive(Debug, Error)]
 pub enum Error {
     #[error(transparent)]
     AcceptConnection(#[from] <AcceptConnection as fatality::Split>::Fatal),
@@ -58,11 +50,11 @@ pub enum Error {
     #[error("connect error")]
     Connect(#[from] quinn::ConnectError),
     #[error(transparent)]
-    Db(#[from] db::Error),
+    Db(#[from] DbError),
     #[error("Database env error")]
-    DbEnv(#[from] env::Error),
+    DbEnv(#[from] sneed::env::Error),
     #[error("Database write error")]
-    DbWrite(#[from] rwtxn::Error),
+    DbWrite(#[from] sneed::rwtxn::Error),
     #[error("quinn error")]
     Io(#[from] std::io::Error),
     #[error("peer connection not found for {0}")]

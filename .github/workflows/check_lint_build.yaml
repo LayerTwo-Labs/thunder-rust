@@ -37,48 +37,13 @@ jobs:
         run: cargo fmt --all -- --check
       
       - name: Cargo check
-        run: cargo check --all-targets
+        run: cargo check --all-targets --all-features
       
       - name: Clippy
-        run: cargo clippy --all-targets
+        run: cargo clippy --all-targets --all-features
       
       - name: Deny
         uses: EmbarkStudios/cargo-deny-action@v2
-
-  benchmarks:
-    name: Benchmarks
-    runs-on: ubuntu-latest
-    needs: [check-lint]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: "recursive"
-
-      - name: Install latest nightly toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: x86_64-unknown-linux-gnu
-
-      - name: Run benchmarks
-        id: runBenchmarks
-        run: |
-          RUSTFLAGS="-C target-cpu=native" cargo bench --package thunder --benches --all-features
-
-      - name: Show report
-        run: |
-          MEAN_NANOS=$(jq '.mean | .point_estimate' target/criterion/connect_blocks/new/estimates.json)
-          MEDIAN_NANOS=$(jq '.median | .point_estimate' target/criterion/connect_blocks/new/estimates.json)
-          MEAN_S=$(echo "scale=2; $MEAN_NANOS / 1000000000" | bc -l)
-          MEDIAN_S=$(echo "scale=2; $MEDIAN_NANOS / 1000000000" | bc -l)
-          echo "*************"
-          echo "YOUR SCORE:  ${MEAN_S}"
-          echo "Verified 5x 160mb blocks in ${MEAN_S} seconds (mean) / ${MEDIAN_S} seconds (median)."
-          echo "*************"
 
   integration-test:
     name: Integration test
@@ -143,15 +108,141 @@ jobs:
       - name: Build (debug)
         run: cargo build
 
+      - name: Start bitcoind (background)
+        run: |
+          mkdir -p /tmp/bitcoind
+          ../bitcoin-patched-bins/bitcoind \
+            -regtest \
+            -datadir=/tmp/bitcoind \
+            -fallbackfee=0.0001 \
+            -txindex=1 \
+            -rpcuser=rpcuser \
+            -rpcpassword=rpcpassword \
+            -rpcport=18443 \
+            -port=18444 \
+            -daemon
+
+      - name: Wait for bitcoind RPC to become ready
+        run: |
+          for i in {1..60}; do
+            if curl -sf --user rpcuser:rpcpassword \
+              --data-binary '{"jsonrpc":"1.0","id":"curl","method":"getblockchaininfo","params":[]}' \
+              -H 'content-type: text/plain;' http://127.0.0.1:18443 > /dev/null; then
+              echo "bitcoind is ready."
+              break
+            fi
+            echo "Waiting for bitcoind RPC... ($i/60)"
+            sleep 1
+            if [ "$i" -eq 60 ]; then
+              echo "bitcoind did not become available in time" >&2
+              exit 1
+            fi
+          done
+
+      - name: Generate 1 block
+        run: |
+          # Wallet creation if it does not exist
+          ../bitcoin-patched-bins/bitcoin-cli \
+            -regtest \
+            -datadir=/tmp/bitcoind \
+            -rpcuser=rpcuser \
+            -rpcpassword=rpcpassword \
+            createwallet "test_wallet" || true
+
+          # 1 block generation
+          ../bitcoin-patched-bins/bitcoin-cli \
+            -regtest \
+            -datadir=/tmp/bitcoind \
+            -rpcuser=rpcuser \
+            -rpcpassword=rpcpassword \
+            generatetoaddress 1 "$(
+              ../bitcoin-patched-bins/bitcoin-cli \
+                -regtest \
+                -datadir=/tmp/bitcoind \
+                -rpcuser=rpcuser \
+                -rpcpassword=rpcpassword \
+                getnewaddress
+            )"
+
+      - name: Start Electrs
+        run: |
+          nohup ../electrs/target/release/electrs \
+            --network regtest \
+            --daemon-dir /tmp/bitcoind \
+            --http-addr 127.0.0.1:3003 \
+            --jsonrpc-import \
+            > /tmp/electrs.log 2>&1 &
+
+          sleep 2
+
+          echo "Checking if electrs process is running:"
+          ps aux | grep electrs | grep -v grep || echo "Electrs not running"
+
+          for i in {1..180}; do
+            if curl -sf http://127.0.0.1:3003/blocks/tip/height > /dev/null; then
+              echo "Electrs is up and running."
+              break
+            fi
+            echo "Waiting for Electrs to start... ($i/180)"
+            tail -n 5 /tmp/electrs.log || true
+            sleep 1
+            if [ "$i" -eq 180 ]; then
+              echo "Electrs did not become available within 180 seconds" >&2
+              echo "--- Electrs Log ---"
+              cat /tmp/electrs.log || true
+              echo "--- Bitcoind Debug Log ---"
+              cat /tmp/bitcoind/regtest/debug.log || true
+              netstat -tulnp || true
+              exit 1
+            fi
+          done
+
+      - name: Diagnose Electrs startup and network bindings
+        run: |
+          echo ">>> Aktive TCP-Verbindungen (ss -tlpn):"
+          ss -tlpn || true
+
+          echo ">>> Letzte 100 Zeilen aus dem Electrs-Log:"
+          tail -n 100 /tmp/electrs.log || echo "Kein Log gefunden"
+
+          echo ">>> Prüfe ob Port 3003 offen ist:"
+          curl -v http://127.0.0.1:3003/blocks/tip/height || echo "Electrs HTTP nicht erreichbar"
+
+
+      - name: Diagnose Electrs status
+        run: |
+          echo "--- Electrs log ---"
+          cat /tmp/electrs.log || echo "No log found"
+          echo "--- Try fetching tip height manually ---"
+          curl -v http://127.0.0.1:3003/blocks/tip/height || echo "Electrs not reachable"
+
+      - name: Final check
+        run: |
+          for i in {1..10}; do
+            if curl -sf http://127.0.0.1:3003/blocks/tip/height > /dev/null; then
+              echo "Electrs final check passed (attempt $i)."
+              exit 0
+            fi
+            echo "Electrs still unreachable... ($i/10)"
+            sleep 1
+          done
+          echo "Electrs still not reachable before tests" >&2
+          curl -v http://127.0.0.1:3003/blocks/tip/height || true
+          echo "--- Electrs log ---"
+          cat /tmp/electrs.log || echo "No log found"
+          exit 1
+
+      - name: Set ESPLORA_URL env variable
+        run: echo "ESPLORA_URL=http://127.0.0.1:3003" >> $GITHUB_ENV
+
       - name: Run integration tests
-        id: runIntegrationTests
         run: |
           export BIP300301_ENFORCER='../bip300301-enforcer'
           export BITCOIND='../bitcoin-patched-bins/bitcoind'
           export BITCOIN_CLI='../bitcoin-patched-bins/bitcoin-cli'
           export ELECTRS='../electrs/target/release/electrs'
           export THUNDER_APP='target/debug/thunder_app'
-          cargo run --example integration_tests
+          cargo run --example integration_tests -- --test-threads=1
 
   build-release:
     strategy:

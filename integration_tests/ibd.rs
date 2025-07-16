@@ -73,10 +73,128 @@ async fn setup(
     Ok((enforcer_post_setup, thunder_nodes))
 }
 
-/// Check that a Thunder node is connected to the specified peer
+// /// Check that a Thunder node is connected to the specified peer
+// async fn check_peer_connection(
+//     thunder_setup: &PostSetup,
+//     expected_peer: SocketAddr,
+// ) -> anyhow::Result<()> {
+//     let peers = thunder_setup
+//         .rpc_client
+//         .list_peers()
+//         .await?
+//         .iter()
+//         .map(|p| p.address)
+//         .collect::<Vec<_>>();
+
+//     if peers.contains(&expected_peer) {
+//         Ok(())
+//     } else {
+//         Err(anyhow::anyhow!(
+//             "Expected connection to {expected_peer}, found {peers:?}"
+//         ))
+//     }
+// }
+
+// async fn initial_block_download_task(
+//     bin_paths: BinPaths,
+//     res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
+// ) -> anyhow::Result<()> {
+//     let (mut enforcer_post_setup, thunder_nodes) =
+//         setup(bin_paths, res_tx).await?;
+//     const BMM_BLOCKS: u32 = 16;
+//     tracing::info!(blocks = %BMM_BLOCKS, "Attempting BMM");
+//     thunder_nodes
+//         .sender
+//         .bmm(&mut enforcer_post_setup, BMM_BLOCKS)
+//         .await?;
+//     // Check that sender has all blocks, and syncer has 0
+//     {
+//         let sender_blocks =
+//             thunder_nodes.sender.rpc_client.getblockcount().await?;
+//         anyhow::ensure!(sender_blocks == BMM_BLOCKS);
+//         let syncer_blocks =
+//             thunder_nodes.syncer.rpc_client.getblockcount().await?;
+//         anyhow::ensure!(syncer_blocks == 0);
+//     }
+//     tracing::info!("Attempting sync");
+//     tracing::debug!(
+//         sender_addr = %thunder_nodes.sender.net_addr(),
+//         syncer_addr = %thunder_nodes.syncer.net_addr(),
+//         "Connecting syncer to sender");
+//     let () = thunder_nodes
+//         .syncer
+//         .rpc_client
+//         .connect_peer(thunder_nodes.sender.net_addr().into())
+//         .await?;
+//     // Wait for connection to be established
+//     sleep(std::time::Duration::from_secs(1)).await;
+//     tracing::debug!("Checking peer connections");
+//     // Check peer connections
+//     let () = check_peer_connection(
+//         &thunder_nodes.syncer,
+//         thunder_nodes.sender.net_addr().into(),
+//     )
+//     .await?;
+//     tracing::debug!("Syncer has connection to sender");
+//     let () = check_peer_connection(
+//         &thunder_nodes.sender,
+//         thunder_nodes.syncer.net_addr().into(),
+//     )
+//     .await?;
+//     tracing::debug!("Sender has connection to syncer");
+//     // Wait for sync to occur
+//     // sleep(std::time::Duration::from_secs(10)).await;
+
+//     // debug active wait instead of sleep
+//     const MAX_WAIT: u64 = 30;
+//     const POLL_INTERVAL_MS: u64 = 200; // fast Polls
+
+//     let mut waited = 0;
+//     loop {
+//         let syncer_blocks = thunder_nodes.syncer.rpc_client.getblockcount().await.unwrap_or(0);
+//         if syncer_blocks >= BMM_BLOCKS {
+//             break;
+//         }
+//         if waited >= MAX_WAIT * 1000 {
+//             anyhow::bail!("Timeout: Syncer did not reach target block count.");
+//         }
+//         sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+//         waited += POLL_INTERVAL_MS;
+//     }
+
+//     //debug (delete after testing)
+//     tracing::debug!("Sync completed after {} ms", waited);
+
+//     // Check peer connections
+//     let () = check_peer_connection(
+//         &thunder_nodes.syncer,
+//         thunder_nodes.sender.net_addr().into(),
+//     )
+//     .await?;
+//     tracing::debug!("Syncer still has connection to sender");
+//     // Check that sender and syncer have all blocks
+//     {
+//         let sender_blocks =
+//             thunder_nodes.sender.rpc_client.getblockcount().await?;
+//         anyhow::ensure!(sender_blocks == BMM_BLOCKS);
+//         let syncer_blocks =
+//             thunder_nodes.syncer.rpc_client.getblockcount().await?;
+//         anyhow::ensure!(syncer_blocks == BMM_BLOCKS);
+//     }
+//     drop(thunder_nodes.syncer);
+//     drop(thunder_nodes.sender);
+//     tracing::info!("Removing {}", enforcer_post_setup.out_dir.path().display());
+//     drop(enforcer_post_setup.tasks);
+//     // Wait for tasks to die
+//     sleep(std::time::Duration::from_secs(1)).await;
+//     enforcer_post_setup.out_dir.cleanup()?;
+//     Ok(())
+// }
+
+// debug helper function to check peer connectio
 async fn check_peer_connection(
     thunder_setup: &PostSetup,
-    expected_peer: SocketAddr,
+    expected_peer: std::net::SocketAddr,
 ) -> anyhow::Result<()> {
     let peers = thunder_setup
         .rpc_client
@@ -95,6 +213,7 @@ async fn check_peer_connection(
     }
 }
 
+// debug active wait instead of sleep for initial block download
 async fn initial_block_download_task(
     bin_paths: BinPaths,
     res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
@@ -107,6 +226,7 @@ async fn initial_block_download_task(
         .sender
         .bmm(&mut enforcer_post_setup, BMM_BLOCKS)
         .await?;
+
     // Check that sender has all blocks, and syncer has 0
     {
         let sender_blocks =
@@ -116,42 +236,86 @@ async fn initial_block_download_task(
             thunder_nodes.syncer.rpc_client.getblockcount().await?;
         anyhow::ensure!(syncer_blocks == 0);
     }
+
     tracing::info!("Attempting sync");
     tracing::debug!(
         sender_addr = %thunder_nodes.sender.net_addr(),
         syncer_addr = %thunder_nodes.syncer.net_addr(),
-        "Connecting syncer to sender");
-    let () = thunder_nodes
+        "Connecting syncer to sender"
+    );
+
+    thunder_nodes
         .syncer
         .rpc_client
         .connect_peer(thunder_nodes.sender.net_addr().into())
         .await?;
-    // Wait for connection to be established
-    sleep(std::time::Duration::from_secs(1)).await;
+
+    const MAX_WAIT_CONNECTION_MS: u64 = 5000;
+    const POLL_INTERVAL_MS: u64 = 200;
+    let mut waited_ms = 0;
+
+    loop {
+        let peers = thunder_nodes
+            .syncer
+            .rpc_client
+            .list_peers()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| p.address)
+            .collect::<Vec<_>>();
+
+        if peers.contains(&thunder_nodes.sender.net_addr().into()) {
+            break;
+        }
+
+        if waited_ms >= MAX_WAIT_CONNECTION_MS {
+            anyhow::bail!(
+                "Timeout: Syncer did not connect to sender within {} ms",
+                MAX_WAIT_CONNECTION_MS
+            );
+        }
+
+        sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+        waited_ms += POLL_INTERVAL_MS;
+    }
+
     tracing::debug!("Checking peer connections");
-    // Check peer connections
-    let () = check_peer_connection(
+    check_peer_connection(
         &thunder_nodes.syncer,
         thunder_nodes.sender.net_addr().into(),
     )
     .await?;
     tracing::debug!("Syncer has connection to sender");
-    let () = check_peer_connection(
-        &thunder_nodes.sender,
-        thunder_nodes.syncer.net_addr().into(),
-    )
-    .await?;
-    tracing::debug!("Sender has connection to syncer");
-    // Wait for sync to occur
-    sleep(std::time::Duration::from_secs(10)).await;
-    // Check peer connections
-    let () = check_peer_connection(
+
+    const MAX_WAIT_SYNC_MS: u64 = 50_000;
+    let mut waited_sync_ms = 0;
+
+    loop {
+        let syncer_blocks = thunder_nodes
+            .syncer
+            .rpc_client
+            .getblockcount()
+            .await
+            .unwrap_or(0);
+        if syncer_blocks >= BMM_BLOCKS {
+            break;
+        }
+        if waited_sync_ms >= MAX_WAIT_SYNC_MS {
+            anyhow::bail!("Timeout: Syncer did not reach target block count.");
+        }
+        sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+        waited_sync_ms += POLL_INTERVAL_MS;
+    }
+
+    tracing::debug!("Sync completed after {} ms", waited_sync_ms);
+
+    check_peer_connection(
         &thunder_nodes.syncer,
         thunder_nodes.sender.net_addr().into(),
     )
     .await?;
     tracing::debug!("Syncer still has connection to sender");
-    // Check that sender and syncer have all blocks
     {
         let sender_blocks =
             thunder_nodes.sender.rpc_client.getblockcount().await?;
@@ -160,13 +324,15 @@ async fn initial_block_download_task(
             thunder_nodes.syncer.rpc_client.getblockcount().await?;
         anyhow::ensure!(syncer_blocks == BMM_BLOCKS);
     }
+
     drop(thunder_nodes.syncer);
     drop(thunder_nodes.sender);
     tracing::info!("Removing {}", enforcer_post_setup.out_dir.path().display());
     drop(enforcer_post_setup.tasks);
-    // Wait for tasks to die
-    sleep(std::time::Duration::from_secs(1)).await;
+
+    sleep(std::time::Duration::from_millis(200)).await;
     enforcer_post_setup.out_dir.cleanup()?;
+
     Ok(())
 }
 

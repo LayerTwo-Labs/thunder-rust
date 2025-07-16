@@ -24,7 +24,7 @@ pub use hashes::{BlockHash, Hash, M6id, MerkleRoot, Txid, hash};
 pub use transaction::{
     AuthorizedTransaction, Body, Content as OutputContent, FilledTransaction,
     GetAddress, GetValue, InPoint, OutPoint, Output, PointedOutput,
-    PointedOutputRef, SpentOutput, Transaction, Verify,
+    SpentOutput, Transaction, Verify,
 };
 
 pub const THIS_SIDECHAIN: u8 = 9;
@@ -463,14 +463,6 @@ pub struct Tip {
     pub block_hash: BlockHash,
     #[borsh(serialize_with = "borsh_serialize_bitcoin_block_hash")]
     pub main_block_hash: bitcoin::BlockHash,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-#[cfg_attr(feature = "clap", derive(clap::ValueEnum, strum::Display))]
-pub enum Network {
-    #[default]
-    Signet,
-    Regtest,
 }
 
 /// Semver-compatible version

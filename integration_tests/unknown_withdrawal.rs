@@ -143,8 +143,8 @@ async fn unknown_withdrawal_task(
     drop(sidechain_withdrawer);
     tracing::info!("Removing {}", enforcer_post_setup.out_dir.path().display());
     drop(enforcer_post_setup.tasks);
-    // Wait for tasks to die
-    sleep(std::time::Duration::from_secs(1)).await;
+    //debug Wait for tasks to die
+    sleep(std::time::Duration::from_millis(200)).await;
     enforcer_post_setup.out_dir.cleanup()?;
     Ok(())
 }

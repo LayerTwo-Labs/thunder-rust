@@ -225,7 +225,7 @@ impl std::fmt::Display for M6id {
 
 pub fn hash<T>(data: &T) -> Hash
 where
-    T: BorshSerialize + ?Sized,
+    T: BorshSerialize,
 {
     let data_serialized = borsh::to_vec(data)
         .expect("failed to serialize with borsh to compute a hash");

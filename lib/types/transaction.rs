@@ -195,7 +195,7 @@ mod content {
         }
     }
 
-    impl crate::types::GetValue for Content {
+    impl crate::wallet::GetValue for Content {
         #[inline(always)]
         fn get_value(&self) -> bitcoin::Amount {
             match self {
@@ -350,20 +350,6 @@ pub struct PointedOutput {
 impl From<&PointedOutput> for BitcoinNodeHash {
     fn from(pointed_output: &PointedOutput) -> Self {
         Self::new(hash(pointed_output))
-    }
-}
-
-/// Useful when computing hashes for Utreexo,
-/// without needing to clone an output
-#[derive(BorshSerialize, Clone, Copy, Debug)]
-pub struct PointedOutputRef<'a> {
-    pub outpoint: OutPoint,
-    pub output: &'a Output,
-}
-
-impl From<PointedOutputRef<'_>> for BitcoinNodeHash {
-    fn from(pointed_output: PointedOutputRef) -> Self {
-        Self::new(hash(&pointed_output))
     }
 }
 

@@ -22,7 +22,6 @@ http = "1.2.0"
 jsonrpsee = { version = "0.24.7", features = ["tracing"] }
 parking_lot = "0.12.1"
 prost = "0.13.3"
-rustreexo = "0.4.0"
 serde = "1.0.179"
 serde_json = "1.0.113"
 strum = { version = "0.26.3", features = ["derive"] }
@@ -39,16 +38,20 @@ uuid = "1.13.1"
 [workspace.dependencies.bip300301_enforcer_lib]
 default-features = false
 git = "https://github.com/LayerTwo-Labs/bip300301_enforcer"
-rev = "b0ad8331712f35497b238a69ac93dcf8059867dc"
+rev = "ae376cbe83da87f8487eceb407e8c3109aa49d4d"
 
 [workspace.dependencies.bip300301_enforcer_integration_tests]
 default-features = false
 git = "https://github.com/LayerTwo-Labs/bip300301_enforcer"
-rev = "b0ad8331712f35497b238a69ac93dcf8059867dc"
+rev = "ae376cbe83da87f8487eceb407e8c3109aa49d4d"
 
 [workspace.dependencies.l2l-openapi]
 git = "https://github.com/Ash-L2L/l2l-openapi"
 rev = "38c42ee637d083f1cdc807b546f6930b880dcad9"
+
+[workspace.dependencies.rustreexo]
+git = "https://github.com/mit-dci/rustreexo"
+rev = "6da503b598470f6e87aa9d769b94df64df7ff3ae"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
@@ -67,11 +70,6 @@ let_underscore_drop = "deny"
 [patch.crates-io.temp-dir]
 git = "https://gitlab.com/A-Manning/leonhard-llc-ops.git"
 branch = "temp-dir-leak"
-
-# Have to use a patch here. Depending directly on the fork breaks macros.
-[patch.crates-io.tracing-appender]
-git = "https://github.com/torkelrogstad/tokio-tracing.git"
-branch = "log-rotation-size"
 
 [profile.release]
 # lto = "fat"
