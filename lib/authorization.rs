@@ -1,5 +1,8 @@
 use borsh::BorshSerialize;
-use rayon::iter::{IntoParallelRefIterator as _, ParallelIterator as _};
+use rayon::{
+    iter::{IntoParallelRefIterator as _, ParallelIterator as _},
+    slice::ParallelSlice as _,
+};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -99,12 +102,6 @@ pub fn get_address(verifying_key: &VerifyingKey) -> Address {
     Address(output)
 }
 
-struct Package<'a> {
-    messages: Vec<&'a [u8]>,
-    signatures: Vec<Signature>,
-    verifying_keys: Vec<VerifyingKey>,
-}
-
 pub fn verify_authorized_transaction(
     transaction: &AuthorizedTransaction,
 ) -> Result<(), Error> {
@@ -155,55 +152,19 @@ pub fn verify_authorizations(body: &Body) -> Result<(), Error> {
                 std::iter::repeat_n(tx.as_slice(), *n_inputs)
             });
     let pairs = body.authorizations.iter().zip(messages).collect::<Vec<_>>();
-
-    let num_threads = rayon::current_num_threads();
-    let num_authorizations = body.authorizations.len();
-    let package_size = num_authorizations / num_threads;
-    let mut packages: Vec<Package> = Vec::with_capacity(num_threads);
-    for i in 0..num_threads {
-        let mut package = Package {
-            messages: Vec::with_capacity(package_size),
-            signatures: Vec::with_capacity(package_size),
-            verifying_keys: Vec::with_capacity(package_size),
-        };
-        for (authorization, message) in
-            &pairs[i * package_size..(i + 1) * package_size]
-        {
-            package.messages.push(*message);
-            package.signatures.push(authorization.signature);
-            package.verifying_keys.push(authorization.verifying_key);
-        }
-        packages.push(package);
-    }
-    for (authorization, message) in &pairs[num_threads * package_size..] {
-        packages[num_threads - 1].messages.push(*message);
-        packages[num_threads - 1]
-            .signatures
-            .push(authorization.signature);
-        packages[num_threads - 1]
-            .verifying_keys
-            .push(authorization.verifying_key);
-    }
-    assert_eq!(
-        packages.iter().map(|p| p.signatures.len()).sum::<usize>(),
-        body.authorizations.len()
-    );
-    packages
-        .par_iter()
-        .map(
-            |Package {
-                 messages,
-                 signatures,
-                 verifying_keys,
-             }| {
-                ed25519_dalek::verify_batch(
-                    messages,
-                    signatures,
-                    verifying_keys,
-                )
-            },
-        )
-        .collect::<Result<(), SignatureError>>()?;
+    assert_eq!(pairs.len(), body.authorizations.len());
+    const CHUNK_SIZE: usize = 1 << 14;
+    pairs.par_chunks(CHUNK_SIZE).try_for_each(|chunk| {
+        let (signatures, verifying_keys, messages): (
+            Vec<Signature>,
+            Vec<VerifyingKey>,
+            Vec<&[u8]>,
+        ) = chunk
+            .iter()
+            .map(|(auth, msg)| (auth.signature, auth.verifying_key, msg))
+            .collect();
+        ed25519_dalek::verify_batch(&messages, &signatures, &verifying_keys)
+    })?;
     Ok(())
 }
 
