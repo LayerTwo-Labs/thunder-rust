@@ -8,8 +8,6 @@ use thunder::{
 
 use crate::app::App;
 
-use super::util::UiExt;
-
 pub struct BlockExplorer {
     height: u32,
 }
@@ -100,10 +98,12 @@ impl BlockExplorer {
                 let body_sigops_limit = State::body_sigops_limit(self.height);
                 ui.monospace(format!("Body sigops limit: {body_sigops_limit}"));
 
+                #[cfg(feature = "utreexo")]
                 if let Some(app) = app
                     && let Ok(Some(acc)) =
                         app.node.try_get_accumulator(header.hash())
                 {
+                    use super::util::UiExt;
                     ui.monospace_selectable_multiline(format!(
                         "Utreexo accumulator: \n{}",
                         acc.0

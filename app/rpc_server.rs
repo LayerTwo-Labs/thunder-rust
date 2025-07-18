@@ -239,12 +239,14 @@ impl RpcServer for RpcServerImpl {
         value_sats: u64,
         fee_sats: u64,
     ) -> RpcResult<Txid> {
+        #[cfg(feature = "utreexo")]
         let accumulator =
             self.app.node.get_tip_accumulator().map_err(custom_err)?;
         let tx = self
             .app
             .wallet
             .create_transaction(
+                #[cfg(feature = "utreexo")]
                 &accumulator,
                 dest,
                 Amount::from_sat(value_sats),
@@ -263,12 +265,14 @@ impl RpcServer for RpcServerImpl {
         fee_sats: u64,
         mainchain_fee_sats: u64,
     ) -> RpcResult<Txid> {
+        #[cfg(feature = "utreexo")]
         let accumulator =
             self.app.node.get_tip_accumulator().map_err(custom_err)?;
         let tx = self
             .app
             .wallet
             .create_withdrawal(
+                #[cfg(feature = "utreexo")]
                 &accumulator,
                 mainchain_address,
                 Amount::from_sat(amount_sats),

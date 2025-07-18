@@ -2,16 +2,19 @@
 
 use std::collections::HashSet;
 
+#[cfg(feature = "utreexo")]
 use rustreexo::accumulator::node_hash::BitcoinNodeHash;
 use sneed::{RoTxn, RwTxn, db::error::Error as DbError};
 
+#[cfg(feature = "utreexo")]
+use crate::types::{AccumulatorDiff, PointedOutput};
 use crate::{
     authorization::Authorization,
     state::{Error, State, error},
     types::{
-        AccumulatorDiff, AmountOverflowError, Body, FilledTransaction,
-        GetAddress as _, GetValue as _, Header, InPoint, MerkleRoot, OutPoint,
-        PointedOutput, SpentOutput, Verify as _,
+        AmountOverflowError, Body, FilledTransaction, GetAddress as _,
+        GetValue as _, Header, InPoint, MerkleRoot, OutPoint, SpentOutput,
+        Verify as _,
     },
 };
 
@@ -38,6 +41,7 @@ pub fn validate(
     if body_size > State::body_size_limit(height) {
         return Err(Error::BodyTooLarge);
     }
+    #[cfg(feature = "utreexo")]
     let mut accumulator = state
         .utreexo_accumulator
         .try_get(rotxn, &())
@@ -52,21 +56,27 @@ pub fn validate(
         body.coinbase.as_slice(),
         filled_transactions.as_slice(),
     )?;
+    #[cfg(feature = "utreexo")]
     let mut accumulator_diff = AccumulatorDiff::default();
     let mut coinbase_value = bitcoin::Amount::ZERO;
     for (vout, output) in body.coinbase.iter().enumerate() {
+        #[cfg(not(feature = "utreexo"))]
+        let _ = vout;
         coinbase_value = coinbase_value
             .checked_add(output.get_value())
             .ok_or(AmountOverflowError)?;
-        let outpoint = OutPoint::Coinbase {
-            merkle_root,
-            vout: vout as u32,
-        };
-        let pointed_output = PointedOutput {
-            outpoint,
-            output: output.clone(),
-        };
-        accumulator_diff.insert((&pointed_output).into());
+        #[cfg(feature = "utreexo")]
+        {
+            let outpoint = OutPoint::Coinbase {
+                merkle_root,
+                vout: vout as u32,
+            };
+            let pointed_output = PointedOutput {
+                outpoint,
+                output: output.clone(),
+            };
+            accumulator_diff.insert((&pointed_output).into());
+        }
     }
     if merkle_root != header.merkle_root {
         let err = Error::InvalidBody {
@@ -78,17 +88,25 @@ pub fn validate(
     let mut total_fees = bitcoin::Amount::ZERO;
     let mut spent_utxos = HashSet::new();
     for filled_transaction in &filled_transactions {
+        #[cfg(feature = "utreexo")]
         let txid = filled_transaction.transaction.txid();
+        #[cfg(feature = "utreexo")]
         // hashes of spent utxos, used to verify the utreexo proof
         let mut spent_utxo_hashes = Vec::<BitcoinNodeHash>::new();
         for (outpoint, utxo_hash) in &filled_transaction.transaction.inputs {
+            #[cfg(not(feature = "utreexo"))]
+            let _ = utxo_hash;
             if spent_utxos.contains(outpoint) {
                 return Err(Error::UtxoDoubleSpent);
             }
             spent_utxos.insert(*outpoint);
-            spent_utxo_hashes.push(utxo_hash.into());
-            accumulator_diff.remove(utxo_hash.into());
+            #[cfg(feature = "utreexo")]
+            {
+                spent_utxo_hashes.push(utxo_hash.into());
+                accumulator_diff.remove(utxo_hash.into());
+            }
         }
+        #[cfg(feature = "utreexo")]
         for (vout, output) in
             filled_transaction.transaction.outputs.iter().enumerate()
         {
@@ -105,11 +123,15 @@ pub fn validate(
         total_fees = total_fees
             .checked_add(state.validate_filled_transaction(filled_transaction)?)
             .ok_or(AmountOverflowError)?;
-        // verify utreexo proof
-        if !accumulator
-            .verify(&filled_transaction.transaction.proof, &spent_utxo_hashes)?
+        #[cfg(feature = "utreexo")]
         {
-            return Err(Error::UtreexoProofFailed { txid });
+            // verify utreexo proof
+            if !accumulator.verify(
+                &filled_transaction.transaction.proof,
+                &spent_utxo_hashes,
+            )? {
+                return Err(Error::UtreexoProofFailed { txid });
+            }
         }
     }
     if coinbase_value > total_fees {
@@ -128,10 +150,13 @@ pub fn validate(
     if Authorization::verify_body(body).is_err() {
         return Err(Error::Authorization);
     }
-    let () = accumulator.apply_diff(accumulator_diff)?;
-    let roots: Vec<BitcoinNodeHash> = accumulator.get_roots();
-    if roots != header.roots {
-        return Err(Error::UtreexoRootsMismatch);
+    #[cfg(feature = "utreexo")]
+    {
+        let () = accumulator.apply_diff(accumulator_diff)?;
+        let roots: Vec<BitcoinNodeHash> = accumulator.get_roots();
+        if roots != header.roots {
+            return Err(Error::UtreexoRootsMismatch);
+        }
     }
     Ok((total_fees, merkle_root))
 }
@@ -150,21 +175,26 @@ pub fn connect(
         };
         return Err(Error::InvalidHeader(err));
     }
+    #[cfg(feature = "utreexo")]
     let mut accumulator = state
         .utreexo_accumulator
         .try_get(rwtxn, &())?
         .unwrap_or_default();
+    #[cfg(feature = "utreexo")]
     let mut accumulator_diff = AccumulatorDiff::default();
     for (vout, output) in body.coinbase.iter().enumerate() {
         let outpoint = OutPoint::Coinbase {
             merkle_root: header.merkle_root,
             vout: vout as u32,
         };
-        let pointed_output = PointedOutput {
-            outpoint,
-            output: output.clone(),
-        };
-        accumulator_diff.insert((&pointed_output).into());
+        #[cfg(feature = "utreexo")]
+        {
+            let pointed_output = PointedOutput {
+                outpoint,
+                output: output.clone(),
+            };
+            accumulator_diff.insert((&pointed_output).into());
+        }
         state.utxos.put(rwtxn, &outpoint, output)?;
     }
     let mut filled_txs: Vec<FilledTransaction> = Vec::new();
@@ -174,11 +204,13 @@ pub fn connect(
         for (vin, (outpoint, utxo_hash)) in
             transaction.inputs.iter().enumerate()
         {
+            #[cfg(not(feature = "utreexo"))]
+            let _ = utxo_hash;
             let spent_output =
                 state.utxos.try_get(rwtxn, outpoint)?.ok_or(Error::NoUtxo {
                     outpoint: *outpoint,
                 })?;
-
+            #[cfg(feature = "utreexo")]
             accumulator_diff.remove(utxo_hash.into());
             state.utxos.delete(rwtxn, outpoint)?;
             let spent_output = SpentOutput {
@@ -196,11 +228,14 @@ pub fn connect(
                 txid,
                 vout: vout as u32,
             };
-            let pointed_output = PointedOutput {
-                outpoint,
-                output: output.clone(),
-            };
-            accumulator_diff.insert((&pointed_output).into());
+            #[cfg(feature = "utreexo")]
+            {
+                let pointed_output = PointedOutput {
+                    outpoint,
+                    output: output.clone(),
+                };
+                accumulator_diff.insert((&pointed_output).into());
+            }
             state.utxos.put(rwtxn, &outpoint, output)?;
         }
         let filled_tx = FilledTransaction {
@@ -224,8 +259,11 @@ pub fn connect(
     let height = state.try_get_height(rwtxn)?.map_or(0, |height| height + 1);
     state.tip.put(rwtxn, &(), &block_hash)?;
     state.height.put(rwtxn, &(), &height)?;
-    let () = accumulator.apply_diff(accumulator_diff)?;
-    state.utreexo_accumulator.put(rwtxn, &(), &accumulator)?;
+    #[cfg(feature = "utreexo")]
+    {
+        let () = accumulator.apply_diff(accumulator_diff)?;
+        state.utreexo_accumulator.put(rwtxn, &(), &accumulator)?;
+    }
     Ok(merkle_root)
 }
 
@@ -247,12 +285,15 @@ pub fn disconnect_tip(
         };
         return Err(Error::InvalidHeader(err));
     }
+    #[cfg(feature = "utreexo")]
     let mut accumulator = state
         .utreexo_accumulator
         .try_get(rwtxn, &())
         .map_err(DbError::from)?
         .unwrap_or_default();
+    #[cfg(feature = "utreexo")]
     tracing::debug!("Got acc");
+    #[cfg(feature = "utreexo")]
     let mut accumulator_diff = AccumulatorDiff::default();
     // revert txs, last-to-first
     body.transactions.iter().rev().try_for_each(|tx| {
@@ -260,15 +301,20 @@ pub fn disconnect_tip(
         // delete UTXOs, last-to-first
         tx.outputs.iter().enumerate().rev().try_for_each(
             |(vout, output)| {
+                #[cfg(not(feature = "utreexo"))]
+                let _ = output;
                 let outpoint = OutPoint::Regular {
                     txid,
                     vout: vout as u32,
                 };
-                let pointed_output = PointedOutput {
-                    outpoint,
-                    output: output.clone(),
-                };
-                accumulator_diff.remove((&pointed_output).into());
+                #[cfg(feature = "utreexo")]
+                {
+                    let pointed_output = PointedOutput {
+                        outpoint,
+                        output: output.clone(),
+                    };
+                    accumulator_diff.remove((&pointed_output).into());
+                }
                 if state
                     .utxos
                     .delete(rwtxn, &outpoint)
@@ -285,11 +331,14 @@ pub fn disconnect_tip(
             .iter()
             .rev()
             .try_for_each(|(outpoint, utxo_hash)| {
+                #[cfg(not(feature = "utreexo"))]
+                let _ = utxo_hash;
                 if let Some(spent_output) = state
                     .stxos
                     .try_get(rwtxn, outpoint)
                     .map_err(DbError::from)?
                 {
+                    #[cfg(feature = "utreexo")]
                     accumulator_diff.insert(utxo_hash.into());
                     state
                         .stxos
@@ -313,15 +362,20 @@ pub fn disconnect_tip(
         .enumerate()
         .rev()
         .try_for_each(|(vout, output)| {
+            #[cfg(not(feature = "utreexo"))]
+            let _ = output;
             let outpoint = OutPoint::Coinbase {
                 merkle_root: header.merkle_root,
                 vout: vout as u32,
             };
-            let pointed_output = PointedOutput {
-                outpoint,
-                output: output.clone(),
-            };
-            accumulator_diff.remove((&pointed_output).into());
+            #[cfg(feature = "utreexo")]
+            {
+                let pointed_output = PointedOutput {
+                    outpoint,
+                    output: output.clone(),
+                };
+                accumulator_diff.remove((&pointed_output).into());
+            }
             if state
                 .utxos
                 .delete(rwtxn, &outpoint)
@@ -352,10 +406,13 @@ pub fn disconnect_tip(
                 .map_err(DbError::from)?;
         }
     }
-    let () = accumulator.apply_diff(accumulator_diff)?;
-    state
-        .utreexo_accumulator
-        .put(rwtxn, &(), &accumulator)
-        .map_err(DbError::from)?;
+    #[cfg(feature = "utreexo")]
+    {
+        let () = accumulator.apply_diff(accumulator_diff)?;
+        state
+            .utreexo_accumulator
+            .put(rwtxn, &(), &accumulator)
+            .map_err(DbError::from)?;
+    }
     Ok(())
 }

@@ -12,9 +12,10 @@ use sneed::{
     db::error::Error as DbError, rwtxn::Error as RwTxnError,
 };
 
+#[cfg(feature = "utreexo")]
+use crate::types::Accumulator;
 use crate::types::{
-    Accumulator, BlockHash, BmmResult, Body, Header, Tip, VERSION, Version,
-    proto::mainchain,
+    BlockHash, BmmResult, Body, Header, Tip, VERSION, Version, proto::mainchain,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -35,6 +36,7 @@ pub enum Error {
     InvalidMerkleRoot,
     #[error("invalid previous side hash")]
     InvalidPrevSideHash,
+    #[cfg(feature = "utreexo")]
     #[error("no accumulator for block {0}")]
     NoAccumulator(BlockHash),
     #[error("no ancestor with depth {depth} for block {block_hash}")]
@@ -68,6 +70,7 @@ pub enum Error {
 
 #[derive(Clone)]
 pub struct Archive {
+    #[cfg(feature = "utreexo")]
     accumulators:
         DatabaseUnique<SerdeBincode<BlockHash>, SerdeBincode<Accumulator>>,
     block_hash_to_height:
@@ -140,7 +143,15 @@ pub struct Archive {
 }
 
 impl Archive {
-    pub const NUM_DBS: u32 = 14;
+    pub const NUM_DBS: u32 = {
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "utreexo")] {
+                14
+            } else {
+                13
+            }
+        }
+    };
 
     pub fn new(env: &sneed::Env) -> Result<Self, Error> {
         let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
@@ -169,6 +180,7 @@ impl Archive {
                 .put(&mut rwtxn, &(), &*VERSION)
                 .map_err(DbError::from)?,
         }
+        #[cfg(feature = "utreexo")]
         let accumulators =
             DatabaseUnique::create(env, &mut rwtxn, "accumulators")
                 .map_err(EnvError::from)?;
@@ -231,6 +243,7 @@ impl Archive {
             .map_err(EnvError::from)?;
         rwtxn.commit().map_err(RwTxnError::from)?;
         Ok(Self {
+            #[cfg(feature = "utreexo")]
             accumulators,
             block_hash_to_height,
             bmm_results,
@@ -248,6 +261,7 @@ impl Archive {
         })
     }
 
+    #[cfg(feature = "utreexo")]
     pub fn try_get_accumulator(
         &self,
         rotxn: &RoTxn,
@@ -260,6 +274,7 @@ impl Archive {
         Ok(accumulator)
     }
 
+    #[cfg(feature = "utreexo")]
     pub fn get_accumulator(
         &self,
         rotxn: &RoTxn,
@@ -666,7 +681,8 @@ impl Archive {
         Ok(res)
     }
 
-    /// Store a block body. The header must already exist.
+    #[cfg(feature = "utreexo")]
+    /// Store an accumulator. The header must already exist.
     pub fn put_accumulator(
         &self,
         rwtxn: &mut RwTxn,

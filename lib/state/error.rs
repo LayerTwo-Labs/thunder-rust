@@ -2,10 +2,11 @@ use sneed::{db::error as db, env::error as env, rwtxn::error as rwtxn};
 use thiserror::Error;
 use transitive::Transitive;
 
+#[cfg(feature = "utreexo")]
+use crate::types::UtreexoError;
 use crate::types::{
     AmountOverflowError, AmountUnderflowError, BlockHash,
-    ComputeMerkleRootError, M6id, MerkleRoot, OutPoint, Txid, UtreexoError,
-    WithdrawalBundleError,
+    ComputeMerkleRootError, M6id, MerkleRoot, OutPoint, WithdrawalBundleError,
 };
 
 #[derive(Debug, Error)]
@@ -76,10 +77,13 @@ pub enum Error {
     NoUtxo { outpoint: OutPoint },
     #[error("Withdrawal bundle event block doesn't exist")]
     NoWithdrawalBundleEventBlock,
+    #[cfg(feature = "utreexo")]
     #[error(transparent)]
     Utreexo(#[from] UtreexoError),
+    #[cfg(feature = "utreexo")]
     #[error("Utreexo proof verification failed for tx {txid}")]
-    UtreexoProofFailed { txid: Txid },
+    UtreexoProofFailed { txid: crate::types::Txid },
+    #[cfg(feature = "utreexo")]
     #[error("Computed Utreexo roots do not match the header roots")]
     UtreexoRootsMismatch,
     #[error("utxo double spent")]

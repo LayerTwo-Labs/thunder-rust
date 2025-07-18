@@ -23,7 +23,6 @@ use thiserror::Error;
 use tokio::task::{self, JoinHandle};
 use tokio_stream::StreamNotifyClose;
 
-use super::mainchain_task::{self, MainchainTaskHandle};
 use crate::{
     archive::{self, Archive},
     mempool::{self, MemPool},
@@ -32,6 +31,7 @@ use crate::{
         PeerConnectionMailboxError, PeerConnectionMessage, PeerInfoRx,
         PeerRequest, PeerResponse, PeerStateId, peer_message,
     },
+    node::mainchain_task::{self, MainchainTaskHandle},
     state::{self, State},
     types::{
         BmmResult, Body, Header, MerkleRoot, Tip,
@@ -104,13 +104,16 @@ fn connect_tip_(
         let _: MerkleRoot = state.connect_block(rwtxn, header, body)?;
     }
     let () = state.connect_two_way_peg_data(rwtxn, two_way_peg_data)?;
+    #[cfg(feature = "utreexo")]
     let accumulator = state.get_accumulator(rwtxn)?;
     let () = archive.put_header(rwtxn, header)?;
     let () = archive.put_body(rwtxn, block_hash, body)?;
+    #[cfg(feature = "utreexo")]
     let () = archive.put_accumulator(rwtxn, block_hash, &accumulator)?;
     for transaction in &body.transactions {
         let () = mempool.delete(rwtxn, transaction.txid())?;
     }
+    #[cfg(feature = "utreexo")]
     let () = mempool.regenerate_proofs(rwtxn, &accumulator)?;
     Ok(())
 }
@@ -211,6 +214,7 @@ fn disconnect_tip_(
     };
     let () = state.disconnect_two_way_peg_data(rwtxn, &two_way_peg_data)?;
     let () = state.disconnect_tip(rwtxn, &tip_header, &tip_body)?;
+    #[cfg(feature = "utreexo")]
     // TODO: revert accumulator only necessary because rustreexo does not
     // support undo yet
     {
@@ -233,8 +237,11 @@ fn disconnect_tip_(
     for transaction in tip_body.authorized_transactions().iter().rev() {
         mempool.put(rwtxn, transaction)?;
     }
-    let accumulator = state.get_accumulator(rwtxn)?;
-    mempool.regenerate_proofs(rwtxn, &accumulator)?;
+    #[cfg(feature = "utreexo")]
+    {
+        let accumulator = state.get_accumulator(rwtxn)?;
+        mempool.regenerate_proofs(rwtxn, &accumulator)?;
+    }
     Ok(())
 }
 
@@ -1053,12 +1060,15 @@ impl NetTask {
                                 .unbounded_send((new_tip, Some(addr), None))
                                 .map_err(Error::SendNewTipReady)?;
                         }
-                        PeerConnectionInfo::NewTransaction(mut new_tx) => {
+                        PeerConnectionInfo::NewTransaction(new_tx) => {
+                            #[cfg(feature = "utreexo")]
+                            let mut new_tx = new_tx;
                             let mut rwtxn = self
                                 .ctxt
                                 .env
                                 .write_txn()
                                 .map_err(EnvError::from)?;
+                            #[cfg(feature = "utreexo")]
                             let () = self.ctxt.state.regenerate_proof(
                                 &rwtxn,
                                 &mut new_tx.transaction,

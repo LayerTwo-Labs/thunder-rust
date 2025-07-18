@@ -14,6 +14,7 @@ pub struct TxCreator {
 }
 
 fn send_tx(app: &App, tx: &mut Transaction) -> anyhow::Result<()> {
+    #[cfg(feature = "utreexo")]
     app.node.regenerate_proof(tx)?;
     let () = app.sign_and_send(tx.clone())?;
     Ok(())

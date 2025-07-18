@@ -13,16 +13,18 @@ use sneed::{Env, EnvError, RwTxnError, db::error::Error as DbError};
 use tokio::sync::Mutex;
 use tonic::transport::Channel;
 
+#[cfg(feature = "utreexo")]
+use crate::types::Accumulator;
 use crate::{
     archive::{self, Archive},
     mempool::{self, MemPool},
     net::{self, Net, Peer},
     state::{self, State},
     types::{
-        Accumulator, Address, AmountOverflowError, AmountUnderflowError,
-        Authorized, AuthorizedTransaction, BlockHash, BmmResult, Body,
-        FilledTransaction, GetValue, Header, Network, OutPoint, Output,
-        SpentOutput, Tip, Transaction, Txid, WithdrawalBundle,
+        Address, AmountOverflowError, AmountUnderflowError, Authorized,
+        AuthorizedTransaction, BlockHash, BmmResult, Body, FilledTransaction,
+        GetValue, Header, Network, OutPoint, Output, SpentOutput, Tip, Txid,
+        WithdrawalBundle,
         proto::{self, mainchain},
     },
     util::Watchable,
@@ -281,17 +283,23 @@ where
         Ok(tip)
     }
 
+    #[cfg(feature = "utreexo")]
     pub fn get_tip_accumulator(&self) -> Result<Accumulator, Error> {
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         Ok(self.state.get_accumulator(&rotxn)?)
     }
 
-    pub fn regenerate_proof(&self, tx: &mut Transaction) -> Result<(), Error> {
+    #[cfg(feature = "utreexo")]
+    pub fn regenerate_proof(
+        &self,
+        tx: &mut crate::types::Transaction,
+    ) -> Result<(), Error> {
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         let () = self.state.regenerate_proof(&rotxn, tx)?;
         Ok(())
     }
 
+    #[cfg(feature = "utreexo")]
     pub fn try_get_accumulator(
         &self,
         block_hash: BlockHash,
@@ -300,6 +308,7 @@ where
         Ok(self.archive.try_get_accumulator(&rotxn, block_hash)?)
     }
 
+    #[cfg(feature = "utreexo")]
     pub fn get_accumulator(
         &self,
         block_hash: BlockHash,

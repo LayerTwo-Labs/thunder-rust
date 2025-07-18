@@ -9,6 +9,7 @@ use ed25519_dalek_bip32::{ChildIndex, DerivationPath, ExtendedSigningKey};
 use fallible_iterator::FallibleIterator as _;
 use futures::{Stream, StreamExt};
 use heed::types::{Bytes, SerdeBincode, U8};
+#[cfg(feature = "utreexo")]
 use rustreexo::accumulator::node_hash::BitcoinNodeHash;
 use serde::{Deserialize, Serialize};
 use sneed::{
@@ -17,6 +18,8 @@ use sneed::{
 };
 use tokio_stream::{StreamMap, wrappers::WatchStream};
 
+#[cfg(feature = "utreexo")]
+use crate::types::{Accumulator, UtreexoError};
 pub use crate::{
     authorization::{Authorization, get_address},
     types::{
@@ -26,8 +29,8 @@ pub use crate::{
 };
 use crate::{
     types::{
-        Accumulator, AmountOverflowError, AmountUnderflowError, PointedOutput,
-        UtreexoError, VERSION, Version, hash,
+        AmountOverflowError, AmountUnderflowError, PointedOutput, VERSION,
+        Version, hash,
     },
     util::Watchable,
 };
@@ -79,6 +82,7 @@ pub enum Error {
     ParseMnemonic(#[source] bip39::ErrorKind),
     #[error("seed has already been set")]
     SeedAlreadyExists,
+    #[cfg(feature = "utreexo")]
     #[error(transparent)]
     Utreexo(#[from] UtreexoError),
 }
@@ -206,20 +210,32 @@ impl Wallet {
 
     pub fn create_withdrawal(
         &self,
-        accumulator: &Accumulator,
+        #[cfg(feature = "utreexo")] accumulator: &Accumulator,
         main_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         value: bitcoin::Amount,
         main_fee: bitcoin::Amount,
         fee: bitcoin::Amount,
     ) -> Result<Transaction, Error> {
-        tracing::trace!(
-            accumulator = %accumulator.0,
-            fee = %fee.display_dynamic(),
-            ?main_address,
-            main_fee = %main_fee.display_dynamic(),
-            value = %value.display_dynamic(),
-            "Creating withdrawal"
-        );
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "utreexo")] {
+                tracing::trace!(
+                    accumulator = %accumulator.0,
+                    fee = %fee.display_dynamic(),
+                    ?main_address,
+                    main_fee = %main_fee.display_dynamic(),
+                    value = %value.display_dynamic(),
+                    "Creating withdrawal"
+                );
+            } else {
+                tracing::trace!(
+                    fee = %fee.display_dynamic(),
+                    ?main_address,
+                    main_fee = %main_fee.display_dynamic(),
+                    value = %value.display_dynamic(),
+                    "Creating withdrawal"
+                );
+            }
+        }
         let (total, coins) = self.select_coins(
             value
                 .checked_add(fee)
@@ -236,9 +252,13 @@ impl Wallet {
                 (outpoint, utxo_hash)
             })
             .collect();
-        let input_utxo_hashes: Vec<BitcoinNodeHash> =
-            inputs.iter().map(|(_, hash)| hash.into()).collect();
-        let proof = accumulator.prove(&input_utxo_hashes)?;
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "utreexo")] {
+                let input_utxo_hashes: Vec<BitcoinNodeHash> =
+                    inputs.iter().map(|(_, hash)| hash.into()).collect();
+                let proof = accumulator.prove(&input_utxo_hashes)?;
+            }
+        }
         let outputs = vec![
             Output {
                 address: self.get_new_address()?,
@@ -255,6 +275,7 @@ impl Wallet {
         ];
         Ok(Transaction {
             inputs,
+            #[cfg(feature = "utreexo")]
             proof,
             outputs,
         })
@@ -262,7 +283,7 @@ impl Wallet {
 
     pub fn create_transaction(
         &self,
-        accumulator: &Accumulator,
+        #[cfg(feature = "utreexo")] accumulator: &Accumulator,
         address: Address,
         value: bitcoin::Amount,
         fee: bitcoin::Amount,
@@ -277,9 +298,13 @@ impl Wallet {
                 (outpoint, utxo_hash)
             })
             .collect();
-        let input_utxo_hashes: Vec<BitcoinNodeHash> =
-            inputs.iter().map(|(_, hash)| hash.into()).collect();
-        let proof = accumulator.prove(&input_utxo_hashes)?;
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "utreexo")] {
+                let input_utxo_hashes: Vec<BitcoinNodeHash> =
+                    inputs.iter().map(|(_, hash)| hash.into()).collect();
+                let proof = accumulator.prove(&input_utxo_hashes)?;
+            }
+        }
         let outputs = vec![
             Output {
                 address,
@@ -292,6 +317,7 @@ impl Wallet {
         ];
         Ok(Transaction {
             inputs,
+            #[cfg(feature = "utreexo")]
             proof,
             outputs,
         })

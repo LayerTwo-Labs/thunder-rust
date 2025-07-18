@@ -75,8 +75,10 @@ fn create_withdrawal(
     fee: bitcoin::Amount,
     mainchain_fee: bitcoin::Amount,
 ) -> anyhow::Result<()> {
+    #[cfg(feature = "utreexo")]
     let accumulator = app.node.get_tip_accumulator()?;
     let tx = app.wallet.create_withdrawal(
+        #[cfg(feature = "utreexo")]
         &accumulator,
         mainchain_address,
         amount,

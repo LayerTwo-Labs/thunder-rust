@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use fallible_iterator::FallibleIterator;
 use futures::Stream;
 use heed::types::SerdeBincode;
+#[cfg(feature = "utreexo")]
 use rustreexo::accumulator::{node_hash::BitcoinNodeHash, proof::Proof};
 use serde::{Deserialize, Serialize};
 use sneed::{
@@ -12,15 +13,16 @@ use sneed::{
     rwtxn::Error as RwTxnError,
 };
 
+#[cfg(feature = "utreexo")]
+use crate::types::Accumulator;
 use crate::{
     authorization::Authorization,
     types::{
-        Accumulator, Address, AmountOverflowError, AmountUnderflowError,
-        Authorized, AuthorizedTransaction, BlockHash, Body, FilledTransaction,
-        GetAddress, GetValue, Header, InPoint, M6id, MerkleRoot, OutPoint,
-        Output, PointedOutput, SpentOutput, Transaction, VERSION, Verify,
-        Version, WithdrawalBundle, WithdrawalBundleStatus,
-        proto::mainchain::TwoWayPegData,
+        Address, AmountOverflowError, AmountUnderflowError, Authorized,
+        AuthorizedTransaction, BlockHash, Body, FilledTransaction, GetAddress,
+        GetValue, Header, InPoint, M6id, MerkleRoot, OutPoint, Output,
+        SpentOutput, Transaction, VERSION, Verify, Version, WithdrawalBundle,
+        WithdrawalBundleStatus, proto::mainchain::TwoWayPegData,
     },
     util::Watchable,
 };
@@ -92,12 +94,21 @@ pub struct State {
         SerdeBincode<u32>,
         SerdeBincode<(bitcoin::BlockHash, u32)>,
     >,
+    #[cfg(feature = "utreexo")]
     pub utreexo_accumulator: DatabaseUnique<UnitKey, SerdeBincode<Accumulator>>,
     _version: DatabaseUnique<UnitKey, SerdeBincode<Version>>,
 }
 
 impl State {
-    pub const NUM_DBS: u32 = 11;
+    pub const NUM_DBS: u32 = {
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "utreexo")] {
+                11
+            } else {
+                10
+            }
+        }
+    };
 
     pub fn new(env: &sneed::Env) -> Result<Self, Error> {
         let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
@@ -133,6 +144,7 @@ impl State {
             "withdrawal_bundle_event_blocks",
         )
         .map_err(EnvError::from)?;
+        #[cfg(feature = "utreexo")]
         let utreexo_accumulator =
             DatabaseUnique::create(env, &mut rwtxn, "utreexo_accumulator")
                 .map_err(EnvError::from)?;
@@ -158,6 +170,7 @@ impl State {
             withdrawal_bundles,
             deposit_blocks,
             withdrawal_bundle_event_blocks,
+            #[cfg(feature = "utreexo")]
             utreexo_accumulator,
             _version: version,
         })
@@ -215,6 +228,7 @@ impl State {
         Ok(Some((bundle_status.height, latest_failed_m6id)))
     }
 
+    #[cfg(feature = "utreexo")]
     /// Get the current Utreexo accumulator
     pub fn get_accumulator(&self, rotxn: &RoTxn) -> Result<Accumulator, Error> {
         let accumulator = self
@@ -225,6 +239,7 @@ impl State {
         Ok(accumulator)
     }
 
+    #[cfg(feature = "utreexo")]
     /// Regenerate utreexo proof for a tx
     pub fn regenerate_proof(
         &self,
@@ -241,6 +256,7 @@ impl State {
         Ok(())
     }
 
+    #[cfg(feature = "utreexo")]
     /// Get a Utreexo proof for the provided utxos
     pub fn get_utreexo_proof<'a, Utxos>(
         &self,
@@ -248,7 +264,7 @@ impl State {
         utxos: Utxos,
     ) -> Result<Proof, Error>
     where
-        Utxos: IntoIterator<Item = &'a PointedOutput>,
+        Utxos: IntoIterator<Item = &'a crate::types::PointedOutput>,
     {
         let accumulator = self.get_accumulator(rotxn)?;
         let targets: Vec<BitcoinNodeHash> =

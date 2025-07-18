@@ -26,7 +26,7 @@ $ cargo run --bin thunder_app -- --headless
 ## Benchmarks
 
 ```bash
-$ RUSTFLAGS="-C target-cpu=native" cargo bench --package thunder --benches --all-features
+$ RUSTFLAGS="-C target-cpu=native" cargo bench --package thunder --benches --features "bench"
 ```
 
 Alternatively, if GNU `bc` and `jq` is installed, one can run `scripts/bench.sh` from the root of this repo.
