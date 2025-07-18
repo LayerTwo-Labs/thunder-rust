@@ -2,12 +2,11 @@ use std::{collections::HashMap, sync::Arc};
 
 use futures::{StreamExt, TryFutureExt};
 use parking_lot::RwLock;
-use rustreexo::accumulator::proof::Proof;
 use thunder::{
     miner::{self, Miner},
     node::{self, Node},
     types::{
-        self, Address, OutPoint, Output, Transaction,
+        self, Address, Body, OutPoint, Output, Transaction,
         proto::mainchain::{
             self,
             generated::{validator_service_server, wallet_service_server},
@@ -26,12 +25,16 @@ use crate::cli::Config;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[cfg(not(feature = "utreexo"))]
+    #[error(transparent)]
+    ComputeMerkleRoot(#[from] thunder::types::ComputeMerkleRootError),
     #[error("CUSF mainchain proto error")]
     CusfMainchain(#[from] thunder::types::proto::Error),
     #[error("io error")]
     Io(#[from] std::io::Error),
     #[error("miner error")]
     Miner(#[from] miner::Error),
+    #[cfg(feature = "utreexo")]
     #[error(transparent)]
     ModifyMemForest(#[from] thunder::types::ModifyMemForestError),
     #[error("node error")]
@@ -90,6 +93,7 @@ pub struct App {
     pub miner: Option<Arc<TokioRwLock<Miner>>>,
     pub utxos: Arc<RwLock<HashMap<OutPoint, Output>>>,
     task: Arc<JoinHandle<()>>,
+    #[cfg(feature = "utreexo")]
     pub transaction: Arc<RwLock<Transaction>>,
     pub runtime: Arc<tokio::runtime::Runtime>,
     pub local_pool: LocalPoolHandle,
@@ -262,9 +266,10 @@ impl App {
             miner,
             utxos,
             task: Arc::new(task),
+            #[cfg(feature = "utreexo")]
             transaction: Arc::new(RwLock::new(Transaction {
                 inputs: vec![],
-                proof: Proof::default(),
+                proof: rustreexo::accumulator::proof::Proof::default(),
                 outputs: vec![],
             })),
             runtime: Arc::new(runtime),
@@ -329,25 +334,37 @@ impl App {
                 content: types::OutputContent::Value(tx_fees),
             }],
         };
-        let (merkle_root, roots) = {
-            let mut accumulator = self.node.get_tip_accumulator()?;
-            let txs = txs
-                .iter()
-                .map(|authorized_tx| authorized_tx.transaction.clone())
-                .collect::<Vec<_>>();
-            let merkle_root = thunder::types::Body::modify_memforest(
-                &coinbase,
-                &txs,
-                &mut accumulator.0,
-            )?;
-            let roots = accumulator
-                .0
-                .get_roots()
-                .iter()
-                .map(|root| root.get_data())
-                .collect();
-            (merkle_root, roots)
-        };
+        cfg_if::cfg_if! {
+            if #[cfg(not(feature = "utreexo"))] {
+                let merkle_root = {
+                    let txs = txs
+                        .iter()
+                        .map(|authorized_tx| authorized_tx.transaction.clone())
+                        .collect::<Vec<_>>();
+                    Body::compute_merkle_root(&coinbase, &txs)?
+                };
+            } else {
+                let (merkle_root, roots) = {
+                    let mut accumulator = self.node.get_tip_accumulator()?;
+                    let txs = txs
+                        .iter()
+                        .map(|authorized_tx| authorized_tx.transaction.clone())
+                        .collect::<Vec<_>>();
+                    let merkle_root = Body::modify_memforest(
+                        &coinbase,
+                        &txs,
+                        &mut accumulator.0,
+                    )?;
+                    let roots = accumulator
+                        .0
+                        .get_roots()
+                        .iter()
+                        .map(|root| root.get_data())
+                        .collect();
+                    (merkle_root, roots)
+                };
+            }
+        }
         let body = {
             let txs = txs.into_iter().map(|tx| tx.into()).collect();
             types::Body::new(txs, coinbase)
@@ -362,6 +379,7 @@ impl App {
         };
         let header = types::Header {
             merkle_root,
+            #[cfg(feature = "utreexo")]
             roots,
             prev_side_hash,
             prev_main_hash,
@@ -410,7 +428,7 @@ impl App {
 
         drop(miner_write);
         let () = self.update()?;
-
+        #[cfg(feature = "utreexo")]
         self.node
             .regenerate_proof(&mut self.transaction.write())
             .inspect_err(|err| {

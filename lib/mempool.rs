@@ -7,10 +7,9 @@ use sneed::{
     db::error::Error as DbError,
 };
 
-use crate::types::{
-    Accumulator, AuthorizedTransaction, OutPoint, Txid, UtreexoError, VERSION,
-    Version,
-};
+#[cfg(feature = "utreexo")]
+use crate::types::{Accumulator, UtreexoError};
+use crate::types::{AuthorizedTransaction, OutPoint, Txid, VERSION, Version};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -20,6 +19,7 @@ pub enum Error {
     DbEnv(#[from] EnvError),
     #[error("Database write error")]
     DbWrite(#[from] RwTxnError),
+    #[cfg(feature = "utreexo")]
     #[error(transparent)]
     Utreexo(#[from] UtreexoError),
     #[error("can't add transaction, utxo double spent")]
@@ -155,7 +155,7 @@ impl MemPool {
     pub fn regenerate_proofs(
         &self,
         rwtxn: &mut RwTxn,
-        accumulator: &Accumulator,
+        #[cfg(feature = "utreexo")] accumulator: &Accumulator,
     ) -> Result<(), Error> {
         let txids: Vec<_> = self
             .transactions
@@ -164,15 +164,20 @@ impl MemPool {
             .collect()
             .map_err(DbError::from)?;
         for txid in txids {
-            let mut tx =
+            let tx =
                 self.transactions.get(rwtxn, &txid).map_err(DbError::from)?;
-            let targets: Vec<_> = tx
-                .transaction
-                .inputs
-                .iter()
-                .map(|(_, utxo_hash)| utxo_hash.into())
-                .collect();
-            tx.transaction.proof = accumulator.prove(&targets)?;
+            #[cfg(feature = "utreexo")]
+            let mut tx = tx;
+            #[cfg(feature = "utreexo")]
+            {
+                let targets: Vec<_> = tx
+                    .transaction
+                    .inputs
+                    .iter()
+                    .map(|(_, utxo_hash)| utxo_hash.into())
+                    .collect();
+                tx.transaction.proof = accumulator.prove(&targets)?;
+            }
             self.transactions
                 .put(rwtxn, &txid, &tx)
                 .map_err(DbError::from)?;

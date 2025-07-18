@@ -67,7 +67,7 @@ jobs:
       - name: Run benchmarks
         id: runBenchmarks
         run: |
-          RUSTFLAGS="-C target-cpu=native" cargo bench --package thunder --benches --all-features
+          RUSTFLAGS="-C target-cpu=native" cargo bench --package thunder --benches --features "bench"
 
       - name: Show report
         run: |

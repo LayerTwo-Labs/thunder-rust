@@ -1,5 +1,7 @@
 use borsh::BorshSerialize;
+#[cfg(feature = "utreexo")]
 use hashlink::{LinkedHashMap, linked_hash_map};
+#[cfg(feature = "utreexo")]
 use rustreexo::accumulator::{
     mem_forest::MemForest, node_hash::BitcoinNodeHash, proof::Proof,
 };
@@ -73,6 +75,7 @@ mod serde_hexstr_human_readable {
     }
 }
 
+#[cfg(feature = "utreexo")]
 fn borsh_serialize_utreexo_nodehash<W>(
     node_hash: &BitcoinNodeHash,
     writer: &mut W,
@@ -84,6 +87,7 @@ where
     borsh::BorshSerialize::serialize(bytes, writer)
 }
 
+#[cfg(feature = "utreexo")]
 fn borsh_serialize_utreexo_roots<W>(
     roots: &[BitcoinNodeHash],
     writer: &mut W,
@@ -131,6 +135,7 @@ pub struct Header {
     #[schema(value_type = schema::BitcoinBlockHash)]
     pub prev_main_hash: bitcoin::BlockHash,
     /// Utreexo roots
+    #[cfg(feature = "utreexo")]
     #[borsh(serialize_with = "borsh_serialize_utreexo_roots")]
     #[schema(value_type = Vec<schema::UtreexoNodeHash>)]
     pub roots: Vec<BitcoinNodeHash>,
@@ -309,6 +314,7 @@ impl PartialOrd for AggregatedWithdrawal {
     }
 }
 
+#[cfg(feature = "utreexo")]
 /// Manage accumulator diffs.
 /// Insertions and removals 'cancel out' exactly once.
 /// Inserting twice will cause one insertion.
@@ -322,6 +328,7 @@ pub struct AccumulatorDiff(
     LinkedHashMap<BitcoinNodeHash, bool>,
 );
 
+#[cfg(feature = "utreexo")]
 impl AccumulatorDiff {
     pub fn insert(&mut self, utxo_hash: BitcoinNodeHash) {
         match self.0.entry(utxo_hash) {
@@ -350,15 +357,18 @@ impl AccumulatorDiff {
     }
 }
 
+#[cfg(feature = "utreexo")]
 #[derive(Debug, Error)]
 #[error("utreexo error: {0}")]
 #[repr(transparent)]
 pub struct UtreexoError(String);
 
+#[cfg(feature = "utreexo")]
 #[derive(Debug, Default)]
 #[repr(transparent)]
 pub struct Accumulator(pub MemForest<BitcoinNodeHash>);
 
+#[cfg(feature = "utreexo")]
 impl Accumulator {
     pub fn apply_diff(
         &mut self,
@@ -415,6 +425,7 @@ impl Accumulator {
     }
 }
 
+#[cfg(feature = "utreexo")]
 impl<'de> Deserialize<'de> for Accumulator {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -431,6 +442,7 @@ impl<'de> Deserialize<'de> for Accumulator {
     }
 }
 
+#[cfg(feature = "utreexo")]
 impl Serialize for Accumulator {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -582,6 +594,7 @@ struct ComputeMerkleRootErrorInner {
 #[repr(transparent)]
 pub struct ComputeMerkleRootError(#[from] ComputeMerkleRootErrorInner);
 
+#[cfg(feature = "utreexo")]
 #[derive(Debug, Error)]
 pub enum ModifyMemForestError {
     #[error(transparent)]
@@ -784,7 +797,8 @@ impl Body {
         Ok(root)
     }
 
-    // Modifies the memforest, without checking tx proofs
+    #[cfg(feature = "utreexo")]
+    /// Modifies the memforest, without checking tx proofs
     pub fn modify_memforest(
         coinbase: &[Output],
         txs: &[FilledTransaction],

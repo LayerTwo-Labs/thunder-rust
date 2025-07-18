@@ -16,10 +16,15 @@ fn create_transfer(
     amount: bitcoin::Amount,
     fee: bitcoin::Amount,
 ) -> anyhow::Result<()> {
+    #[cfg(feature = "utreexo")]
     let accumulator = app.node.get_tip_accumulator()?;
-    let tx = app
-        .wallet
-        .create_transaction(&accumulator, dest, amount, fee)?;
+    let tx = app.wallet.create_transaction(
+        #[cfg(feature = "utreexo")]
+        &accumulator,
+        dest,
+        amount,
+        fee,
+    )?;
     app.sign_and_send(tx)?;
     Ok(())
 }

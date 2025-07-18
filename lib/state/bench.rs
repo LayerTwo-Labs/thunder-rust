@@ -5,16 +5,19 @@ use criterion::Criterion;
 use ed25519_dalek::SigningKey;
 use hashlink::{LinkedHashMap, LinkedHashSet};
 use rand_chacha::ChaCha20Rng;
+#[cfg(feature = "utreexo")]
 use rustreexo::accumulator::node_hash::BitcoinNodeHash;
 use sneed::{Env, EnvError};
 
+#[cfg(feature = "utreexo")]
+use crate::types::{Accumulator, AccumulatorDiff};
 use crate::{
     authorization::Authorization,
     state::State,
     types::{
-        Accumulator, AccumulatorDiff, Address, Block, Body, FilledTransaction,
-        GetValue as _, Header, MerkleRoot, OutPoint, Output, OutputContent,
-        PointedOutputRef, Transaction, hash,
+        Address, Block, Body, FilledTransaction, GetValue as _, Header,
+        MerkleRoot, OutPoint, Output, OutputContent, PointedOutputRef,
+        Transaction, hash,
         proto::mainchain::{self, TwoWayPegData},
     },
 };
@@ -35,6 +38,7 @@ where
         merkle_root,
         prev_side_hash: None,
         prev_main_hash: bitcoin::BlockHash::from_byte_array(rng.r#gen()),
+        #[cfg(feature = "utreexo")]
         roots: Vec::new(),
     };
     Block { header, body }
@@ -281,7 +285,7 @@ fn gen_tx<Rng>(
     rng: &mut Rng,
     signers: &mut SignerPool,
     utxo_set: &mut UtxoSet<Rng>,
-    accumulator: &Accumulator,
+    #[cfg(feature = "utreexo")] accumulator: &Accumulator,
     used_signers: &mut Vec<SigningKey>,
 ) -> anyhow::Result<Option<(FilledTransaction, bitcoin::Amount)>>
 where
@@ -309,13 +313,16 @@ where
             break;
         }
     }
-    let input_utxo_hashes: Vec<BitcoinNodeHash> = res_tx
-        .transaction
-        .inputs
-        .iter()
-        .map(|(_, hash)| hash.into())
-        .collect();
-    res_tx.transaction.proof = accumulator.prove(&input_utxo_hashes)?;
+    #[cfg(feature = "utreexo")]
+    {
+        let input_utxo_hashes: Vec<BitcoinNodeHash> = res_tx
+            .transaction
+            .inputs
+            .iter()
+            .map(|(_, hash)| hash.into())
+            .collect();
+        res_tx.transaction.proof = accumulator.prove(&input_utxo_hashes)?;
+    }
     let outputs_value = if value_in > Amount::from_sat(2) {
         value_in - Amount::from_sat(1)
     } else {
@@ -374,7 +381,7 @@ fn gen_block<Rng>(
     rng: &mut Rng,
     signers: &mut SignerPool,
     utxo_set: &mut UtxoSet<Rng>,
-    accumulator: &mut Accumulator,
+    #[cfg(feature = "utreexo")] accumulator: &mut Accumulator,
     prev_main_hash: bitcoin::BlockHash,
     prev_side_hash: crate::types::BlockHash,
     txs_per_block: u32,
@@ -388,8 +395,14 @@ where
     // Generate txs
     {
         for _ in 0..txs_per_block {
-            let Some((tx, tx_fee)) =
-                gen_tx(rng, signers, utxo_set, accumulator, &mut used_signers)?
+            let Some((tx, tx_fee)) = gen_tx(
+                rng,
+                signers,
+                utxo_set,
+                #[cfg(feature = "utreexo")]
+                accumulator,
+                &mut used_signers,
+            )?
             else {
                 break;
             };
@@ -410,6 +423,7 @@ where
     };
     // update UTXO set and accumulator
     {
+        #[cfg(feature = "utreexo")]
         let mut accumulator_diff = AccumulatorDiff::default();
         let mut new_utxos = Vec::new();
         for (vout, output) in body.coinbase.iter().cloned().enumerate() {
@@ -417,16 +431,20 @@ where
                 merkle_root,
                 vout: vout as u32,
             };
-            let utxo_hash = PointedOutputRef {
-                outpoint,
-                output: &output,
+            #[cfg(feature = "utreexo")]
+            {
+                let utxo_hash = PointedOutputRef {
+                    outpoint,
+                    output: &output,
+                }
+                .into();
+                accumulator_diff.insert(utxo_hash);
             }
-            .into();
-            accumulator_diff.insert(utxo_hash);
             new_utxos.push((outpoint, output));
         }
         for tx in &body.transactions {
             let txid = tx.txid();
+            #[cfg(feature = "utreexo")]
             for (_, utxo_hash) in &tx.inputs {
                 accumulator_diff.remove(utxo_hash.into());
             }
@@ -435,15 +453,19 @@ where
                     txid,
                     vout: vout as u32,
                 };
-                let utxo_hash = PointedOutputRef {
-                    outpoint,
-                    output: &output,
+                #[cfg(feature = "utreexo")]
+                {
+                    let utxo_hash = PointedOutputRef {
+                        outpoint,
+                        output: &output,
+                    }
+                    .into();
+                    accumulator_diff.insert(utxo_hash);
                 }
-                .into();
-                accumulator_diff.insert(utxo_hash);
                 new_utxos.push((outpoint, output));
             }
         }
+        #[cfg(feature = "utreexo")]
         let () = accumulator.apply_diff(accumulator_diff)?;
         utxo_set.extend(new_utxos);
     }
@@ -451,6 +473,7 @@ where
         merkle_root,
         prev_main_hash,
         prev_side_hash: Some(prev_side_hash),
+        #[cfg(feature = "utreexo")]
         roots: accumulator.get_roots(),
     };
     Ok(Block { header, body })
@@ -462,6 +485,7 @@ struct Setup {
     rng: ChaCha20Rng,
     signers: SignerPool,
     utxo_set: UtxoSet<ChaCha20Rng>,
+    #[cfg(feature = "utreexo")]
     accumulator: Accumulator,
     tip_hash: crate::types::BlockHash,
 }
@@ -517,26 +541,45 @@ impl Setup {
             ));
             utxo_set
         };
-        let (tip_hash, accumulator) = {
-            let genesis_block = genesis_block(&mut rng);
-            let mut rwtxn = env.write_txn()?;
-            let _: MerkleRoot = state.connect_block(
-                &mut rwtxn,
-                &genesis_block.header,
-                &genesis_block.body,
-            )?;
-            let () = state
-                .connect_two_way_peg_data(&mut rwtxn, &initial_deposits_2wpd)?;
-            let accumulator = state.get_accumulator(&rwtxn)?;
-            rwtxn.commit()?;
-            (genesis_block.header.hash(), accumulator)
-        };
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "utreexo")] {
+                let (tip_hash, accumulator) = {
+                    let genesis_block = genesis_block(&mut rng);
+                    let mut rwtxn = env.write_txn()?;
+                    let _: MerkleRoot = state.connect_block(
+                        &mut rwtxn,
+                        &genesis_block.header,
+                        &genesis_block.body,
+                    )?;
+                    let () = state
+                        .connect_two_way_peg_data(&mut rwtxn, &initial_deposits_2wpd)?;
+                    let accumulator = state.get_accumulator(&rwtxn)?;
+                    rwtxn.commit()?;
+                    (genesis_block.header.hash(), accumulator)
+                };
+            } else {
+                let tip_hash = {
+                    let genesis_block = genesis_block(&mut rng);
+                    let mut rwtxn = env.write_txn()?;
+                    let _: MerkleRoot = state.connect_block(
+                        &mut rwtxn,
+                        &genesis_block.header,
+                        &genesis_block.body,
+                    )?;
+                    let () = state
+                        .connect_two_way_peg_data(&mut rwtxn, &initial_deposits_2wpd)?;
+                    rwtxn.commit()?;
+                    genesis_block.header.hash()
+                };
+            }
+        }
         Ok(Self {
             env,
             state,
             rng,
             signers: initial_signers,
             utxo_set,
+            #[cfg(feature = "utreexo")]
             accumulator,
             tip_hash,
         })
@@ -565,6 +608,7 @@ fn connect_blocks(
                 &mut setup.rng,
                 &mut setup.signers,
                 &mut setup.utxo_set,
+                #[cfg(feature = "utreexo")]
                 &mut setup.accumulator,
                 prev_main_hash,
                 prev_side_hash,
