@@ -6682,6 +6682,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "bitcoin",
+ "cfg-if",
  "clap",
  "dirs",
  "eframe",

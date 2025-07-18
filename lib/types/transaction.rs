@@ -1,5 +1,6 @@
 use bitcoin::amount::CheckedSum;
 use borsh::BorshSerialize;
+#[cfg(feature = "utreexo")]
 use rustreexo::accumulator::{node_hash::BitcoinNodeHash, proof::Proof};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -344,6 +345,7 @@ pub struct PointedOutput {
     pub output: Output,
 }
 
+#[cfg(feature = "utreexo")]
 impl From<&PointedOutput> for BitcoinNodeHash {
     fn from(pointed_output: &PointedOutput) -> Self {
         Self::new(hash(pointed_output))
@@ -358,6 +360,7 @@ pub struct PointedOutputRef<'a> {
     pub output: &'a Output,
 }
 
+#[cfg(feature = "utreexo")]
 impl From<PointedOutputRef<'_>> for BitcoinNodeHash {
     fn from(pointed_output: PointedOutputRef) -> Self {
         Self::new(hash(&pointed_output))
@@ -370,6 +373,7 @@ impl From<PointedOutputRef<'_>> for BitcoinNodeHash {
 pub struct Transaction {
     #[schema(value_type = Vec<(OutPoint, String)>)]
     pub inputs: Vec<(OutPoint, Hash)>,
+    #[cfg(feature = "utreexo")]
     /// Utreexo proof for inputs
     #[borsh(skip)]
     #[schema(value_type = crate::types::schema::UtreexoProof)]
