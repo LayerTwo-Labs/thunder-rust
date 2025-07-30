@@ -391,7 +391,7 @@ impl Accumulator {
         );
         let () = self
             .0
-            .modify(&insertions, &deletions)
+            .modify_optimized(&insertions, &deletions)
             .map_err(UtreexoError)?;
         tracing::debug!(
             leaves = %self.0.leaves,

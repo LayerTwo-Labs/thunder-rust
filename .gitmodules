@@ -1,3 +1,7 @@
 [submodule "proto"]
 	path = proto
 	url = https://github.com/LayerTwo-Labs/cusf_sidechain_proto.git
+[submodule "lib/rustreexo"]
+	path = lib/rustreexo
+	url = https://github.com/littledino2112/rustreexo.git
+	branch = dev/improve_memforest
