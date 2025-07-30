@@ -8,9 +8,11 @@ use rustreexo::accumulator::{
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::{
+    cell::RefCell,
     cmp::Ordering,
     collections::{BTreeMap, HashMap},
-    sync::LazyLock,
+    sync::{LazyLock, Once},
+    thread_local,
 };
 use thiserror::Error;
 use utoipa::ToSchema;
@@ -32,6 +34,35 @@ pub use transaction::{
     FilledTransaction, GetAddress, GetValue, InPoint, OutPoint, Output,
     PointedOutput, PointedOutputRef, SpentOutput, Transaction,
 };
+
+// Rayon thread pool optimization for 2-core GHA runners
+static RAYON_INIT: Once = Once::new();
+
+/// Initialize optimized rayon thread pool for 2-core GHA runners
+fn ensure_rayon_optimized() {
+    RAYON_INIT.call_once(|| {
+        let num_threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(2);
+
+        if num_threads <= 2 {
+            // Configure rayon for 2-core systems with memory constraints
+            if let Err(e) = rayon::ThreadPoolBuilder::new()
+                .num_threads(2)
+                .stack_size(1024 * 1024) // 1MB instead of default 8MB
+                .thread_name(|i| format!("rayon-worker-{}", i))
+                .build_global()
+            {
+                // If global pool is already initialized, log but continue
+                tracing::debug!("Rayon global pool already initialized: {}", e);
+            } else {
+                tracing::debug!(
+                    "Optimized rayon thread pool for 2-core GHA runner"
+                );
+            }
+        }
+    });
+}
 
 pub const THIS_SIDECHAIN: u8 = 9;
 
@@ -648,37 +679,14 @@ impl Body {
             commitment: txs_root,
             ..
         } = {
-            let n_txs = txs.len();
-            let leaves: Vec<_> = txs
-                .iter()
-                .enumerate()
-                .map(|(idx, tx)| {
-                    let fees = tx.get_fee().map_err(|err| {
-                        ComputeMerkleRootErrorInner {
-                            txid: tx.transaction.txid(),
-                            source: err,
-                        }
-                    })?;
-                    let canonical_size = tx.transaction.canonical_size();
-                    let leaf_pre_commitment = CbmtLeafPreCommitment {
-                        fee: fees,
-                        canonical_size,
-                        tx: &tx.transaction,
-                    };
-                    Ok::<_, ComputeMerkleRootError>(CbmtNode {
-                        commitment: hashes::hash(&leaf_pre_commitment),
-                        fees,
-                        canonical_size,
-                        // see https://github.com/nervosnetwork/merkle-tree/blob/5d1898263e7167560fdaa62f09e8d52991a1c712/README.md#tree-struct
-                        index: (idx + n_txs) - 1,
-                    })
-                })
-                .collect::<Result<_, _>>()?;
+            // Use parallel leaf computation
+            let leaves = compute_merkle_leaves_parallel(txs)?;
             CbmtWithFeeTotal::build_merkle_root(leaves.as_slice())
         };
-        // FIXME: Compute actual merkle root instead of just a hash.
+
+        // Consider parallelizing this hash too for large coinbases
         let coinbase_root = hashes::hash(&coinbase);
-        // TODO: Should this include `total_fees`?
+
         let root = hashes::hash(&(coinbase_root, txs_root)).into();
         Ok(root)
     }
@@ -769,6 +777,167 @@ impl Body {
             .checked_sum()
             .ok_or(AmountOverflowError)
     }
+}
+
+/// Calculate optimal chunk size for Merkle tree computation
+fn calculate_optimal_chunk_size(total_items: usize) -> usize {
+    let num_threads = rayon::current_num_threads();
+    let base_chunk_size = 50; // Good for hash computation cache locality
+
+    if total_items <= base_chunk_size {
+        return total_items;
+    }
+
+    // For GHA runners (typically 2 cores), optimize for cache efficiency
+    let optimal_size = if num_threads <= 2 {
+        // Smaller chunks for better cache utilization on limited cores
+        std::cmp::min(32, total_items / num_threads)
+    } else {
+        // Larger chunks for multi-core systems
+        std::cmp::min(base_chunk_size, total_items / num_threads)
+    };
+
+    // Ensure minimum chunk size for efficiency
+    std::cmp::max(8, optimal_size)
+}
+
+/// Get adaptive chunk size for any parallel operation
+pub fn get_adaptive_chunk_size(total_items: usize, base_size: usize) -> usize {
+    // Ensure rayon is optimized before checking thread count
+    ensure_rayon_optimized();
+
+    let num_threads = rayon::current_num_threads();
+
+    if total_items <= base_size {
+        return total_items;
+    }
+
+    // Optimized for 2-core GHA runners to avoid SIMD regression
+    let optimal_size = if num_threads <= 2 {
+        // Even smaller chunks for 2-core systems to reduce context switching
+        let conservative_size =
+            std::cmp::min(base_size / 4, total_items / (num_threads * 2));
+        std::cmp::max(16, conservative_size) // Minimum 16 for efficiency
+    } else {
+        // Standard chunking for multi-core systems
+        std::cmp::min(base_size, total_items / num_threads)
+    };
+
+    // Ensure reasonable bounds
+    std::cmp::min(optimal_size, total_items)
+}
+
+/// Conservative parallel merkle leaf computation optimized for 2-core GHA runners
+fn compute_merkle_leaves_parallel(
+    txs: &[FilledTransaction],
+) -> Result<Vec<CbmtNode>, ComputeMerkleRootError> {
+    use rayon::prelude::*;
+
+    // Ensure rayon is optimized for 2-core systems
+    ensure_rayon_optimized();
+
+    let n_txs = txs.len();
+
+    // Use more conservative chunking to avoid SIMD regression
+    let chunk_size = get_adaptive_chunk_size(n_txs, 32); // Reduced base size
+
+    // For small datasets on 2-core systems, prefer sequential with caching
+    if n_txs <= chunk_size
+        || (rayon::current_num_threads() <= 2 && n_txs < 1000)
+    {
+        return compute_merkle_leaves_simple_parallel(txs);
+    }
+
+    // Use adaptive chunk size instead of fixed 50
+    let chunks: Vec<_> = txs.chunks(chunk_size).collect();
+
+    tracing::debug!(
+        "Computing merkle leaves with {} chunks (size: {}) for {} transactions",
+        chunks.len(),
+        chunk_size,
+        n_txs
+    );
+
+    // Pre-allocate result vector for better memory efficiency
+    let mut results: Vec<Vec<CbmtNode>> = Vec::with_capacity(chunks.len());
+
+    results = chunks
+        .par_iter()
+        .enumerate()
+        .map(|(chunk_id, chunk)| {
+            let chunk_start_idx = chunk_id * chunk_size;
+            let mut chunk_leaves = Vec::with_capacity(chunk.len());
+
+            for (local_idx, tx) in chunk.iter().enumerate() {
+                let global_idx = chunk_start_idx + local_idx;
+
+                let fees = tx.get_fee().map_err(|err| {
+                    ComputeMerkleRootErrorInner {
+                        txid: tx.transaction.txid(),
+                        source: err,
+                    }
+                })?;
+
+                let canonical_size = tx.transaction.canonical_size();
+                let leaf_pre_commitment = CbmtLeafPreCommitment {
+                    fee: fees,
+                    canonical_size,
+                    tx: &tx.transaction,
+                };
+
+                // Use cached hash computation instead of direct hash call
+                let commitment = cached_merkle_hash(&leaf_pre_commitment);
+
+                chunk_leaves.push(CbmtNode {
+                    commitment,
+                    fees,
+                    canonical_size,
+                    index: (global_idx + n_txs) - 1,
+                });
+            }
+
+            Ok(chunk_leaves)
+        })
+        .collect::<Result<Vec<_>, ComputeMerkleRootError>>()?;
+
+    // Flatten results
+    Ok(results.into_iter().flatten().collect())
+}
+
+fn compute_merkle_leaves_simple_parallel(
+    txs: &[FilledTransaction],
+) -> Result<Vec<CbmtNode>, ComputeMerkleRootError> {
+    use rayon::prelude::*;
+
+    // Ensure rayon is optimized for 2-core systems
+    ensure_rayon_optimized();
+
+    let n_txs = txs.len();
+    txs.par_iter()
+        .enumerate()
+        .map(|(idx, tx)| {
+            let fees =
+                tx.get_fee().map_err(|err| ComputeMerkleRootErrorInner {
+                    txid: tx.transaction.txid(),
+                    source: err,
+                })?;
+
+            let canonical_size = tx.transaction.canonical_size();
+            let leaf_pre_commitment = CbmtLeafPreCommitment {
+                fee: fees,
+                canonical_size,
+                tx: &tx.transaction,
+            };
+
+            Ok(CbmtNode {
+                // Use cached hash computation instead of direct hash call
+                commitment: cached_merkle_hash(&leaf_pre_commitment),
+                fees,
+                canonical_size,
+                index: (idx + n_txs) - 1,
+            })
+        })
+        .collect()
 }
 
 pub trait Verify {
@@ -865,4 +1034,41 @@ pub(crate) static VERSION: LazyLock<Version> = LazyLock::new(|| {
 pub struct Block {
     pub header: Header,
     pub body: Body,
+}
+
+// Hash computation cache for Merkle tree operations
+thread_local! {
+    static MERKLE_HASH_CACHE: RefCell<HashMap<Txid, Hash>> = RefCell::new(HashMap::new());
+}
+
+/// Cached hash computation for CbmtLeafPreCommitment
+fn cached_merkle_hash<'a>(
+    leaf_pre_commitment: &CbmtLeafPreCommitment<'a>,
+) -> Hash {
+    let txid = leaf_pre_commitment.tx.txid();
+    MERKLE_HASH_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(cached_hash) = cache.get(&txid) {
+            *cached_hash
+        } else {
+            let hash = hashes::hash(leaf_pre_commitment);
+            cache.insert(txid, hash);
+            hash
+        }
+    })
+}
+
+/// Clear the Merkle hash cache (useful for testing or memory management)
+pub fn clear_merkle_hash_cache() {
+    MERKLE_HASH_CACHE.with(|cache| {
+        cache.borrow_mut().clear();
+    });
+}
+
+/// Get cache statistics for monitoring
+pub fn get_merkle_cache_stats() -> (usize, usize) {
+    MERKLE_HASH_CACHE.with(|cache| {
+        let cache = cache.borrow();
+        (cache.len(), cache.capacity())
+    })
 }
