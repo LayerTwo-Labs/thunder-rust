@@ -757,48 +757,48 @@ fn compute_merkle_leaves_parallel(
     txs: &[FilledTransaction],
 ) -> Result<Vec<CbmtNode>, ComputeMerkleRootError> {
     use rayon::prelude::*;
-    
+
     if txs.len() <= 50 {
         return compute_merkle_leaves_simple_parallel(txs);
     }
-    
+
     let n_txs = txs.len();
     // Chunk size optimized for hash computation workload
     let chunks: Vec<_> = txs.chunks(50).collect();
-    
+
     tracing::debug!(
-        "Computing merkle leaves with {} chunks for {} transactions", 
-        chunks.len(), 
+        "Computing merkle leaves with {} chunks for {} transactions",
+        chunks.len(),
         n_txs
     );
-    
+
     let results: Vec<Vec<CbmtNode>> = chunks
         .par_iter()
         .enumerate()
         .map(|(chunk_id, chunk)| {
             let chunk_start_idx = chunk_id * 50;
             let mut chunk_leaves = Vec::with_capacity(chunk.len());
-            
+
             for (local_idx, tx) in chunk.iter().enumerate() {
                 let global_idx = chunk_start_idx + local_idx;
-                
+
                 let fees = tx.get_fee().map_err(|err| {
                     ComputeMerkleRootErrorInner {
                         txid: tx.transaction.txid(),
                         source: err,
                     }
                 })?;
-                
+
                 let canonical_size = tx.transaction.canonical_size();
                 let leaf_pre_commitment = CbmtLeafPreCommitment {
                     fee: fees,
                     canonical_size,
                     tx: &tx.transaction,
                 };
-                
+
                 // This hash computation is expensive - now parallelized!
                 let commitment = hashes::hash(&leaf_pre_commitment);
-                
+
                 chunk_leaves.push(CbmtNode {
                     commitment,
                     fees,
@@ -806,11 +806,11 @@ fn compute_merkle_leaves_parallel(
                     index: (global_idx + n_txs) - 1,
                 });
             }
-            
+
             Ok(chunk_leaves)
         })
         .collect::<Result<Vec<_>, ComputeMerkleRootError>>()?;
-    
+
     // Flatten results
     Ok(results.into_iter().flatten().collect())
 }
@@ -819,25 +819,24 @@ fn compute_merkle_leaves_simple_parallel(
     txs: &[FilledTransaction],
 ) -> Result<Vec<CbmtNode>, ComputeMerkleRootError> {
     use rayon::prelude::*;
-    
+
     let n_txs = txs.len();
     txs.par_iter()
         .enumerate()
         .map(|(idx, tx)| {
-            let fees = tx.get_fee().map_err(|err| {
-                ComputeMerkleRootErrorInner {
+            let fees =
+                tx.get_fee().map_err(|err| ComputeMerkleRootErrorInner {
                     txid: tx.transaction.txid(),
                     source: err,
-                }
-            })?;
-            
+                })?;
+
             let canonical_size = tx.transaction.canonical_size();
             let leaf_pre_commitment = CbmtLeafPreCommitment {
                 fee: fees,
                 canonical_size,
                 tx: &tx.transaction,
             };
-            
+
             Ok(CbmtNode {
                 commitment: hashes::hash(&leaf_pre_commitment),
                 fees,
@@ -851,11 +850,11 @@ fn compute_merkle_leaves_simple_parallel(
 /// Parallel hash computation for large data
 fn parallel_hash_large<T: BorshSerialize>(data: &T) -> Hash {
     let serialized = borsh::to_vec(data).expect("serialization failed");
-    
+
     // Blake3 supports parallel hashing for large data
     if serialized.len() > 1024 {
         blake3::Hasher::new()
-            .update(&serialized)  // Parallel update if available
+            .update(&serialized) // Parallel update if available
             .finalize()
             .into()
     } else {
