@@ -4,6 +4,7 @@ use bitcoin::Amount;
 use criterion::Criterion;
 use ed25519_dalek::SigningKey;
 use hashlink::{LinkedHashMap, LinkedHashSet};
+use heed::{EnvFlags, EnvOpenOptions};
 use rand_chacha::ChaCha20Rng;
 #[cfg(feature = "utreexo")]
 use rustreexo::accumulator::node_hash::BitcoinNodeHash;
@@ -499,6 +500,13 @@ impl Setup {
             env_open_opts
                 .map_size(128 * 1024 * 1024 * 1024) // 128 GB
                 .max_dbs(State::NUM_DBS);
+            let fast_flags = EnvFlags::WRITE_MAP
+                | EnvFlags::MAP_ASYNC
+                | EnvFlags::NO_SYNC
+                | EnvFlags::NO_META_SYNC
+                | EnvFlags::NO_READ_AHEAD
+                | EnvFlags::NO_TLS;
+            unsafe { env_open_opts.flags(fast_flags) };
             unsafe { Env::open(&env_open_opts, &env_path) }
                 .map_err(EnvError::from)?
         };
@@ -584,37 +592,59 @@ fn connect_blocks(
     n_blocks: u32,
 ) -> anyhow::Result<std::time::Duration> {
     let mut res = std::time::Duration::ZERO;
-    for _ in 0..n_blocks {
-        use bitcoin::hashes::Hash as _;
-        use rand::Rng as _;
-        let prev_main_hash =
-            bitcoin::BlockHash::from_byte_array(setup.rng.r#gen());
-        let block = gen_block(
-            &mut setup.rng,
-            &mut setup.signers,
-            &mut setup.utxo_set,
-            #[cfg(feature = "utreexo")]
-            &mut setup.accumulator,
-            prev_main_hash,
-            setup.tip_hash,
-            txs_per_block,
-        )?;
+    let mut blocks_processed = 0;
+
+    while blocks_processed < n_blocks {
+        let batch = std::cmp::min(BATCH_SIZE, n_blocks - blocks_processed);
+        let mut prev_side_hash = setup.tip_hash;
+        let mut blocks = Vec::with_capacity(batch as usize);
+
+        for _ in 0..batch {
+            use bitcoin::hashes::Hash as _;
+            use rand::Rng as _;
+
+            let prev_main_hash =
+                bitcoin::BlockHash::from_byte_array(setup.rng.r#gen());
+
+            let block = gen_block(
+                &mut setup.rng,
+                &mut setup.signers,
+                &mut setup.utxo_set,
+                #[cfg(feature = "utreexo")]
+                &mut setup.accumulator,
+                prev_main_hash,
+                prev_side_hash,
+                txs_per_block,
+            )?;
+
+            prev_side_hash = block.header.hash();
+            blocks.push(block);
+        }
+
         let start = std::time::Instant::now();
         let mut rwtxn = setup.env.write_txn()?;
-        setup
-            .state
-            .validate_block(&rwtxn, &block.header, &block.body)?;
-        setup
-            .state
-            .connect_block(&mut rwtxn, &block.header, &block.body)?;
+        for block in &blocks {
+            setup
+                .state
+                .apply_block(&mut rwtxn, &block.header, &block.body)?;
+        }
         rwtxn.commit()?;
         res += start.elapsed();
-        setup.tip_hash = block.header.hash();
+
+        setup.tip_hash = prev_side_hash;
+
+        blocks_processed += batch;
     }
     Ok(res)
 }
 
 const SEED_PREIMAGE: &[u8] = b"connect-blocks-benchmark";
+
+/// Number of blocks to process per LMDB transaction.
+/// Batching blocks reduces commit overhead and amortizes B+tree rebalancing.
+/// Higher values improve throughput but increase memory usage and crash recovery time.
+/// Hardcoded to 5 for the specific benchmark, but should be adjusted.
+const BATCH_SIZE: u32 = 5;
 
 pub fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("connect_blocks", |b| {
