@@ -1,5 +1,4 @@
 #![feature(impl_trait_in_assoc_type)]
-#![feature(let_chains)]
 #![feature(trait_alias)]
 
 pub mod archive;

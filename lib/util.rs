@@ -115,7 +115,7 @@ pub use watchable::Watchable;
 /// Display an error with causes.
 /// This is useful for displaying errors without converting to
 /// `miette::Report` or `anyhow::Error` first
-pub struct ErrorChain<'a>(&'a (dyn std::error::Error));
+pub struct ErrorChain<'a>(&'a dyn std::error::Error);
 
 impl<'a> ErrorChain<'a> {
     pub fn new<E>(err: &'a E) -> Self
