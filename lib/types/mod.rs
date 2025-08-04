@@ -315,7 +315,7 @@ impl PartialOrd for AggregatedWithdrawal {
 /// Removing twice will cause one deletion.
 /// Inserting and then removing will have no overall effect,
 /// but a second removal will still cause a deletion.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 #[repr(transparent)]
 pub struct AccumulatorDiff(
     /// `true` indicates insertion, `false` indicates removal.

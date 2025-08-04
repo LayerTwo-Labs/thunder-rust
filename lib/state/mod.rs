@@ -35,6 +35,16 @@ use rollback::RollBack;
 
 pub const WITHDRAWAL_BUNDLE_FAILURE_GAP: u32 = 4;
 
+/// Prevalidated block data containing computed values from validation
+/// to avoid redundant computation during connection
+pub struct PrevalidatedBlock {
+    pub filled_transactions: Vec<FilledTransaction>,
+    pub computed_merkle_root: MerkleRoot,
+    pub total_fees: bitcoin::Amount,
+    pub coinbase_value: bitcoin::Amount,
+    pub accumulator_diff: crate::types::AccumulatorDiff,
+}
+
 /// Information we have regarding a withdrawal bundle
 #[derive(Debug, Deserialize, Serialize)]
 enum WithdrawalBundleInfo {
@@ -340,7 +350,7 @@ impl State {
             }
         }
         if Authorization::verify_transaction(transaction).is_err() {
-            return Err(Error::AuthorizationError);
+            return Err(Error::Authorization);
         }
         let fee = self.validate_filled_transaction(&filled_transaction)?;
         Ok(fee)
@@ -465,6 +475,36 @@ impl State {
         body: &Body,
     ) -> Result<MerkleRoot, Error> {
         block::connect(self, rwtxn, header, body)
+    }
+
+    pub fn prevalidate_block(
+        &self,
+        rotxn: &RoTxn,
+        header: &Header,
+        body: &Body,
+    ) -> Result<PrevalidatedBlock, Error> {
+        block::prevalidate(self, rotxn, header, body)
+    }
+
+    pub fn connect_prevalidated_block(
+        &self,
+        rwtxn: &mut RwTxn,
+        header: &Header,
+        body: &Body,
+        prevalidated: PrevalidatedBlock,
+    ) -> Result<MerkleRoot, Error> {
+        block::connect_prevalidated(self, rwtxn, header, body, prevalidated)
+    }
+
+    pub fn apply_block(
+        &self,
+        rwtxn: &mut RwTxn,
+        header: &Header,
+        body: &Body,
+    ) -> Result<(), Error> {
+        let prevalidated = self.prevalidate_block(rwtxn, header, body)?;
+        self.connect_prevalidated_block(rwtxn, header, body, prevalidated)?;
+        Ok(())
     }
 
     pub fn disconnect_tip(
