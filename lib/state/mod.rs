@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::{
+    borrow::Borrow,
+    collections::{BTreeMap, HashMap, HashSet},
+};
 
 use fallible_iterator::FallibleIterator;
 use futures::Stream;
@@ -13,20 +16,20 @@ use sneed::{
 };
 
 use crate::{
-    authorization::Authorization,
+    authorization::{self, Authorization},
     types::{
-        Accumulator, Address, AmountOverflowError, AmountUnderflowError,
-        Authorized, AuthorizedTransaction, BlockHash, Body, FilledTransaction,
-        GetAddress, GetValue, Header, InPoint, M6id, MerkleRoot, OutPoint,
-        Output, PointedOutput, SpentOutput, Transaction, VERSION, Verify,
-        Version, WithdrawalBundle, WithdrawalBundleStatus,
+        Accumulator, Address, AmountOverflowError, Authorized,
+        AuthorizedTransaction, BlockHash, Body, FilledTransaction, GetAddress,
+        GetValue, Header, InPoint, M6id, MerkleRoot, OutPoint, Output,
+        PointedOutput, SpentOutput, Transaction, VERSION, Version,
+        WithdrawalBundle, WithdrawalBundleStatus,
         proto::mainchain::TwoWayPegData,
     },
     util::Watchable,
 };
 
 mod block;
-mod error;
+pub mod error;
 mod rollback;
 mod two_way_peg_data;
 
@@ -174,14 +177,16 @@ impl State {
     pub fn try_get_tip(
         &self,
         rotxn: &RoTxn,
-    ) -> Result<Option<BlockHash>, Error> {
+    ) -> Result<Option<BlockHash>, db_error::TryGet> {
         let tip = self.tip.try_get(rotxn, &())?;
         Ok(tip)
     }
 
-    pub fn try_get_height(&self, rotxn: &RoTxn) -> Result<Option<u32>, Error> {
-        let height = self.height.try_get(rotxn, &())?;
-        Ok(height)
+    pub fn try_get_height(
+        &self,
+        rotxn: &RoTxn,
+    ) -> Result<Option<u32>, db_error::TryGet> {
+        self.height.try_get(rotxn, &())
     }
 
     pub fn get_utxos(
@@ -224,11 +229,13 @@ impl State {
     }
 
     /// Get the current Utreexo accumulator
-    pub fn get_accumulator(&self, rotxn: &RoTxn) -> Result<Accumulator, Error> {
+    pub fn get_accumulator(
+        &self,
+        rotxn: &RoTxn,
+    ) -> Result<Accumulator, db_error::TryGet> {
         let accumulator = self
             .utreexo_accumulator
-            .try_get(rotxn, &())
-            .map_err(DbError::from)?
+            .try_get(rotxn, &())?
             .unwrap_or_default();
         Ok(accumulator)
     }
@@ -269,11 +276,11 @@ impl State {
         &self,
         rotxn: &RoTxn,
         transaction: &Transaction,
-    ) -> Result<FilledTransaction, Error> {
+    ) -> Result<FilledTransaction, error::FillTransaction> {
         let mut spent_utxos = vec![];
         for (outpoint, _) in &transaction.inputs {
             let utxo =
-                self.utxos.try_get(rotxn, outpoint)?.ok_or(Error::NoUtxo {
+                self.utxos.try_get(rotxn, outpoint)?.ok_or(error::NoUtxo {
                     outpoint: *outpoint,
                 })?;
             spent_utxos.push(utxo);
@@ -288,7 +295,7 @@ impl State {
         &self,
         rotxn: &RoTxn,
         transaction: AuthorizedTransaction,
-    ) -> Result<Authorized<FilledTransaction>, Error> {
+    ) -> Result<Authorized<FilledTransaction>, error::FillTransaction> {
         let filled_tx =
             self.fill_transaction(rotxn, &transaction.transaction)?;
         let authorizations = transaction.authorizations;
@@ -309,10 +316,9 @@ impl State {
             .map_err(DbError::from)?)
     }
 
-    pub fn validate_filled_transaction(
-        &self,
+    fn validate_filled_transaction_(
         transaction: &FilledTransaction,
-    ) -> Result<bitcoin::Amount, Error> {
+    ) -> Result<bitcoin::Amount, error::ValidateFilledTransactionInner> {
         let mut value_in = bitcoin::Amount::ZERO;
         let mut value_out = bitcoin::Amount::ZERO;
         for utxo in &transaction.spent_utxos {
@@ -325,34 +331,81 @@ impl State {
                 .checked_add(output.get_value())
                 .ok_or(AmountOverflowError)?;
         }
-        if value_out > value_in {
-            return Err(Error::NotEnoughValueIn);
-        }
         value_in
             .checked_sub(value_out)
-            .ok_or_else(|| AmountUnderflowError.into())
+            .ok_or(error::ValidateFilledTransactionInner::NotEnoughValueIn)
+    }
+
+    fn validate_filled_transaction(
+        transaction: &FilledTransaction,
+    ) -> Result<bitcoin::Amount, error::ValidateFilledTransaction> {
+        Self::validate_filled_transaction_(transaction).map_err(|err| {
+            error::ValidateTransaction {
+                txid: transaction.transaction.txid(),
+                source: err,
+            }
+            .into()
+        })
+    }
+
+    pub fn validate_authorized_filled_transaction<Authorizations>(
+        auth_tx: &Authorized<FilledTransaction, Authorizations>,
+    ) -> Result<bitcoin::Amount, error::ValidateAuthorizedFilledTransaction>
+    where
+        Authorizations: Borrow<[Authorization]>,
+    {
+        let fee = Self::validate_filled_transaction(&auth_tx.transaction)?;
+        for (index, (authorization, spent_utxo)) in auth_tx
+            .authorizations
+            .borrow()
+            .iter()
+            .zip(&auth_tx.transaction.spent_utxos)
+            .enumerate()
+        {
+            if authorization.get_address() != spent_utxo.address {
+                let err = error::ValidateTransaction {
+                    txid: auth_tx.transaction.transaction.txid(),
+                    source: error::WrongPubKeyForAddress {
+                        pubkey: authorization.verifying_key,
+                        address: spent_utxo.address,
+                        index,
+                    }
+                    .into(),
+                };
+                return Err(err.into());
+            }
+        }
+        let auth_tx: Authorized<&'_ Transaction, _> = auth_tx.into();
+        let () = authorization::verify_authorized_transaction(&auth_tx)
+            .map_err(|err| error::ValidateTransaction {
+                txid: auth_tx.transaction.txid(),
+                source: err.into(),
+            })?;
+        Ok(fee)
     }
 
     pub fn validate_transaction(
         &self,
         rotxn: &RoTxn,
         transaction: &AuthorizedTransaction,
-    ) -> Result<bitcoin::Amount, Error> {
-        let filled_transaction =
-            self.fill_transaction(rotxn, &transaction.transaction)?;
-        for (authorization, spent_utxo) in transaction
-            .authorizations
-            .iter()
-            .zip(filled_transaction.spent_utxos.iter())
-        {
-            if authorization.get_address() != spent_utxo.address {
-                return Err(Error::WrongPubKeyForAddress);
-            }
-        }
-        if Authorization::verify_transaction(transaction).is_err() {
-            return Err(Error::Authorization);
-        }
-        let fee = self.validate_filled_transaction(&filled_transaction)?;
+    ) -> Result<bitcoin::Amount, error::ValidateAuthorizedTransaction> {
+        let AuthorizedTransaction {
+            transaction,
+            authorizations,
+        } = transaction;
+        let filled_transaction = self
+            .fill_transaction(rotxn, transaction)
+            .map_err(|err| error::ValidateTransaction {
+                txid: transaction.txid(),
+                source: err.into(),
+            })?;
+        let authorized_filled_transaction = Authorized {
+            transaction: filled_transaction,
+            authorizations: authorizations.as_slice(),
+        };
+        let fee = Self::validate_authorized_filled_transaction(
+            &authorized_filled_transaction,
+        )?;
         Ok(fee)
     }
 
@@ -464,8 +517,9 @@ impl State {
         rotxn: &RoTxn,
         header: &Header,
         body: &Body,
-    ) -> Result<(bitcoin::Amount, MerkleRoot), Error> {
+    ) -> Result<(bitcoin::Amount, MerkleRoot), error::ValidateBlock> {
         block::validate(self, rotxn, header, body)
+            .map_err(error::ValidateBlock::from)
     }
 
     pub fn connect_block(
@@ -473,27 +527,30 @@ impl State {
         rwtxn: &mut RwTxn,
         header: &Header,
         body: &Body,
-    ) -> Result<MerkleRoot, Error> {
+    ) -> Result<MerkleRoot, error::ConnectBlock> {
         block::connect(self, rwtxn, header, body)
+            .map_err(error::ConnectBlock::from)
     }
 
-    pub fn prevalidate_block(
+    fn prevalidate_block(
         &self,
         rotxn: &RoTxn,
         header: &Header,
         body: &Body,
-    ) -> Result<PrevalidatedBlock, Error> {
+    ) -> Result<PrevalidatedBlock, error::ValidateBlock> {
         block::prevalidate(self, rotxn, header, body)
+            .map_err(error::ValidateBlock::from)
     }
 
-    pub fn connect_prevalidated_block(
+    fn connect_prevalidated_block(
         &self,
         rwtxn: &mut RwTxn,
         header: &Header,
         body: &Body,
         prevalidated: PrevalidatedBlock,
-    ) -> Result<MerkleRoot, Error> {
+    ) -> Result<MerkleRoot, error::ConnectBlock> {
         block::connect_prevalidated(self, rwtxn, header, body, prevalidated)
+            .map_err(error::ConnectBlock::from)
     }
 
     pub fn apply_block(
@@ -501,7 +558,7 @@ impl State {
         rwtxn: &mut RwTxn,
         header: &Header,
         body: &Body,
-    ) -> Result<(), Error> {
+    ) -> Result<(), error::ApplyBlock> {
         let prevalidated = self.prevalidate_block(rwtxn, header, body)?;
         self.connect_prevalidated_block(rwtxn, header, body, prevalidated)?;
         Ok(())
@@ -512,24 +569,27 @@ impl State {
         rwtxn: &mut RwTxn,
         header: &Header,
         body: &Body,
-    ) -> Result<(), Error> {
+    ) -> Result<(), error::DisconnectTip> {
         block::disconnect_tip(self, rwtxn, header, body)
+            .map_err(error::DisconnectTip)
     }
 
     pub fn connect_two_way_peg_data(
         &self,
         rwtxn: &mut RwTxn,
         two_way_peg_data: &TwoWayPegData,
-    ) -> Result<(), Error> {
+    ) -> Result<(), error::Connect2wpd> {
         two_way_peg_data::connect(self, rwtxn, two_way_peg_data)
+            .map_err(error::Connect2wpd)
     }
 
     pub fn disconnect_two_way_peg_data(
         &self,
         rwtxn: &mut RwTxn,
         two_way_peg_data: &TwoWayPegData,
-    ) -> Result<(), Error> {
+    ) -> Result<(), error::Disconnect2wpd> {
         two_way_peg_data::disconnect(self, rwtxn, two_way_peg_data)
+            .map_err(error::Disconnect2wpd)
     }
 }
 

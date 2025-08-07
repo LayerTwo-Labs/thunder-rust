@@ -1,3 +1,5 @@
+use std::borrow::Borrow;
+
 use bitcoin::amount::CheckedSum;
 use borsh::BorshSerialize;
 use rustreexo::accumulator::{node_hash::BitcoinNodeHash, proof::Proof};
@@ -434,10 +436,13 @@ impl FilledTransaction {
 }
 
 #[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize)]
-pub struct Authorized<T> {
-    pub transaction: T,
+pub struct Authorized<Transaction, Authorizations = Vec<Authorization>>
+where
+    Authorizations: Borrow<[Authorization]>,
+{
+    pub transaction: Transaction,
     /// Authorizations are called witnesses in Bitcoin.
-    pub authorizations: Vec<Authorization>,
+    pub authorizations: Authorizations,
 }
 
 pub type AuthorizedTransaction = Authorized<Transaction>;
@@ -447,6 +452,45 @@ impl From<Authorized<FilledTransaction>> for AuthorizedTransaction {
         Self {
             transaction: tx.transaction.transaction,
             authorizations: tx.authorizations,
+        }
+    }
+}
+
+impl<'a, Transaction, Authorizations>
+    From<&'a Authorized<Transaction, Authorizations>>
+    for Authorized<&'a Transaction, &'a [Authorization]>
+where
+    Authorizations: Borrow<[Authorization]>,
+{
+    fn from(
+        auth_filled_tx: &'a Authorized<Transaction, Authorizations>,
+    ) -> Self {
+        let Authorized {
+            transaction,
+            authorizations,
+        } = auth_filled_tx;
+        Self {
+            transaction,
+            authorizations: authorizations.borrow(),
+        }
+    }
+}
+
+impl<'a, Authorizations> From<&'a Authorized<FilledTransaction, Authorizations>>
+    for Authorized<&'a Transaction, &'a [Authorization]>
+where
+    Authorizations: Borrow<[Authorization]>,
+{
+    fn from(
+        auth_filled_tx: &'a Authorized<FilledTransaction, Authorizations>,
+    ) -> Self {
+        let Authorized {
+            transaction: filled_tx,
+            authorizations,
+        } = auth_filled_tx;
+        Self {
+            transaction: &filled_tx.transaction,
+            authorizations: authorizations.borrow(),
         }
     }
 }

@@ -3,16 +3,16 @@
 use std::collections::{BTreeMap, HashSet};
 
 use rustreexo::accumulator::node_hash::BitcoinNodeHash;
-use sneed::{RoTxn, RwTxn, db::error::Error as DbError};
+use sneed::{RoTxn, RwTxn};
 
 use crate::{
-    state::{Error, PrevalidatedBlock, State, error},
+    authorization,
+    state::{PrevalidatedBlock, State, error},
     types::{
         AccumulatorDiff, AmountOverflowError, Body, FilledTransaction,
         GetAddress as _, GetValue as _, Header, InPoint, MerkleRoot, OutPoint,
-        PointedOutput, SpentOutput, Verify as _,
+        PointedOutput, SpentOutput, Transaction, Txid,
     },
-    wallet::Authorization,
 };
 
 pub fn validate(
@@ -20,33 +20,39 @@ pub fn validate(
     rotxn: &RoTxn,
     header: &Header,
     body: &Body,
-) -> Result<(bitcoin::Amount, MerkleRoot), Error> {
+) -> Result<(bitcoin::Amount, MerkleRoot), error::ValidateBlockInner> {
     let tip_hash = state.try_get_tip(rotxn)?;
     if header.prev_side_hash != tip_hash {
-        let err = error::InvalidHeader::PrevSideHash {
+        let err = error::InvalidHeaderInner::PrevSideHash {
             expected: tip_hash,
             received: header.prev_side_hash,
         };
-        return Err(Error::InvalidHeader(err));
+        return Err(error::ValidateBlockInner::InvalidHeader(err.into()));
     };
     let height = state.try_get_height(rotxn)?.map_or(0, |height| height + 1);
     if body.authorizations.len() > State::body_sigops_limit(height) {
-        return Err(Error::TooManySigops);
+        return Err(error::ValidateBlockInner::TooManySigops);
     }
-    let body_size =
-        borsh::object_length(&body).map_err(Error::BorshSerialize)?;
+    let body_size = borsh::object_length(&body)
+        .map_err(error::ValidateBlockInner::BorshSerialize)?;
     if body_size > State::body_size_limit(height) {
-        return Err(Error::BodyTooLarge);
+        return Err(error::ValidateBlockInner::BodyTooLarge);
     }
     let mut accumulator = state
         .utreexo_accumulator
-        .try_get(rotxn, &())
-        .map_err(DbError::from)?
+        .try_get(rotxn, &())?
         .unwrap_or_default();
     let filled_transactions: Vec<_> = body
         .transactions
         .iter()
-        .map(|t| state.fill_transaction(rotxn, t))
+        .map(|t| {
+            state.fill_transaction(rotxn, t).map_err(|err| {
+                error::ValidateTransaction {
+                    txid: t.txid(),
+                    source: err,
+                }
+            })
+        })
         .collect::<Result<_, _>>()?;
     let merkle_root = Body::compute_merkle_root(
         body.coinbase.as_slice(),
@@ -69,11 +75,11 @@ pub fn validate(
         accumulator_diff.insert((&pointed_output).into());
     }
     if merkle_root != header.merkle_root {
-        let err = Error::InvalidBody {
+        let err = error::InvalidBody {
             expected: header.merkle_root,
             computed: merkle_root,
         };
-        return Err(err);
+        return Err(err.into());
     }
     let mut total_fees = bitcoin::Amount::ZERO;
     let mut spent_utxos = HashSet::new();
@@ -83,7 +89,7 @@ pub fn validate(
         let mut spent_utxo_hashes = Vec::<BitcoinNodeHash>::new();
         for (outpoint, utxo_hash) in &filled_transaction.transaction.inputs {
             if spent_utxos.contains(outpoint) {
-                return Err(Error::UtxoDoubleSpent);
+                return Err(error::UtxoDoubleSpent.into());
             }
             spent_utxos.insert(*outpoint);
             spent_utxo_hashes.push(utxo_hash.into());
@@ -102,36 +108,42 @@ pub fn validate(
             };
             accumulator_diff.insert((&pointed_output).into());
         }
-        total_fees = total_fees
-            .checked_add(state.validate_filled_transaction(filled_transaction)?)
-            .ok_or(AmountOverflowError)?;
+        let tx_fees =
+            State::validate_filled_transaction_(filled_transaction).map_err(
+                |err| error::ValidateTransaction { txid, source: err },
+            )?;
+        total_fees =
+            total_fees.checked_add(tx_fees).ok_or(AmountOverflowError)?;
         // verify utreexo proof
         if !accumulator
             .verify(&filled_transaction.transaction.proof, &spent_utxo_hashes)?
         {
-            return Err(Error::UtreexoProofFailed { txid });
+            return Err(error::ValidateBlockInner::UtreexoProofFailed { txid });
         }
     }
     if coinbase_value > total_fees {
-        return Err(Error::NotEnoughFees);
+        return Err(error::ValidateBlockInner::NotEnoughFees);
     }
     let spent_utxos = filled_transactions
         .iter()
         .flat_map(|t| t.spent_utxos.iter());
-    for (authorization, spent_utxo) in
-        body.authorizations.iter().zip(spent_utxos)
+    for (index, (authorization, spent_utxo)) in
+        body.authorizations.iter().zip(spent_utxos).enumerate()
     {
         if authorization.get_address() != spent_utxo.address {
-            return Err(Error::WrongPubKeyForAddress);
+            return Err(error::WrongPubKeyForAddress {
+                pubkey: authorization.verifying_key,
+                address: spent_utxo.address,
+                index,
+            }
+            .into());
         }
     }
-    if Authorization::verify_body(body).is_err() {
-        return Err(Error::Authorization);
-    }
+    let () = authorization::verify_body(body)?;
     let () = accumulator.apply_diff(accumulator_diff)?;
     let roots: Vec<BitcoinNodeHash> = accumulator.get_roots();
     if roots != header.roots {
-        return Err(Error::UtreexoRootsMismatch);
+        return Err(error::ValidateBlockInner::UtreexoRootsMismatch);
     }
     Ok((total_fees, merkle_root))
 }
@@ -141,33 +153,39 @@ pub fn prevalidate(
     rotxn: &RoTxn,
     header: &Header,
     body: &Body,
-) -> Result<PrevalidatedBlock, Error> {
+) -> Result<PrevalidatedBlock, error::ValidateBlockInner> {
     let tip_hash = state.try_get_tip(rotxn)?;
     if header.prev_side_hash != tip_hash {
-        let err = error::InvalidHeader::PrevSideHash {
+        let err = error::InvalidHeaderInner::PrevSideHash {
             expected: tip_hash,
             received: header.prev_side_hash,
         };
-        return Err(Error::InvalidHeader(err));
+        return Err(error::ValidateBlockInner::InvalidHeader(err.into()));
     };
     let height = state.try_get_height(rotxn)?.map_or(0, |height| height + 1);
     if body.authorizations.len() > State::body_sigops_limit(height) {
-        return Err(Error::TooManySigops);
+        return Err(error::ValidateBlockInner::TooManySigops);
     }
-    let body_size =
-        borsh::object_length(&body).map_err(Error::BorshSerialize)?;
+    let body_size = borsh::object_length(&body)
+        .map_err(error::ValidateBlockInner::BorshSerialize)?;
     if body_size > State::body_size_limit(height) {
-        return Err(Error::BodyTooLarge);
+        return Err(error::ValidateBlockInner::BodyTooLarge);
     }
     let mut accumulator = state
         .utreexo_accumulator
-        .try_get(rotxn, &())
-        .map_err(DbError::from)?
+        .try_get(rotxn, &())?
         .unwrap_or_default();
     let filled_transactions: Vec<_> = body
         .transactions
         .iter()
-        .map(|t| state.fill_transaction(rotxn, t))
+        .map(|t| {
+            state.fill_transaction(rotxn, t).map_err(|err| {
+                error::ValidateTransaction {
+                    txid: t.txid(),
+                    source: err,
+                }
+            })
+        })
         .collect::<Result<_, _>>()?;
     let merkle_root = Body::compute_merkle_root(
         body.coinbase.as_slice(),
@@ -192,11 +210,11 @@ pub fn prevalidate(
         }
     }
     if merkle_root != header.merkle_root {
-        let err = Error::InvalidBody {
+        let err = error::InvalidBody {
             expected: header.merkle_root,
             computed: merkle_root,
         };
-        return Err(err);
+        return Err(error::ValidateBlockInner::InvalidBody(err));
     }
     let mut total_fees = bitcoin::Amount::ZERO;
     let mut spent_utxos = HashSet::new();
@@ -206,7 +224,7 @@ pub fn prevalidate(
         let mut spent_utxo_hashes = Vec::<BitcoinNodeHash>::new();
         for (outpoint, utxo_hash) in &filled_transaction.transaction.inputs {
             if spent_utxos.contains(outpoint) {
-                return Err(Error::UtxoDoubleSpent);
+                return Err(error::UtxoDoubleSpent.into());
             }
             spent_utxos.insert(*outpoint);
             {
@@ -227,40 +245,48 @@ pub fn prevalidate(
             };
             accumulator_diff.insert((&pointed_output).into());
         }
-        total_fees = total_fees
-            .checked_add(state.validate_filled_transaction(filled_transaction)?)
-            .ok_or(AmountOverflowError)?;
+        let tx_fees =
+            State::validate_filled_transaction_(filled_transaction).map_err(
+                |err| error::ValidateTransaction { txid, source: err },
+            )?;
+        total_fees =
+            total_fees.checked_add(tx_fees).ok_or(AmountOverflowError)?;
         {
             // verify utreexo proof
             if !accumulator.verify(
                 &filled_transaction.transaction.proof,
                 &spent_utxo_hashes,
             )? {
-                return Err(Error::UtreexoProofFailed { txid });
+                return Err(error::ValidateBlockInner::UtreexoProofFailed {
+                    txid,
+                });
             }
         }
     }
     if coinbase_value > total_fees {
-        return Err(Error::NotEnoughFees);
+        return Err(error::ValidateBlockInner::NotEnoughFees);
     }
     let spent_utxos = filled_transactions
         .iter()
         .flat_map(|t| t.spent_utxos.iter());
-    for (authorization, spent_utxo) in
-        body.authorizations.iter().zip(spent_utxos)
+    for (index, (authorization, spent_utxo)) in
+        body.authorizations.iter().zip(spent_utxos).enumerate()
     {
         if authorization.get_address() != spent_utxo.address {
-            return Err(Error::WrongPubKeyForAddress);
+            return Err(error::WrongPubKeyForAddress {
+                pubkey: authorization.verifying_key,
+                address: spent_utxo.address,
+                index,
+            }
+            .into());
         }
     }
-    if Authorization::verify_body(body).is_err() {
-        return Err(Error::Authorization);
-    }
+    let () = authorization::verify_body(body)?;
     {
         let () = accumulator.apply_diff(accumulator_diff.clone())?;
         let roots: Vec<BitcoinNodeHash> = accumulator.get_roots();
         if roots != header.roots {
-            return Err(Error::UtreexoRootsMismatch);
+            return Err(error::ValidateBlockInner::UtreexoRootsMismatch);
         }
     }
     Ok(PrevalidatedBlock {
@@ -278,23 +304,23 @@ pub fn connect_prevalidated(
     header: &Header,
     body: &Body,
     prevalidated: PrevalidatedBlock,
-) -> Result<MerkleRoot, Error> {
-    let tip_hash = state.try_get_tip(rwtxn)?;
+) -> Result<MerkleRoot, error::ConnectBlockInner> {
+    let tip_hash = state.tip.try_get(rwtxn, &())?;
     if tip_hash != header.prev_side_hash {
-        let err = error::InvalidHeader::PrevSideHash {
+        let err = error::InvalidHeaderInner::PrevSideHash {
             expected: tip_hash,
             received: header.prev_side_hash,
         };
-        return Err(Error::InvalidHeader(err));
+        return Err(error::ConnectBlockInner::InvalidHeader(err.into()));
     }
 
     let merkle_root = prevalidated.computed_merkle_root;
     if merkle_root != header.merkle_root {
-        let err = Error::InvalidBody {
+        let err = error::InvalidBody {
             expected: header.merkle_root,
             computed: merkle_root,
         };
-        return Err(err);
+        return Err(error::ConnectBlockInner::InvalidBody(err));
     }
 
     let mut accumulator = state
@@ -357,7 +383,10 @@ pub fn connect_prevalidated(
     }
 
     let block_hash = header.hash();
-    let height = state.try_get_height(rwtxn)?.map_or(0, |height| height + 1);
+    let height = state
+        .height
+        .try_get(rwtxn, &())?
+        .map_or(0, |height| height + 1);
 
     // Update tip and height using regular database operations
     state.tip.put(rwtxn, &(), &block_hash)?;
@@ -372,19 +401,85 @@ pub fn connect_prevalidated(
     Ok(merkle_root)
 }
 
+fn connect_tx_(
+    state: &State,
+    rwtxn: &mut RwTxn,
+    accumulator_diff: &mut AccumulatorDiff,
+    filled_txs: &mut Vec<FilledTransaction>,
+    transaction: &Transaction,
+    txid: Txid,
+) -> Result<(), error::ConnectTransactionInner> {
+    let mut spent_utxos = Vec::new();
+    for (vin, (outpoint, utxo_hash)) in transaction.inputs.iter().enumerate() {
+        let spent_output =
+            state.utxos.try_get(rwtxn, outpoint)?.ok_or(error::NoUtxo {
+                outpoint: *outpoint,
+            })?;
+
+        accumulator_diff.remove(utxo_hash.into());
+        state.utxos.delete(rwtxn, outpoint)?;
+        let spent_output = SpentOutput {
+            output: spent_output,
+            inpoint: InPoint::Regular {
+                txid,
+                vin: vin as u32,
+            },
+        };
+        state.stxos.put(rwtxn, outpoint, &spent_output)?;
+        spent_utxos.push(spent_output.output);
+    }
+    for (vout, output) in transaction.outputs.iter().enumerate() {
+        let outpoint = OutPoint::Regular {
+            txid,
+            vout: vout as u32,
+        };
+        let pointed_output = PointedOutput {
+            outpoint,
+            output: output.clone(),
+        };
+        accumulator_diff.insert((&pointed_output).into());
+        state.utxos.put(rwtxn, &outpoint, output)?;
+    }
+    let filled_tx = FilledTransaction {
+        spent_utxos,
+        transaction: transaction.clone(),
+    };
+    filled_txs.push(filled_tx);
+    Ok(())
+}
+
+fn connect_tx(
+    state: &State,
+    rwtxn: &mut RwTxn,
+    accumulator_diff: &mut AccumulatorDiff,
+    filled_txs: &mut Vec<FilledTransaction>,
+    transaction: &Transaction,
+) -> Result<(), error::ConnectTransaction> {
+    let txid = transaction.txid();
+    connect_tx_(
+        state,
+        rwtxn,
+        accumulator_diff,
+        filled_txs,
+        transaction,
+        txid,
+    )
+    .map_err(|err| error::ConnectTransaction::new(txid, err))
+}
+
 pub fn connect(
     state: &State,
     rwtxn: &mut RwTxn,
     header: &Header,
     body: &Body,
-) -> Result<MerkleRoot, Error> {
-    let tip_hash = state.try_get_tip(rwtxn)?;
+) -> Result<MerkleRoot, error::ConnectBlockInner> {
+    let tip_hash = state.tip.try_get(rwtxn, &())?;
     if tip_hash != header.prev_side_hash {
-        let err = error::InvalidHeader::PrevSideHash {
+        let err = error::InvalidHeaderInner::PrevSideHash {
             expected: tip_hash,
             received: header.prev_side_hash,
         };
-        return Err(Error::InvalidHeader(err));
+        return Err(error::ConnectBlockInner::InvalidHeader(err.into()));
     }
     let mut accumulator = state
         .utreexo_accumulator
@@ -403,61 +498,33 @@ pub fn connect(
         accumulator_diff.insert((&pointed_output).into());
         state.utxos.put(rwtxn, &outpoint, output)?;
     }
-    let mut filled_txs: Vec<FilledTransaction> = Vec::new();
+    let mut filled_txs: Vec<FilledTransaction> =
+        Vec::with_capacity(body.transactions.len());
     for transaction in &body.transactions {
-        let mut spent_utxos = Vec::new();
-        let txid = transaction.txid();
-        for (vin, (outpoint, utxo_hash)) in
-            transaction.inputs.iter().enumerate()
-        {
-            let spent_output =
-                state.utxos.try_get(rwtxn, outpoint)?.ok_or(Error::NoUtxo {
-                    outpoint: *outpoint,
-                })?;
-
-            accumulator_diff.remove(utxo_hash.into());
-            state.utxos.delete(rwtxn, outpoint)?;
-            let spent_output = SpentOutput {
-                output: spent_output,
-                inpoint: InPoint::Regular {
-                    txid,
-                    vin: vin as u32,
-                },
-            };
-            state.stxos.put(rwtxn, outpoint, &spent_output)?;
-            spent_utxos.push(spent_output.output);
-        }
-        for (vout, output) in transaction.outputs.iter().enumerate() {
-            let outpoint = OutPoint::Regular {
-                txid,
-                vout: vout as u32,
-            };
-            let pointed_output = PointedOutput {
-                outpoint,
-                output: output.clone(),
-            };
-            accumulator_diff.insert((&pointed_output).into());
-            state.utxos.put(rwtxn, &outpoint, output)?;
-        }
-        let filled_tx = FilledTransaction {
-            spent_utxos,
-            transaction: transaction.clone(),
-        };
-        filled_txs.push(filled_tx);
+        let () = connect_tx(
+            state,
+            rwtxn,
+            &mut accumulator_diff,
+            &mut filled_txs,
+            transaction,
+        )?;
     }
     let merkle_root = Body::compute_merkle_root(
         body.coinbase.as_slice(),
         filled_txs.as_slice(),
     )?;
     if merkle_root != header.merkle_root {
-        let err = Error::InvalidBody {
+        let err = error::InvalidBody {
             expected: header.merkle_root,
             computed: merkle_root,
         };
-        return Err(err);
+        return Err(error::ConnectBlockInner::InvalidBody(err));
     }
     let block_hash = header.hash();
-    let height = state.try_get_height(rwtxn)?.map_or(0, |height| height + 1);
+    let height = state
+        .height
+        .try_get(rwtxn, &())?
+        .map_or(0, |height| height + 1);
     state.tip.put(rwtxn, &(), &block_hash)?;
     state.height.put(rwtxn, &(), &height)?;
     let () = accumulator.apply_diff(accumulator_diff)?;
@@ -470,23 +537,18 @@ pub fn disconnect_tip(
     rwtxn: &mut RwTxn,
     header: &Header,
     body: &Body,
-) -> Result<(), Error> {
-    let tip_hash = state
-        .tip
-        .try_get(rwtxn, &())
-        .map_err(DbError::from)?
-        .ok_or(Error::NoTip)?;
+) -> Result<(), error::DisconnectTipInner> {
+    let tip_hash = state.try_get_tip(rwtxn)?.ok_or(error::NoTip)?;
     if tip_hash != header.hash() {
-        let err = error::InvalidHeader::BlockHash {
+        let err = error::InvalidHeaderInner::BlockHash {
             expected: tip_hash,
             computed: header.hash(),
         };
-        return Err(Error::InvalidHeader(err));
+        return Err(error::DisconnectTipInner::InvalidHeader(err.into()));
     }
     let mut accumulator = state
         .utreexo_accumulator
-        .try_get(rwtxn, &())
-        .map_err(DbError::from)?
+        .try_get(rwtxn, &())?
         .unwrap_or_default();
     tracing::debug!("Got acc");
     let mut accumulator_diff = AccumulatorDiff::default();
@@ -505,14 +567,10 @@ pub fn disconnect_tip(
                     output: output.clone(),
                 };
                 accumulator_diff.remove((&pointed_output).into());
-                if state
-                    .utxos
-                    .delete(rwtxn, &outpoint)
-                    .map_err(DbError::from)?
-                {
-                    Ok(())
+                if state.utxos.delete(rwtxn, &outpoint)? {
+                    Ok::<_, error::DisconnectTipInner>(())
                 } else {
-                    Err(Error::NoUtxo { outpoint })
+                    Err(error::NoUtxo { outpoint }.into())
                 }
             },
         )?;
@@ -521,25 +579,18 @@ pub fn disconnect_tip(
             .iter()
             .rev()
             .try_for_each(|(outpoint, utxo_hash)| {
-                if let Some(spent_output) = state
-                    .stxos
-                    .try_get(rwtxn, outpoint)
-                    .map_err(DbError::from)?
+                if let Some(spent_output) =
+                    state.stxos.try_get(rwtxn, outpoint)?
                 {
                     accumulator_diff.insert(utxo_hash.into());
-                    state
-                        .stxos
-                        .delete(rwtxn, outpoint)
-                        .map_err(DbError::from)?;
-                    state
-                        .utxos
-                        .put(rwtxn, outpoint, &spent_output.output)
-                        .map_err(DbError::from)?;
-                    Ok(())
+                    state.stxos.delete(rwtxn, outpoint)?;
+                    state.utxos.put(rwtxn, outpoint, &spent_output.output)?;
+                    Ok::<_, error::DisconnectTipInner>(())
                 } else {
-                    Err(Error::NoStxo {
+                    Err(error::NoStxo {
                         outpoint: *outpoint,
-                    })
+                    }
+                    .into())
                 }
             })
     })?;
@@ -558,14 +609,10 @@ pub fn disconnect_tip(
                 output: output.clone(),
             };
             accumulator_diff.remove((&pointed_output).into());
-            if state
-                .utxos
-                .delete(rwtxn, &outpoint)
-                .map_err(DbError::from)?
-            {
-                Ok(())
+            if state.utxos.delete(rwtxn, &outpoint)? {
+                Ok::<_, error::DisconnectTipInner>(())
             } else {
-                Err(Error::NoUtxo { outpoint })
+                Err(error::NoUtxo { outpoint }.into())
             }
         })?;
     let height = state
@@ -573,25 +620,16 @@ pub fn disconnect_tip(
         .expect("Height should not be None");
     match (header.prev_side_hash, height) {
         (None, 0) => {
-            state.tip.delete(rwtxn, &()).map_err(DbError::from)?;
-            state.height.delete(rwtxn, &()).map_err(DbError::from)?;
+            state.tip.delete(rwtxn, &())?;
+            state.height.delete(rwtxn, &())?;
         }
-        (None, _) | (_, 0) => return Err(Error::NoTip),
+        (None, _) | (_, 0) => return Err(error::NoTip.into()),
         (Some(prev_side_hash), height) => {
-            state
-                .tip
-                .put(rwtxn, &(), &prev_side_hash)
-                .map_err(DbError::from)?;
-            state
-                .height
-                .put(rwtxn, &(), &(height - 1))
-                .map_err(DbError::from)?;
+            state.tip.put(rwtxn, &(), &prev_side_hash)?;
+            state.height.put(rwtxn, &(), &(height - 1))?;
         }
     }
     let () = accumulator.apply_diff(accumulator_diff)?;
-    state
-        .utreexo_accumulator
-        .put(rwtxn, &(), &accumulator)
-        .map_err(DbError::from)?;
+    state.utreexo_accumulator.put(rwtxn, &(), &accumulator)?;
     Ok(())
 }

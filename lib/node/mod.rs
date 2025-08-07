@@ -17,6 +17,7 @@ use crate::{
     archive::{self, Archive},
     mempool::{self, MemPool},
     net::{self, Net, Peer},
+    node::net_task::NewTipReadyResult,
     state::{self, State},
     types::{
         Accumulator, Address, AmountOverflowError, AmountUnderflowError,
@@ -25,7 +26,7 @@ use crate::{
         SpentOutput, Tip, Transaction, Txid, WithdrawalBundle,
         proto::{self, mainchain},
     },
-    util::Watchable,
+    util::{ErrorChain, Watchable},
 };
 
 mod mainchain_task;
@@ -53,6 +54,8 @@ pub enum Error {
     DbEnv(#[from] EnvError),
     #[error("Database write error")]
     DbWrite(#[from] RwTxnError),
+    #[error("failed to fill transaction")]
+    FillTransaction(#[from] state::error::FillTransaction),
     #[error("I/O error")]
     Io(#[from] std::io::Error),
     #[error("error requesting mainchain ancestors")]
@@ -75,6 +78,8 @@ pub enum Error {
     State(#[source] Box<state::Error>),
     #[error("Utreexo error: {0}")]
     Utreexo(String),
+    #[error(transparent)]
+    ValidateTransaction(#[from] state::error::ValidateAuthorizedTransaction),
     #[error("Verify BMM error")]
     VerifyBmm(anyhow::Error),
 }
@@ -203,12 +208,15 @@ where
 
     pub fn try_get_height(&self) -> Result<Option<u32>, Error> {
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
-        Ok(self.state.try_get_height(&rotxn)?)
+        Ok(self
+            .state
+            .try_get_height(&rotxn)
+            .map_err(state::Error::from)?)
     }
 
     pub fn try_get_best_hash(&self) -> Result<Option<BlockHash>, Error> {
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
-        Ok(self.state.try_get_tip(&rotxn)?)
+        Ok(self.state.try_get_tip(&rotxn).map_err(state::Error::from)?)
     }
 
     pub fn submit_transaction(
@@ -277,13 +285,13 @@ where
 
     pub fn try_get_tip(&self) -> Result<Option<BlockHash>, Error> {
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
-        let tip = self.state.try_get_tip(&rotxn)?;
+        let tip = self.state.try_get_tip(&rotxn).map_err(state::Error::from)?;
         Ok(tip)
     }
 
     pub fn get_tip_accumulator(&self) -> Result<Accumulator, Error> {
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
-        Ok(self.state.get_accumulator(&rotxn)?)
+        Ok(self.state.get_accumulator(&rotxn).map_err(DbError::from)?)
     }
 
     pub fn regenerate_proof(&self, tx: &mut Transaction) -> Result<(), Error> {
@@ -328,10 +336,16 @@ where
         height: u32,
     ) -> Result<Option<BlockHash>, Error> {
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
-        let Some(tip) = self.state.try_get_tip(&rotxn)? else {
+        let Some(tip) =
+            self.state.try_get_tip(&rotxn).map_err(state::Error::from)?
+        else {
             return Ok(None);
         };
-        let Some(tip_height) = self.state.try_get_height(&rotxn)? else {
+        let Some(tip_height) = self
+            .state
+            .try_get_height(&rotxn)
+            .map_err(state::Error::from)?
+        else {
             return Ok(None);
         };
         if tip_height >= height {
@@ -501,7 +515,7 @@ where
         main_block_hash: bitcoin::BlockHash,
         header: &Header,
         body: &Body,
-    ) -> Result<bool, Error> {
+    ) -> Result<NewTipReadyResult, Error> {
         let Some(cusf_mainchain_wallet) = self.cusf_mainchain_wallet.as_ref()
         else {
             return Err(Error::NoCusfMainchainWalletClient);
@@ -514,7 +528,7 @@ where
             tracing::error!(%block_hash,
                 "Rejecting block {block_hash} due to missing ancestor headers",
             );
-            return Ok(false);
+            return Ok(Ok(false));
         }
         // Request mainchain header/infos if they do not exist
         let mainchain_task::Response::AncestorInfos(_, res): mainchain_task::Response = self
@@ -526,7 +540,7 @@ where
             .await
             .map_err(|_| Error::ReceiveMainchainTaskResponse)?;
         if !res.map_err(Error::MainchainAncestors)? {
-            return Ok(false);
+            return Ok(Ok(false));
         };
         // Write header
         tracing::trace!("Storing header: {block_hash}");
@@ -548,13 +562,14 @@ where
                 tracing::error!(%block_hash,
                     "Rejecting block {block_hash} due to failing BMM verification",
                 );
-                return Ok(false);
+                return Ok(Ok(false));
             }
         }
         // Check that ancestor bodies exist, and store body
         {
             let rotxn = self.env.read_txn().map_err(EnvError::from)?;
-            let tip = self.state.try_get_tip(&rotxn)?;
+            let tip =
+                self.state.try_get_tip(&rotxn).map_err(state::Error::from)?;
             let common_ancestor = if let Some(tip) = tip {
                 self.archive.last_common_ancestor(&rotxn, tip, block_hash)?
             } else {
@@ -571,7 +586,7 @@ where
                 tracing::error!(%block_hash,
                     "Rejecting block {block_hash} due to missing ancestor bodies",
                 );
-                return Ok(false);
+                return Ok(Ok(false));
             }
             drop(rotxn);
             if missing_bodies == vec![block_hash] {
@@ -585,9 +600,16 @@ where
             block_hash,
             main_block_hash,
         };
-        if !self.net_task.new_tip_ready_confirm(new_tip).await? {
-            tracing::warn!(%block_hash, "Not ready to reorg");
-            return Ok(false);
+        match self.net_task.new_tip_ready_confirm(new_tip).await? {
+            Ok(true) => (),
+            Ok(false) => {
+                tracing::warn!(%block_hash, "Not ready to reorg");
+                return Ok(Ok(false));
+            }
+            Err(err) => {
+                tracing::warn!("{:#}", ErrorChain::new(&err));
+                return Ok(Err(err));
+            }
         };
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         let bundle = self.state.get_pending_withdrawal_bundle(&rotxn)?;
@@ -601,7 +623,7 @@ where
             drop(cusf_mainchain_wallet_lock);
             tracing::trace!(%m6id, "Broadcast withdrawal bundle");
         }
-        Ok(true)
+        Ok(Ok(true))
     }
 
     /// Get a notification whenever the tip changes

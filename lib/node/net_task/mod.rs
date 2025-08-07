@@ -9,79 +9,50 @@ use std::{
 };
 
 use fallible_iterator::{FallibleIterator, IteratorExt};
+use fatality::Nested;
 use futures::{
     StreamExt,
     channel::{
-        mpsc::{self, TrySendError, UnboundedReceiver, UnboundedSender},
+        mpsc::{self, UnboundedReceiver, UnboundedSender},
         oneshot,
     },
     stream,
 };
 use nonempty::NonEmpty;
-use sneed::{DbError, EnvError, RwTxn, RwTxnError, db};
-use thiserror::Error;
+use sneed::{DbError, EnvError, RwTxn, RwTxnError};
 use tokio::task::{self, JoinHandle};
 use tokio_stream::StreamNotifyClose;
 
 use super::mainchain_task::{self, MainchainTaskHandle};
 use crate::{
     archive::{self, Archive},
-    mempool::{self, MemPool},
+    mempool::MemPool,
     net::{
         self, Net, PeerConnectionError, PeerConnectionInfo,
         PeerConnectionMailboxError, PeerConnectionMessage, PeerInfoRx,
         PeerRequest, PeerResponse, PeerStateId, peer_message,
     },
     state::{self, State},
-    types::{
-        BmmResult, Body, Header, MerkleRoot, Tip,
-        proto::{self, mainchain},
-    },
-    util::join_set,
+    types::{BmmResult, Body, Header, MerkleRoot, Tip, proto::mainchain},
+    util::{ErrorChain, join_set},
 };
 
-#[allow(clippy::duplicated_attributes)]
-#[derive(transitive::Transitive, Debug, Error)]
-#[transitive(from(db::error::IterInit, DbError))]
-#[transitive(from(db::error::IterItem, DbError))]
-pub enum Error {
-    #[error("archive error")]
-    Archive(#[from] archive::Error),
-    #[error("CUSF mainchain proto error")]
-    CusfMainchain(#[from] proto::Error),
-    #[error(transparent)]
-    Db(#[from] DbError),
-    #[error("Database env error")]
-    DbEnv(#[from] EnvError),
-    #[error("Database write error")]
-    DbWrite(#[from] RwTxnError),
-    #[error("Forward mainchain task request failed")]
-    ForwardMainchainTaskRequest,
-    #[error("mempool error")]
-    MemPool(#[from] mempool::Error),
-    #[error("Net error")]
-    Net(#[from] Box<net::Error>),
-    #[error("peer info stream closed")]
-    PeerInfoRxClosed,
-    #[error("Receive mainchain task response cancelled")]
-    ReceiveMainchainTaskResponse,
-    #[error("Receive reorg result cancelled (oneshot)")]
-    ReceiveReorgResultOneshot(#[source] oneshot::Canceled),
-    #[error("Send mainchain task request failed")]
-    SendMainchainTaskRequest,
-    #[error("Send new tip ready failed")]
-    SendNewTipReady(#[source] TrySendError<NewTipReadyMessage>),
-    #[error("Send reorg result error (oneshot)")]
-    SendReorgResultOneshot,
-    #[error("state error")]
-    State(#[from] state::Error),
-}
+mod error;
+pub use error::{Error, ReorgToTipJfyi as ReorgToTip};
 
-impl From<net::Error> for Error {
-    fn from(err: net::Error) -> Self {
-        Self::Net(Box::new(err))
-    }
-}
+pub type NewTipReadyResult = Result<bool, ReorgToTip>;
+
+/// Message indicating a tip that is ready to reorg to, with the address of the
+/// peer connection that caused the request, if it originated from a peer.
+/// If the request originates from this node, then the socket address is
+/// None.
+/// An optional oneshot sender can be used receive the result of attempting
+/// to reorg to the new tip, on the corresponding oneshot receiver.
+type NewTipReadyMessage = (
+    Tip,
+    Option<SocketAddr>,
+    Option<oneshot::Sender<NewTipReadyResult>>,
+);
 
 fn connect_tip_(
     rwtxn: &mut RwTxn<'_>,
@@ -91,7 +62,7 @@ fn connect_tip_(
     header: &Header,
     body: &Body,
     two_way_peg_data: &mainchain::TwoWayPegData,
-) -> Result<(), Error> {
+) -> Result<(), error::ConnectTip> {
     let block_hash = header.hash();
     let (_fees, merkle_root): (bitcoin::Amount, MerkleRoot) =
         state.validate_block(rwtxn, header, body)?;
@@ -120,37 +91,33 @@ fn disconnect_tip_(
     archive: &Archive,
     mempool: &MemPool,
     state: &State,
-) -> Result<(), Error> {
+) -> Result<(), error::DisconnectTip> {
     let tip_block_hash =
-        state.try_get_tip(rwtxn)?.ok_or(state::Error::NoTip)?;
+        state.try_get_tip(rwtxn)?.ok_or(state::error::NoTip)?;
     let tip_header = archive.get_header(rwtxn, tip_block_hash)?;
     let tip_body = archive.get_body(rwtxn, tip_block_hash)?;
-    let height = state.try_get_height(rwtxn)?.ok_or(state::Error::NoTip)?;
+    let height = state.try_get_height(rwtxn)?.ok_or(state::error::NoTip)?;
     let two_way_peg_data = {
         let last_applied_deposit_block = state
             .deposit_blocks
-            .rev_iter(rwtxn)
-            .map_err(DbError::from)?
+            .rev_iter(rwtxn)?
             .find_map(|(_, (block_hash, applied_height))| {
                 if applied_height < height - 1 {
                     Ok(Some((block_hash, applied_height)))
                 } else {
                     Ok(None)
                 }
-            })
-            .map_err(DbError::from)?;
+            })?;
         let last_applied_withdrawal_bundle_event_block = state
             .withdrawal_bundle_event_blocks
-            .rev_iter(rwtxn)
-            .map_err(DbError::from)?
+            .rev_iter(rwtxn)?
             .find_map(|(_, (block_hash, applied_height))| {
                 if applied_height < height - 1 {
                     Ok(Some((block_hash, applied_height)))
                 } else {
                     Ok(None)
                 }
-            })
-            .map_err(DbError::from)?;
+            })?;
         let start_block_hash = match (
             last_applied_deposit_block,
             last_applied_withdrawal_bundle_event_block,
@@ -248,15 +215,15 @@ fn reorg_to_tip(
     mempool: &MemPool,
     state: &State,
     new_tip: Tip,
-) -> Result<bool, Error> {
-    let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
+) -> Result<bool, error::ReorgToTip> {
+    let mut rwtxn = env.write_txn()?;
     let tip_height = state.try_get_height(&rwtxn)?;
     let tip = state
         .try_get_tip(&rwtxn)?
         .map(|tip_hash| {
             let bmm_verification =
                 archive.get_best_main_verification(&rwtxn, tip_hash)?;
-            Ok::<_, Error>(Tip {
+            Ok::<_, archive::Error>(Tip {
                 block_hash: tip_hash,
                 main_block_hash: bmm_verification,
             })
@@ -393,13 +360,13 @@ fn reorg_to_tip(
         {
             continue;
         }
-        rwtxn.commit().map_err(RwTxnError::from)?;
+        rwtxn.commit()?;
         tracing::info!("synced to tip: {}", new_tip.block_hash);
-        rwtxn = env.write_txn().map_err(EnvError::from)?;
+        rwtxn = env.write_txn()?;
     }
     let tip = state.try_get_tip(&rwtxn)?;
     assert_eq!(tip, Some(new_tip.block_hash));
-    rwtxn.commit().map_err(RwTxnError::from)?;
+    rwtxn.commit()?;
     tracing::info!("synced to tip: {}", new_tip.block_hash);
     Ok(true)
 }
@@ -413,15 +380,6 @@ struct NetTaskContext {
     net: Net,
     state: State,
 }
-
-/// Message indicating a tip that is ready to reorg to, with the address of the
-/// peer connection that caused the request, if it originated from a peer.
-/// If the request originates from this node, then the socket address is
-/// None.
-/// An optional oneshot sender can be used receive the result of attempting
-/// to reorg to the new tip, on the corresponding oneshot receiver.
-type NewTipReadyMessage =
-    (Tip, Option<SocketAddr>, Option<oneshot::Sender<bool>>);
 
 struct NetTask {
     ctxt: NetTaskContext,
@@ -818,7 +776,11 @@ impl NetTask {
             // An optional oneshot sender can be used receive the result of
             // attempting to reorg to the new tip, on the corresponding oneshot
             // receiver.
-            NewTipReady(Tip, Option<SocketAddr>, Option<oneshot::Sender<bool>>),
+            NewTipReady(
+                Tip,
+                Option<SocketAddr>,
+                Option<oneshot::Sender<NewTipReadyResult>>,
+            ),
             PeerInfo(Option<(SocketAddr, Option<PeerConnectionInfo>)>),
             // Signal to reconnect to a peer
             ReconnectPeer(SocketAddr),
@@ -976,7 +938,11 @@ impl NetTask {
                             &self.ctxt.state,
                             new_tip,
                         )
-                    })?;
+                    })
+                    .into_nested()?
+                    .inspect_err(|err| {
+                        tracing::warn!("{:#}", ErrorChain::new(err))
+                    });
                     if let Some(resp_tx) = resp_tx {
                         let () = resp_tx
                             .send(reorg_applied)
@@ -1180,7 +1146,7 @@ impl NetTaskHandle {
     pub async fn new_tip_ready_confirm(
         &self,
         new_tip: Tip,
-    ) -> Result<bool, Error> {
+    ) -> Result<NewTipReadyResult, Error> {
         tracing::debug!(?new_tip, "sending new tip ready confirm");
 
         let (oneshot_tx, oneshot_rx) = oneshot::channel();

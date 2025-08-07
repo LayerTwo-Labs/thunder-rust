@@ -13,6 +13,7 @@ use thunder::{
             generated::{validator_service_server, wallet_service_server},
         },
     },
+    util::ErrorChain,
     wallet::{self, Wallet},
 };
 use tokio::{spawn, sync::RwLock as TokioRwLock, task::JoinHandle};
@@ -395,14 +396,20 @@ impl App {
                 .inspect_err(|err| {
                     tracing::error!("{:#}", thunder::util::ErrorChain::new(err))
                 })? {
-                true => {
+                Ok(true) => {
                     tracing::debug!(
                          %main_hash, "mine: BMM accepted as new tip",
                     );
                 }
-                false => {
+                Ok(false) => {
                     tracing::warn!(
                         %main_hash, "mine: BMM not accepted as new tip",
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        %main_hash, "mine: BMM not accepted as new tip: {:#}",
+                        ErrorChain::new(&err)
                     );
                 }
             }

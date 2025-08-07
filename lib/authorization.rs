@@ -1,4 +1,7 @@
+use std::borrow::Borrow;
+
 use borsh::BorshSerialize;
+use fatality::fatality;
 use rayon::{
     iter::{IntoParallelRefIterator as _, ParallelIterator as _},
     slice::ParallelSlice as _,
@@ -7,16 +10,17 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::types::{
-    Address, AuthorizedTransaction, Body, GetAddress, Transaction, Verify,
+    Address, Authorized, AuthorizedTransaction, Body, GetAddress, Transaction,
 };
 
 pub use ed25519_dalek::{
     Signature, SignatureError, Signer, SigningKey, Verifier, VerifyingKey,
 };
 
-#[derive(Debug, thiserror::Error)]
+#[fatality(splitable)]
 pub enum Error {
     #[error("borsh serialization error")]
+    #[fatal]
     BorshSerialize(#[from] borsh::io::Error),
     #[error("ed25519_dalek error")]
     DalekError(#[from] SignatureError),
@@ -79,21 +83,6 @@ impl GetAddress for Authorization {
     }
 }
 
-impl Verify for Authorization {
-    type Error = Error;
-    fn verify_transaction(
-        transaction: &AuthorizedTransaction,
-    ) -> Result<(), Self::Error> {
-        verify_authorized_transaction(transaction)?;
-        Ok(())
-    }
-
-    fn verify_body(body: &Body) -> Result<(), Self::Error> {
-        verify_authorizations(body)?;
-        Ok(())
-    }
-}
-
 pub fn get_address(verifying_key: &VerifyingKey) -> Address {
     let mut hasher = blake3::Hasher::new();
     let mut reader = hasher.update(&verifying_key.to_bytes()).finalize_xof();
@@ -102,18 +91,34 @@ pub fn get_address(verifying_key: &VerifyingKey) -> Address {
     Address(output)
 }
 
-pub fn verify_authorized_transaction(
-    transaction: &AuthorizedTransaction,
-) -> Result<(), Error> {
-    let tx_bytes_canonical = borsh::to_vec(&transaction.transaction)?;
+pub fn verify_authorized_transaction<T, Authorizations>(
+    auth_tx: &Authorized<T, Authorizations>,
+) -> Result<(), Error>
+where
+    T: Borrow<Transaction>,
+    Authorizations: Borrow<[Authorization]>,
+{
+    let tx = auth_tx.transaction.borrow();
+    let authorizations = auth_tx.authorizations.borrow();
+    let verifications_required = tx.inputs.len();
+    match authorizations.len().cmp(&verifications_required) {
+        std::cmp::Ordering::Less => return Err(Error::NotEnoughAuthorizations),
+        std::cmp::Ordering::Equal => (),
+        std::cmp::Ordering::Greater => {
+            return Err(Error::TooManyAuthorizations);
+        }
+    }
+    if verifications_required == 0 {
+        return Ok(());
+    }
+    let tx_bytes_canonical = borsh::to_vec(auth_tx.transaction.borrow())?;
     let messages: Vec<_> = std::iter::repeat_n(
         tx_bytes_canonical.as_slice(),
-        transaction.authorizations.len(),
+        authorizations.len(),
     )
     .collect();
     let (verifying_keys, signatures): (Vec<VerifyingKey>, Vec<Signature>) =
-        transaction
-            .authorizations
+        authorizations
             .iter()
             .map(
                 |Authorization {
@@ -126,7 +131,7 @@ pub fn verify_authorized_transaction(
     Ok(())
 }
 
-pub fn verify_authorizations(body: &Body) -> Result<(), Error> {
+pub fn verify_body(body: &Body) -> Result<(), Error> {
     let verifications_required =
         body.transactions.par_iter().map(|tx| tx.inputs.len()).sum();
     match body.authorizations.len().cmp(&verifications_required) {

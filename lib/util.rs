@@ -138,3 +138,58 @@ impl std::fmt::Display for ErrorChain<'_> {
         Ok(())
     }
 }
+
+/// Generate three transparent newtype struct wrappers from an inner error that
+/// impls [`fatality::Split`], and impls [`fatality::Fatality`] and
+/// [`fatality::Split`] for the non-split wrapper.
+/// Accepts two args:
+/// - A name for the non-split wrapper. The split wrappers will be named
+///   `($name)Fatal` and `($name)Jfyi`. An optional visibility specifier for
+///   the generated wrappers may precede the name. The visibility for all
+///   generated structs is the same in order to impl [`fatality::Split`].
+/// - The inner error, that impls
+///   [`Debug + std::error::Error + fatality::Fatality + fatality::Split`],
+///   with an optional visibility specifier.
+macro_rules! FatalitySplitWrappers {
+    ($vis:vis $name:ident, $inner_vis:vis $inner_ty:ty) => {
+        ::paste::paste! {
+            #[derive(::std::fmt::Debug, ::thiserror::Error)]
+            #[error(transparent)]
+            #[repr(transparent)]
+            $vis struct [<$name Fatal>](
+                $inner_vis <$inner_ty as ::fatality::Split>::Fatal
+            );
+
+            #[derive(::std::fmt::Debug, ::thiserror::Error)]
+            #[error(transparent)]
+            #[repr(transparent)]
+            $vis struct [<$name Jfyi>](
+                $inner_vis <$inner_ty as ::fatality::Split>::Jfyi
+            );
+
+            #[derive(::std::fmt::Debug, ::thiserror::Error)]
+            #[error(transparent)]
+            #[repr(transparent)]
+            $vis struct $name($inner_vis $inner_ty);
+
+            impl ::fatality::Fatality for $name {
+                fn is_fatal(&self) -> bool {
+                    self.0.is_fatal()
+                }
+            }
+
+            impl ::fatality::Split for $name {
+                type Fatal = [<$name Fatal>];
+                type Jfyi = [<$name Jfyi>];
+                fn split(self) -> Result<Self::Jfyi, Self::Fatal> {
+                    match ::fatality::Split::split(self.0) {
+                        Ok(jfyi) => Ok([<$name Jfyi>](jfyi)),
+                        Err(fatal) => Err([<$name Fatal>](fatal)),
+                    }
+                }
+            }
+        }
+    };
+}
+
+pub(crate) use FatalitySplitWrappers;

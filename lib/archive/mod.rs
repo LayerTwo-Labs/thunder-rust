@@ -1,7 +1,6 @@
 use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},
-    path::PathBuf,
 };
 
 use bitcoin::{self, hashes::Hash as _};
@@ -12,59 +11,16 @@ use sneed::{
     db::error::Error as DbError, rwtxn::Error as RwTxnError,
 };
 
-use crate::types::{
-    Accumulator, BlockHash, BmmResult, Body, Header, Tip, VERSION, Version,
-    proto::mainchain,
+use crate::{
+    archive::error::ErrorInner,
+    types::{
+        Accumulator, BlockHash, BmmResult, Body, Header, Tip, VERSION, Version,
+        proto::mainchain,
+    },
 };
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error(transparent)]
-    Db(#[from] DbError),
-    #[error("Database env error")]
-    DbEnv(#[from] EnvError),
-    #[error("Database write error")]
-    DbWrite(#[from] RwTxnError),
-    #[error(
-        "Incompatible DB version ({}). Please clear the DB (`{}`) and re-sync",
-        .version,
-        .db_path.display()
-    )]
-    IncompatibleVersion { version: Version, db_path: PathBuf },
-    #[error("invalid merkle root")]
-    InvalidMerkleRoot,
-    #[error("invalid previous side hash")]
-    InvalidPrevSideHash,
-    #[error("no accumulator for block {0}")]
-    NoAccumulator(BlockHash),
-    #[error("no ancestor with depth {depth} for block {block_hash}")]
-    NoAncestor { block_hash: BlockHash, depth: u32 },
-    #[error("no mainchain ancestor with depth {depth} for block {block_hash}")]
-    NoMainAncestor {
-        block_hash: bitcoin::BlockHash,
-        depth: u32,
-    },
-    #[error("unknown block hash: {0}")]
-    NoBlockHash(BlockHash),
-    #[error("no BMM result with block {0}")]
-    NoBmmResult(BlockHash),
-    #[error("no block body with hash {0}")]
-    NoBody(BlockHash),
-    #[error("no deposits info for block {0}")]
-    NoDepositsInfo(bitcoin::BlockHash),
-    #[error("no header with hash {0}")]
-    NoHeader(BlockHash),
-    #[error("no height info for block hash {0}")]
-    NoHeight(BlockHash),
-    #[error("unknown mainchain block hash: {0}")]
-    NoMainBlockHash(bitcoin::BlockHash),
-    #[error("no mainchain block info for block hash {0}")]
-    NoMainBlockInfo(bitcoin::BlockHash),
-    #[error("no mainchain header info for block hash {0}")]
-    NoMainHeaderInfo(bitcoin::BlockHash),
-    #[error("no height info for mainchain block hash {0}")]
-    NoMainHeight(bitcoin::BlockHash),
-}
+mod error;
+pub use error::Error;
 
 #[derive(Clone)]
 pub struct Archive {
@@ -159,10 +115,11 @@ impl Archive {
                 // Merkle root structure changed in 0.13.0
                 // `deposits` and `main_bmm_commitments` were removed in
                 // 0.12.0, and `main_block_infos` was added
-                return Err(Error::IncompatibleVersion {
+                return Err(ErrorInner::IncompatibleVersion {
                     version: db_version,
                     db_path: env.path().to_path_buf(),
-                });
+                }
+                .into());
             }
             Some(_) => (),
             None => version
@@ -266,7 +223,7 @@ impl Archive {
         block_hash: BlockHash,
     ) -> Result<Accumulator, Error> {
         self.try_get_accumulator(rotxn, block_hash)?
-            .ok_or(Error::NoAccumulator(block_hash))
+            .ok_or_else(|| ErrorInner::NoAccumulator(block_hash).into())
     }
 
     pub fn try_get_height(
@@ -285,7 +242,7 @@ impl Archive {
         block_hash: BlockHash,
     ) -> Result<u32, Error> {
         self.try_get_height(rotxn, block_hash)?
-            .ok_or(Error::NoHeight(block_hash))
+            .ok_or_else(|| ErrorInner::NoHeight(block_hash).into())
     }
 
     pub fn get_bmm_results(
@@ -318,7 +275,7 @@ impl Archive {
         main_hash: bitcoin::BlockHash,
     ) -> Result<BmmResult, Error> {
         self.try_get_bmm_result(rotxn, block_hash, main_hash)?
-            .ok_or(Error::NoBmmResult(block_hash))
+            .ok_or_else(|| ErrorInner::NoBmmResult(block_hash).into())
     }
 
     pub fn try_get_body(
@@ -339,7 +296,7 @@ impl Archive {
         block_hash: BlockHash,
     ) -> Result<Body, Error> {
         self.try_get_body(rotxn, block_hash)?
-            .ok_or(Error::NoBody(block_hash))
+            .ok_or_else(|| ErrorInner::NoBody(block_hash).into())
     }
 
     pub fn try_get_header(
@@ -360,7 +317,7 @@ impl Archive {
         block_hash: BlockHash,
     ) -> Result<Header, Error> {
         self.try_get_header(rotxn, block_hash)?
-            .ok_or(Error::NoHeader(block_hash))
+            .ok_or_else(|| ErrorInner::NoHeader(block_hash).into())
     }
 
     pub fn try_get_main_block_info(
@@ -381,7 +338,7 @@ impl Archive {
         main_hash: &bitcoin::BlockHash,
     ) -> Result<mainchain::BlockInfo, Error> {
         self.try_get_main_block_info(rotxn, main_hash)?
-            .ok_or_else(|| Error::NoMainBlockInfo(*main_hash))
+            .ok_or_else(|| ErrorInner::NoMainBlockInfo(*main_hash).into())
     }
 
     pub fn try_get_main_height(
@@ -404,7 +361,7 @@ impl Archive {
         block_hash: bitcoin::BlockHash,
     ) -> Result<u32, Error> {
         self.try_get_main_height(rotxn, block_hash)?
-            .ok_or(Error::NoMainHeight(block_hash))
+            .ok_or_else(|| ErrorInner::NoMainHeight(block_hash).into())
     }
 
     pub fn try_get_main_header_info(
@@ -425,7 +382,7 @@ impl Archive {
         block_hash: &bitcoin::BlockHash,
     ) -> Result<mainchain::BlockHeaderInfo, Error> {
         self.try_get_main_header_info(rotxn, block_hash)?
-            .ok_or_else(|| Error::NoMainHeaderInfo(*block_hash))
+            .ok_or_else(|| ErrorInner::NoMainHeaderInfo(*block_hash).into())
     }
 
     pub fn try_get_main_successors(
@@ -446,7 +403,7 @@ impl Archive {
         block_hash: bitcoin::BlockHash,
     ) -> Result<HashSet<bitcoin::BlockHash>, Error> {
         self.try_get_main_successors(rotxn, block_hash)?
-            .ok_or(Error::NoMainBlockHash(block_hash))
+            .ok_or_else(|| ErrorInner::NoMainBlockHash(block_hash).into())
     }
 
     /// If block_hash is None, get genesis blocks
@@ -469,9 +426,10 @@ impl Archive {
         block_hash: Option<BlockHash>,
     ) -> Result<HashSet<BlockHash>, Error> {
         self.try_get_successors(rotxn, block_hash)?.ok_or_else(|| {
-            Error::NoBlockHash(
+            ErrorInner::NoBlockHash(
                 block_hash.expect("Successors to None should always be known"),
             )
+            .into()
         })
     }
 
@@ -493,7 +451,7 @@ impl Archive {
         block_hash: bitcoin::BlockHash,
     ) -> Result<bitcoin::Work, Error> {
         self.try_get_total_work(rotxn, block_hash)?
-            .ok_or(Error::NoMainHeaderInfo(block_hash))
+            .ok_or_else(|| ErrorInner::NoMainHeaderInfo(block_hash).into())
     }
 
     /// Try to get the best valid mainchain verification for the specified block.
@@ -523,7 +481,7 @@ impl Archive {
         block_hash: BlockHash,
     ) -> Result<bitcoin::BlockHash, Error> {
         self.try_get_best_main_verification(rotxn, block_hash)?
-            .ok_or(Error::NoBmmResult(block_hash))
+            .ok_or_else(|| ErrorInner::NoBmmResult(block_hash).into())
     }
 
     pub fn get_nth_ancestor(
@@ -537,10 +495,11 @@ impl Archive {
         while n > 0 {
             let height = self.get_height(rotxn, block_hash)?;
             if n > height {
-                return Err(Error::NoAncestor {
+                return Err(ErrorInner::NoAncestor {
                     block_hash: orig_block_hash,
                     depth: orig_n,
-                });
+                }
+                .into());
             }
             if n == 1 {
                 let parent = self
@@ -571,10 +530,11 @@ impl Archive {
         while n > 0 {
             let height = self.get_main_height(rotxn, block_hash)?;
             if n > height {
-                return Err(Error::NoMainAncestor {
+                return Err(ErrorInner::NoMainAncestor {
                     block_hash: orig_block_hash,
                     depth: orig_n,
-                });
+                }
+                .into());
             }
             if n == 1 {
                 let parent = self
@@ -708,7 +668,7 @@ impl Archive {
             None => 0,
             Some(parent) => {
                 self.try_get_height(rwtxn, parent)?
-                    .ok_or(Error::InvalidPrevSideHash)?
+                    .ok_or(ErrorInner::InvalidPrevSideHash)?
                     + 1
             }
         };
@@ -900,7 +860,10 @@ impl Archive {
             .is_none()
             && header_info.prev_block_hash != bitcoin::BlockHash::all_zeros()
         {
-            return Err(Error::NoMainHeaderInfo(header_info.prev_block_hash));
+            return Err(ErrorInner::NoMainHeaderInfo(
+                header_info.prev_block_hash,
+            )
+            .into());
         }
         let block_hash = header_info.block_hash;
         let prev_height =

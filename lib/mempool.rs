@@ -15,15 +15,27 @@ use crate::types::{
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
-    Db(#[from] DbError),
+    Db(#[from] Box<DbError>),
     #[error("Database env error")]
-    DbEnv(#[from] EnvError),
+    DbEnv(#[from] Box<EnvError>),
     #[error("Database write error")]
     DbWrite(#[from] RwTxnError),
     #[error(transparent)]
     Utreexo(#[from] UtreexoError),
     #[error("can't add transaction, utxo double spent")]
     UtxoDoubleSpent,
+}
+
+impl From<DbError> for Error {
+    fn from(err: DbError) -> Self {
+        Self::Db(Box::new(err))
+    }
+}
+
+impl From<EnvError> for Error {
+    fn from(err: EnvError) -> Self {
+        Self::DbEnv(Box::new(err))
+    }
 }
 
 #[derive(Clone)]

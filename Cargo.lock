@@ -6492,6 +6492,7 @@ dependencies = [
  "merkle-cbt",
  "nonempty",
  "parking_lot",
+ "paste",
  "prost",
  "prost-build",
  "prost-types",

@@ -20,6 +20,7 @@ use crate::{
         message::{self, Heartbeat, RequestMessage, ResponseMessage},
         request_queue,
     },
+    state,
     types::{
         AuthorizedTransaction, BlockHash, BmmResult, Header, Tip, VERSION,
     },
@@ -440,12 +441,15 @@ impl ConnectionTask {
         };
         let tip_info = 'tip_info: {
             let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
-            let Some(tip) = ctxt.state.try_get_tip(&rotxn)? else {
+            let Some(tip) =
+                ctxt.state.try_get_tip(&rotxn).map_err(state::Error::from)?
+            else {
                 break 'tip_info None;
             };
             let tip_height = ctxt
                 .state
-                .try_get_height(&rotxn)?
+                .try_get_height(&rotxn)
+                .map_err(state::Error::from)?
                 .expect("Height should be known for tip");
             let bmm_verification =
                 ctxt.archive.get_best_main_verification(&rotxn, tip)?;
@@ -789,14 +793,19 @@ impl ConnectionTask {
                     let tip_info = 'tip_info: {
                         let rotxn =
                             self.ctxt.env.read_txn().map_err(EnvError::from)?;
-                        let Some(tip) = self.ctxt.state.try_get_tip(&rotxn)?
+                        let Some(tip) = self
+                            .ctxt
+                            .state
+                            .try_get_tip(&rotxn)
+                            .map_err(state::Error::from)?
                         else {
                             break 'tip_info None;
                         };
                         let tip_height = self
                             .ctxt
                             .state
-                            .try_get_height(&rotxn)?
+                            .try_get_height(&rotxn)
+                            .map_err(state::Error::from)?
                             .expect("Height for tip should be known");
                         let bmm_verification = self
                             .ctxt

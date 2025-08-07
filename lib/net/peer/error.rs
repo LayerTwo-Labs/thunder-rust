@@ -227,4 +227,8 @@ pub enum Error {
     SendResponse(#[from] connection::SendResponse),
     #[error("state error")]
     State(#[from] crate::state::Error),
+    #[error(transparent)]
+    ValidateAuthorizedTransaction(
+        #[from] crate::state::error::ValidateAuthorizedTransaction,
+    ),
 }
