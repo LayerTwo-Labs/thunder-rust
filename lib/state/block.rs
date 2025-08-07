@@ -1,6 +1,6 @@
 //! Connect and disconnect blocks
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 
 #[cfg(feature = "utreexo")]
 use rustreexo::accumulator::node_hash::BitcoinNodeHash;
@@ -342,16 +342,18 @@ pub fn connect_prevalidated(
         .try_get(rwtxn, &())?
         .unwrap_or_default();
 
-    let mut utxo_deletes = BTreeMap::new();
-    let mut stxo_puts = BTreeMap::new();
-    let mut utxo_puts = BTreeMap::new();
+    // Pre-allocate vectors based on estimated transaction count
+    let estimated_tx_count = prevalidated.filled_transactions.len() * 2;
+    let mut utxo_deletes = Vec::with_capacity(estimated_tx_count);
+    let mut stxo_puts = Vec::with_capacity(estimated_tx_count);
+    let mut utxo_puts = Vec::with_capacity(estimated_tx_count + body.coinbase.len());
 
     for (vout, output) in body.coinbase.iter().enumerate() {
         let outpoint = OutPoint::Coinbase {
             merkle_root: header.merkle_root,
             vout: vout as u32,
         };
-        utxo_puts.insert(outpoint, output.clone());
+        utxo_puts.push((outpoint, output.clone()));
     }
 
     for filled_transaction in &prevalidated.filled_transactions {
@@ -369,8 +371,8 @@ pub fn connect_prevalidated(
                 },
             };
 
-            utxo_deletes.insert(*outpoint, ());
-            stxo_puts.insert(*outpoint, spent_output);
+            utxo_deletes.push(*outpoint);
+            stxo_puts.push((*outpoint, spent_output));
         }
 
         for (vout, output) in
@@ -380,11 +382,16 @@ pub fn connect_prevalidated(
                 txid,
                 vout: vout as u32,
             };
-            utxo_puts.insert(outpoint, output.clone());
+            utxo_puts.push((outpoint, output.clone()));
         }
     }
 
-    for outpoint in utxo_deletes.keys() {
+    // Sort vectors for optimal database access patterns
+    utxo_deletes.sort_unstable();
+    stxo_puts.sort_unstable_by_key(|(outpoint, _)| *outpoint);
+    utxo_puts.sort_unstable_by_key(|(outpoint, _)| *outpoint);
+
+    for outpoint in &utxo_deletes {
         state.utxos.delete(rwtxn, outpoint)?;
     }
 
