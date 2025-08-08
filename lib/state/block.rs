@@ -386,7 +386,15 @@ pub fn connect_prevalidated(
         }
     }
 
-    // Sort vectors for optimal database access patterns
+    // Sort vectors for optimal LMDB B-tree performance. Sorted access patterns:
+    // 1. Reduce B-tree rebalancing operations during sequential inserts/deletes
+    // 2. Improve cache locality for LMDB's memory-mapped pages
+    // 3. Allow LMDB to optimize internal operations for sequential key access
+    //
+    // This is safe because:
+    // - OutPoint implements Ord trait with deterministic ordering
+    // - Output implements Ord trait with deterministic ordering
+    // - sort_unstable() is faster than sort() and ordering stability isn't needed here
     utxo_deletes.sort_unstable();
     stxo_puts.sort_unstable_by_key(|(outpoint, _)| *outpoint);
     utxo_puts.sort_unstable_by_key(|(outpoint, _)| *outpoint);
