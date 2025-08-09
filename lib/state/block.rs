@@ -342,47 +342,66 @@ pub fn connect_prevalidated(
         .try_get(rwtxn, &())?
         .unwrap_or_default();
 
-    // Pre-allocate vectors based on estimated transaction count
-    let estimated_tx_count = prevalidated.filled_transactions.len() * 2;
-    let mut utxo_deletes = Vec::with_capacity(estimated_tx_count);
-    let mut stxo_puts = Vec::with_capacity(estimated_tx_count);
-    let mut utxo_puts = Vec::with_capacity(estimated_tx_count + body.coinbase.len());
+    // Calculate exact capacities for optimal memory allocation
+    let (total_inputs, total_outputs) = prevalidated.filled_transactions
+        .iter()
+        .fold((0, 0), |(inputs, outputs), tx| {
+            (
+                inputs + tx.transaction.inputs.len(),
+                outputs + tx.transaction.outputs.len(),
+            )
+        });
+    
+    // Pre-allocate vectors with exact capacities to minimize reallocations and memory waste
+    let mut utxo_deletes = Vec::with_capacity(total_inputs);
+    let mut stxo_puts = Vec::with_capacity(total_inputs);  
+    let mut utxo_puts = Vec::with_capacity(total_outputs + body.coinbase.len());
 
+    // Process coinbase outputs - direct construction to avoid temporary variables
     for (vout, output) in body.coinbase.iter().enumerate() {
-        let outpoint = OutPoint::Coinbase {
-            merkle_root: header.merkle_root,
-            vout: vout as u32,
-        };
-        utxo_puts.push((outpoint, output.clone()));
+        utxo_puts.push((
+            OutPoint::Coinbase {
+                merkle_root: header.merkle_root,
+                vout: vout as u32,
+            },
+            output.clone(),
+        ));
     }
 
+    // Process transactions with optimized memory allocation patterns
     for filled_transaction in &prevalidated.filled_transactions {
         let txid = filled_transaction.transaction.txid();
 
+        // Process inputs - direct construction to minimize temporary allocations
         for (vin, (outpoint, _utxo_hash)) in
             filled_transaction.transaction.inputs.iter().enumerate()
         {
             let spent_utxo = &filled_transaction.spent_utxos[vin];
-            let spent_output = SpentOutput {
-                output: spent_utxo.clone(),
-                inpoint: InPoint::Regular {
-                    txid,
-                    vin: vin as u32,
-                },
-            };
-
+            
             utxo_deletes.push(*outpoint);
-            stxo_puts.push((*outpoint, spent_output));
+            stxo_puts.push((
+                *outpoint,
+                SpentOutput {
+                    output: spent_utxo.clone(),
+                    inpoint: InPoint::Regular {
+                        txid,
+                        vin: vin as u32,
+                    },
+                },
+            ));
         }
 
+        // Process outputs - direct construction to minimize temporary allocations  
         for (vout, output) in
             filled_transaction.transaction.outputs.iter().enumerate()
         {
-            let outpoint = OutPoint::Regular {
-                txid,
-                vout: vout as u32,
-            };
-            utxo_puts.push((outpoint, output.clone()));
+            utxo_puts.push((
+                OutPoint::Regular {
+                    txid,
+                    vout: vout as u32,
+                },
+                output.clone(),
+            ));
         }
     }
 
