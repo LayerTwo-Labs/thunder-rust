@@ -343,7 +343,8 @@ pub fn connect_prevalidated(
         .unwrap_or_default();
 
     // Calculate exact capacities for optimal memory allocation
-    let (total_inputs, total_outputs) = prevalidated.filled_transactions
+    let (total_inputs, total_outputs) = prevalidated
+        .filled_transactions
         .iter()
         .fold((0, 0), |(inputs, outputs), tx| {
             (
@@ -351,10 +352,10 @@ pub fn connect_prevalidated(
                 outputs + tx.transaction.outputs.len(),
             )
         });
-    
+
     // Pre-allocate vectors with exact capacities to minimize reallocations and memory waste
     let mut utxo_deletes = Vec::with_capacity(total_inputs);
-    let mut stxo_puts = Vec::with_capacity(total_inputs);  
+    let mut stxo_puts = Vec::with_capacity(total_inputs);
     let mut utxo_puts = Vec::with_capacity(total_outputs + body.coinbase.len());
 
     // Process coinbase outputs - direct construction to avoid temporary variables
@@ -377,7 +378,7 @@ pub fn connect_prevalidated(
             filled_transaction.transaction.inputs.iter().enumerate()
         {
             let spent_utxo = &filled_transaction.spent_utxos[vin];
-            
+
             utxo_deletes.push(*outpoint);
             stxo_puts.push((
                 *outpoint,
@@ -391,7 +392,7 @@ pub fn connect_prevalidated(
             ));
         }
 
-        // Process outputs - direct construction to minimize temporary allocations  
+        // Process outputs - direct construction to minimize temporary allocations
         for (vout, output) in
             filled_transaction.transaction.outputs.iter().enumerate()
         {
