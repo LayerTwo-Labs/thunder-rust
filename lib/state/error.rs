@@ -27,6 +27,7 @@ pub enum InvalidHeader {
 
 #[allow(clippy::duplicated_attributes)]
 #[derive(Debug, Error, Transitive)]
+#[allow(clippy::duplicated_attributes)]
 #[transitive(from(db::Clear, db::Error))]
 #[transitive(from(db::Delete, db::Error))]
 #[transitive(from(db::Error, sneed::Error))]

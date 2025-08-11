@@ -15,6 +15,7 @@ pub struct AlreadyConnected(pub SocketAddr);
 #[allow(clippy::duplicated_attributes)]
 #[derive(transitive::Transitive)]
 #[fatality(splitable)]
+#[allow(clippy::duplicated_attributes)]
 #[transitive(
     from(sneed::db::error::Put, sneed::DbError),
     from(sneed::DbError, sneed::Error),

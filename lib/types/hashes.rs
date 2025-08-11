@@ -138,6 +138,7 @@ impl utoipa::ToSchema for MerkleRoot {
 }
 
 #[derive(
+    BorshDeserialize,
     BorshSerialize,
     Clone,
     Copy,
@@ -215,6 +216,35 @@ impl utoipa::ToSchema for Txid {
 #[repr(transparent)]
 #[serde(transparent)]
 pub struct M6id(pub bitcoin::Txid);
+
+impl borsh::BorshSerialize for M6id {
+    fn serialize<W: borsh::io::Write>(
+        &self,
+        writer: &mut W,
+    ) -> borsh::io::Result<()> {
+        let bytes: &[u8; 32] = self.0.as_ref();
+        borsh::BorshSerialize::serialize(bytes, writer)
+    }
+}
+
+impl borsh::BorshDeserialize for M6id {
+    fn deserialize(buf: &mut &[u8]) -> borsh::io::Result<Self> {
+        let bytes: [u8; 32] = borsh::BorshDeserialize::deserialize(buf)?;
+        use bitcoin::hashes::Hash;
+        let txid = bitcoin::Txid::from_byte_array(bytes);
+        Ok(M6id(txid))
+    }
+
+    fn deserialize_reader<R: borsh::io::Read>(
+        reader: &mut R,
+    ) -> borsh::io::Result<Self> {
+        let mut buf = [0u8; 32];
+        reader.read_exact(&mut buf)?;
+        use bitcoin::hashes::Hash;
+        let txid = bitcoin::Txid::from_byte_array(buf);
+        Ok(M6id(txid))
+    }
+}
 
 impl std::fmt::Display for M6id {
     #[inline(always)]
