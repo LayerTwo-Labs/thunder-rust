@@ -42,7 +42,9 @@ impl TxBuilder {
             .map(|(_, output)| output.get_value())
             .sum();
         self.tx_creator.value_in = value_in;
-        spent_utxos.sort_by_key(|(outpoint, _)| format!("{outpoint}"));
+        spent_utxos.sort_by_key(|(outpoint, _)| {
+            thunder::types::OutPointKey::from(*outpoint)
+        });
         ui.separator();
         ui.monospace(format!("Total: {value_in}"));
         ui.separator();

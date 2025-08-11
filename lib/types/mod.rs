@@ -29,8 +29,8 @@ pub use address::Address;
 pub use hashes::{BlockHash, Hash, M6id, MerkleRoot, Txid, hash};
 pub use transaction::{
     Authorized, AuthorizedTransaction, Content as OutputContent,
-    FilledTransaction, GetAddress, GetValue, InPoint, OutPoint, Output,
-    PointedOutput, PointedOutputRef, SpentOutput, Transaction,
+    FilledTransaction, GetAddress, GetValue, InPoint, OutPoint, OutPointKey,
+    Output, PointedOutput, PointedOutputRef, SpentOutput, Transaction,
 };
 
 pub const THIS_SIDECHAIN: u8 = 9;
@@ -330,6 +330,10 @@ pub struct AccumulatorDiff(
 
 #[cfg(feature = "utreexo")]
 impl AccumulatorDiff {
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self(LinkedHashMap::with_capacity(capacity))
+    }
+
     pub fn insert(&mut self, utxo_hash: BitcoinNodeHash) {
         match self.0.entry(utxo_hash) {
             linked_hash_map::Entry::Occupied(entry) => {
@@ -374,7 +378,11 @@ impl Accumulator {
         &mut self,
         diff: AccumulatorDiff,
     ) -> Result<(), UtreexoError> {
-        let (mut insertions, mut deletions) = (Vec::new(), Vec::new());
+        let capacity = diff.0.len();
+        let (mut insertions, mut deletions) = (
+            Vec::with_capacity(capacity / 2 + 1),
+            Vec::with_capacity(capacity / 2 + 1),
+        );
         for (utxo_hash, insert) in diff.0 {
             if insert {
                 insertions.push(utxo_hash);
@@ -454,18 +462,6 @@ impl Serialize for Accumulator {
             .map_err(<S::Error as serde::ser::Error>::custom)?;
         <Vec<_> as Serialize>::serialize(&bytes, serializer)
     }
-}
-
-/// Get adaptive chunk size for any parallel operation
-fn get_adaptive_chunk_size(total_items: usize, base_size: usize) -> usize {
-    let num_threads = rayon::current_num_threads();
-    if total_items <= base_size {
-        return total_items;
-    }
-    // Standard chunking for multi-core systems
-    let optimal_size = std::cmp::min(base_size, total_items / num_threads);
-    // Ensure reasonable bounds
-    std::cmp::min(optimal_size, total_items)
 }
 
 /// Hash to get a [`CmbtNode`] inner commitment for a leaf value
@@ -652,103 +648,19 @@ impl Body {
             .collect()
     }
 
-    // Hash computation cache for Merkle tree operations
-    thread_local! {
-        static MERKLE_HASH_CACHE: std::cell::RefCell<HashMap<Txid, Hash>> =
-            std::cell::RefCell::new(HashMap::new());
-    }
-
-    /// Clear the Merkle hash cache (useful for testing or memory management)
-    pub fn clear_merkle_hash_cache() {
-        Self::MERKLE_HASH_CACHE.with(|cache| {
-            cache.borrow_mut().clear();
-        });
-    }
-
-    /// Get cache statistics for monitoring
-    pub fn get_merkle_cache_stats() -> (usize, usize) {
-        Self::MERKLE_HASH_CACHE.with(|cache| {
-            let cache = cache.borrow();
-            (cache.len(), cache.capacity())
-        })
-    }
-
-    /// Cached hash computation for CbmtLeafPreCommitment
-    fn cached_merkle_hash<'a>(
-        leaf_pre_commitment: &CbmtLeafPreCommitment<'a>,
-    ) -> Hash {
-        let txid = leaf_pre_commitment.tx.txid();
-        Self::MERKLE_HASH_CACHE.with(|cache| {
-            let mut cache = cache.borrow_mut();
-            if let Some(cached_hash) = cache.get(&txid) {
-                *cached_hash
-            } else {
-                let hash = hashes::hash(leaf_pre_commitment);
-                cache.insert(txid, hash);
-                hash
-            }
-        })
-    }
-
-    fn compute_merkle_leaves_simple_parallel(
+    pub fn compute_merkle_root(
+        coinbase: &[Output],
         txs: &[FilledTransaction],
-    ) -> Result<Vec<CbmtNode>, ComputeMerkleRootError> {
-        use rayon::prelude::*;
-        let n_txs = txs.len();
-        txs.par_iter()
-            .enumerate()
-            .map(|(idx, tx)| {
-                let fees = tx.get_fee().map_err(|err| {
-                    ComputeMerkleRootErrorInner {
-                        txid: tx.transaction.txid(),
-                        source: err,
-                    }
-                })?;
-                let canonical_size = tx.transaction.canonical_size();
-                let leaf_pre_commitment = CbmtLeafPreCommitment {
-                    fee: fees,
-                    canonical_size,
-                    tx: &tx.transaction,
-                };
-                Ok(CbmtNode {
-                    // Use cached hash computation instead of direct hash call
-                    commitment: Self::cached_merkle_hash(&leaf_pre_commitment),
-                    fees,
-                    canonical_size,
-                    index: (idx + n_txs) - 1,
-                })
-            })
-            .collect()
-    }
-
-    fn compute_merkle_leaves_parallel(
-        txs: &[FilledTransaction],
-    ) -> Result<Vec<CbmtNode>, ComputeMerkleRootError> {
-        use rayon::prelude::*;
-        let n_txs = txs.len();
-        // Use more conservative chunking to avoid SIMD regression
-        let chunk_size = get_adaptive_chunk_size(n_txs, 32); // Reduced base size
-        // For small datasets on 2-core systems, prefer sequential with caching
-        if n_txs <= chunk_size {
-            return Self::compute_merkle_leaves_simple_parallel(txs);
-        }
-        // Use adaptive chunk size instead of fixed 50
-        let chunks: Vec<_> = txs.chunks(chunk_size).collect();
-        tracing::debug!(
-            chunks = %chunks.len(),
-            %n_txs,
-            size = %chunk_size,
-            "Computing merkle leaves",
-        );
-        // Pre-allocate result vector for better memory efficiency
-        let results: Vec<Vec<CbmtNode>> = chunks
-            .par_iter()
-            .enumerate()
-            .map(|(chunk_id, chunk)| {
-                let chunk_start_idx = chunk_id * chunk_size;
-                let mut chunk_leaves = Vec::with_capacity(chunk.len());
-                for (local_idx, tx) in chunk.iter().enumerate() {
-                    let global_idx = chunk_start_idx + local_idx;
+    ) -> Result<MerkleRoot, ComputeMerkleRootError> {
+        let CbmtNode {
+            commitment: txs_root,
+            ..
+        } = {
+            let n_txs = txs.len();
+            let leaves: Vec<_> = txs
+                .iter()
+                .enumerate()
+                .map(|(idx, tx)| {
                     let fees = tx.get_fee().map_err(|err| {
                         ComputeMerkleRootErrorInner {
                             txid: tx.transaction.txid(),
@@ -761,36 +673,18 @@ impl Body {
                         canonical_size,
                         tx: &tx.transaction,
                     };
-                    // Use cached hash computation instead of direct hash call
-                    let commitment =
-                        Self::cached_merkle_hash(&leaf_pre_commitment);
-                    chunk_leaves.push(CbmtNode {
-                        commitment,
+                    Ok::<_, ComputeMerkleRootError>(CbmtNode {
+                        commitment: hashes::hash(&leaf_pre_commitment),
                         fees,
                         canonical_size,
-                        index: (global_idx + n_txs) - 1,
-                    });
-                }
-                Ok(chunk_leaves)
-            })
-            .collect::<Result<Vec<_>, ComputeMerkleRootError>>()?;
-        // Flatten results
-        Ok(results.into_iter().flatten().collect())
-    }
-
-    pub fn compute_merkle_root(
-        coinbase: &[Output],
-        txs: &[FilledTransaction],
-    ) -> Result<MerkleRoot, ComputeMerkleRootError> {
-        let CbmtNode {
-            commitment: txs_root,
-            ..
-        } = {
-            let leaves = Self::compute_merkle_leaves_parallel(txs)?;
+                        // see https://github.com/nervosnetwork/merkle-tree/blob/5d1898263e7167560fdaa62f09e8d52991a1c712/README.md#tree-struct
+                        index: (idx + n_txs) - 1,
+                    })
+                })
+                .collect::<Result<_, _>>()?;
             CbmtWithFeeTotal::build_merkle_root(leaves.as_slice())
         };
-        // TODO: Compute actual merkle root instead of just a hash.
-        // Consider parallelizing this hash too for large coinbases
+        // FIXME: Compute actual merkle root instead of just a hash.
         let coinbase_root = hashes::hash(&coinbase);
         // TODO: Should this include `total_fees`?
         let root = hashes::hash(&(coinbase_root, txs_root)).into();
@@ -882,6 +776,11 @@ impl Body {
             .map(|output| output.get_value())
             .checked_sum()
             .ok_or(AmountOverflowError)
+    }
+
+    /// Calculate total number of inputs across all transactions in a block body
+    pub fn inputs_len(&self) -> usize {
+        self.transactions.iter().map(|t| t.inputs.len()).sum()
     }
 }
 

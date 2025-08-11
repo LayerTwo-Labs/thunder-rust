@@ -1,7 +1,5 @@
 //! Connect and disconnect blocks
 
-use std::collections::{BTreeMap, HashSet};
-
 #[cfg(feature = "utreexo")]
 use rustreexo::accumulator::node_hash::BitcoinNodeHash;
 use sneed::{RoTxn, RwTxn, db::error::Error as DbError};
@@ -13,8 +11,8 @@ use crate::{
     state::{Error, PrevalidatedBlock, State, error},
     types::{
         AmountOverflowError, Body, FilledTransaction, GetAddress as _,
-        GetValue as _, Header, InPoint, MerkleRoot, OutPoint, SpentOutput,
-        Verify as _,
+        GetValue as _, Header, InPoint, MerkleRoot, OutPoint, OutPointKey,
+        Output, SpentOutput, Verify as _,
     },
 };
 
@@ -24,6 +22,7 @@ pub fn validate(
     header: &Header,
     body: &Body,
 ) -> Result<(bitcoin::Amount, MerkleRoot), Error> {
+    use rayon::prelude::ParallelSliceMut;
     let tip_hash = state.try_get_tip(rotxn)?;
     if header.prev_side_hash != tip_hash {
         let err = error::InvalidHeader::PrevSideHash {
@@ -86,20 +85,34 @@ pub fn validate(
         return Err(err);
     }
     let mut total_fees = bitcoin::Amount::ZERO;
-    let mut spent_utxos = HashSet::new();
+    let total_inputs = body.inputs_len();
+
+    // Collect all inputs as fixed-width keys for efficient double-spend detection via sort-and-scan
+    let mut all_input_keys = Vec::with_capacity(total_inputs);
+    for filled_transaction in &filled_transactions {
+        for (outpoint, _) in &filled_transaction.transaction.inputs {
+            all_input_keys.push(OutPointKey::from(outpoint));
+        }
+    }
+
+    // Sort and check for duplicate outpoints (double-spend detection)
+    all_input_keys.par_sort_unstable();
+    if all_input_keys.windows(2).any(|w| w[0] == w[1]) {
+        return Err(Error::UtxoDoubleSpent);
+    }
+
+    // Process transactions for utreexo and fee validation
     for filled_transaction in &filled_transactions {
         #[cfg(feature = "utreexo")]
         let txid = filled_transaction.transaction.txid();
         #[cfg(feature = "utreexo")]
         // hashes of spent utxos, used to verify the utreexo proof
-        let mut spent_utxo_hashes = Vec::<BitcoinNodeHash>::new();
-        for (outpoint, utxo_hash) in &filled_transaction.transaction.inputs {
+        let mut spent_utxo_hashes = Vec::<BitcoinNodeHash>::with_capacity(
+            filled_transaction.transaction.inputs.len(),
+        );
+        for (_outpoint, utxo_hash) in &filled_transaction.transaction.inputs {
             #[cfg(not(feature = "utreexo"))]
             let _ = utxo_hash;
-            if spent_utxos.contains(outpoint) {
-                return Err(Error::UtxoDoubleSpent);
-            }
-            spent_utxos.insert(*outpoint);
             #[cfg(feature = "utreexo")]
             {
                 spent_utxo_hashes.push(utxo_hash.into());
@@ -167,6 +180,7 @@ pub fn prevalidate(
     header: &Header,
     body: &Body,
 ) -> Result<PrevalidatedBlock, Error> {
+    use rayon::prelude::ParallelSliceMut;
     let tip_hash = state.try_get_tip(rotxn)?;
     if header.prev_side_hash != tip_hash {
         let err = error::InvalidHeader::PrevSideHash {
@@ -229,20 +243,34 @@ pub fn prevalidate(
         return Err(err);
     }
     let mut total_fees = bitcoin::Amount::ZERO;
-    let mut spent_utxos = HashSet::new();
+    let total_inputs = body.inputs_len();
+
+    // Collect all inputs as fixed-width keys for efficient double-spend detection via sort-and-scan
+    let mut all_input_keys = Vec::with_capacity(total_inputs);
+    for filled_transaction in &filled_transactions {
+        for (outpoint, _) in &filled_transaction.transaction.inputs {
+            all_input_keys.push(OutPointKey::from(outpoint));
+        }
+    }
+
+    // Sort and check for duplicate outpoints (double-spend detection)
+    all_input_keys.par_sort_unstable();
+    if all_input_keys.windows(2).any(|w| w[0] == w[1]) {
+        return Err(Error::UtxoDoubleSpent);
+    }
+
+    // Process transactions for utreexo and fee validation
     for filled_transaction in &filled_transactions {
         #[cfg(feature = "utreexo")]
         let txid = filled_transaction.transaction.txid();
         #[cfg(feature = "utreexo")]
         // hashes of spent utxos, used to verify the utreexo proof
-        let mut spent_utxo_hashes = Vec::<BitcoinNodeHash>::new();
-        for (outpoint, utxo_hash) in &filled_transaction.transaction.inputs {
+        let mut spent_utxo_hashes = Vec::<BitcoinNodeHash>::with_capacity(
+            filled_transaction.transaction.inputs.len(),
+        );
+        for (_outpoint, utxo_hash) in &filled_transaction.transaction.inputs {
             #[cfg(not(feature = "utreexo"))]
             let _ = utxo_hash;
-            if spent_utxos.contains(outpoint) {
-                return Err(Error::UtxoDoubleSpent);
-            }
-            spent_utxos.insert(*outpoint);
             #[cfg(feature = "utreexo")]
             {
                 spent_utxo_hashes.push(utxo_hash.into());
@@ -306,6 +334,7 @@ pub fn prevalidate(
         computed_merkle_root: merkle_root,
         total_fees,
         coinbase_value,
+        next_height: height,
         #[cfg(feature = "utreexo")]
         accumulator_diff,
     })
@@ -318,23 +347,10 @@ pub fn connect_prevalidated(
     body: &Body,
     prevalidated: PrevalidatedBlock,
 ) -> Result<MerkleRoot, Error> {
-    let tip_hash = state.try_get_tip(rwtxn)?;
-    if tip_hash != header.prev_side_hash {
-        let err = error::InvalidHeader::PrevSideHash {
-            expected: tip_hash,
-            received: header.prev_side_hash,
-        };
-        return Err(Error::InvalidHeader(err));
-    }
-
+    use rayon::prelude::{
+        IntoParallelRefIterator, ParallelIterator, ParallelSliceMut,
+    };
     let merkle_root = prevalidated.computed_merkle_root;
-    if merkle_root != header.merkle_root {
-        let err = Error::InvalidBody {
-            expected: header.merkle_root,
-            computed: merkle_root,
-        };
-        return Err(err);
-    }
 
     #[cfg(feature = "utreexo")]
     let mut accumulator = state
@@ -342,16 +358,32 @@ pub fn connect_prevalidated(
         .try_get(rwtxn, &())?
         .unwrap_or_default();
 
-    let mut utxo_deletes = BTreeMap::new();
-    let mut stxo_puts = BTreeMap::new();
-    let mut utxo_puts = BTreeMap::new();
+    // Calculate precise capacities for optimal Vec performance
+    let total_inputs: usize = prevalidated
+        .filled_transactions
+        .iter()
+        .map(|tx| tx.transaction.inputs.len())
+        .sum();
+    let total_outputs: usize = prevalidated
+        .filled_transactions
+        .iter()
+        .map(|tx| tx.transaction.outputs.len())
+        .sum::<usize>()
+        + body.coinbase.len();
+
+    // Use Vec + sort_unstable instead of BTreeMap for better performance
+    let mut utxo_deletes: Vec<OutPoint> = Vec::with_capacity(total_inputs);
+    let mut stxo_puts: Vec<(OutPoint, SpentOutput)> =
+        Vec::with_capacity(total_inputs);
+    let mut utxo_puts: Vec<(OutPoint, Output)> =
+        Vec::with_capacity(total_outputs);
 
     for (vout, output) in body.coinbase.iter().enumerate() {
         let outpoint = OutPoint::Coinbase {
             merkle_root: header.merkle_root,
             vout: vout as u32,
         };
-        utxo_puts.insert(outpoint, output.clone());
+        utxo_puts.push((outpoint, output.clone()));
     }
 
     for filled_transaction in &prevalidated.filled_transactions {
@@ -369,8 +401,8 @@ pub fn connect_prevalidated(
                 },
             };
 
-            utxo_deletes.insert(*outpoint, ());
-            stxo_puts.insert(*outpoint, spent_output);
+            utxo_deletes.push(*outpoint);
+            stxo_puts.push((*outpoint, spent_output));
         }
 
         for (vout, output) in
@@ -380,28 +412,53 @@ pub fn connect_prevalidated(
                 txid,
                 vout: vout as u32,
             };
-            utxo_puts.insert(outpoint, output.clone());
+            utxo_puts.push((outpoint, output.clone()));
         }
     }
 
-    for outpoint in utxo_deletes.keys() {
-        state.utxos.delete(rwtxn, outpoint)?;
+    // Pre-encode all keys in parallel and serialize values for cursor operations
+    let mut utxo_delete_keys: Vec<OutPointKey> =
+        utxo_deletes.par_iter().map(OutPointKey::from).collect();
+
+    let mut stxo_put_data: Vec<(OutPointKey, &SpentOutput)> = stxo_puts
+        .par_iter()
+        .map(|(op, spent)| {
+            let key = OutPointKey::from(op);
+            (key, spent)
+        })
+        .collect();
+
+    let mut utxo_put_data: Vec<(OutPointKey, &Output)> = utxo_puts
+        .par_iter()
+        .map(|(op, output)| {
+            let key = OutPointKey::from(op);
+            (key, output)
+        })
+        .collect();
+
+    // Sort all vectors in parallel for optimal cursor access
+    utxo_delete_keys.par_sort_unstable();
+    stxo_put_data.par_sort_unstable_by_key(|(key, _)| *key);
+    utxo_put_data.par_sort_unstable_by_key(|(key, _)| *key);
+
+    // Direct database operations using pre-encoded OutPointKey (optimal B-tree access)
+    for key in &utxo_delete_keys {
+        state.utxos.delete(rwtxn, key)?;
     }
 
-    for (outpoint, spent_output) in &stxo_puts {
-        state.stxos.put(rwtxn, outpoint, spent_output)?;
+    for (key, spent_output) in stxo_put_data {
+        state.stxos.put(rwtxn, &key, spent_output)?;
     }
 
-    for (outpoint, output) in &utxo_puts {
-        state.utxos.put(rwtxn, outpoint, output)?;
+    for (key, output) in utxo_put_data {
+        state.utxos.put(rwtxn, &key, output)?;
     }
 
     let block_hash = header.hash();
-    let height = state.try_get_height(rwtxn)?.map_or(0, |height| height + 1);
 
-    // Update tip and height using regular database operations
+    // Update tip and height using precomputed values (no redundant DB reads)
     state.tip.put(rwtxn, &(), &block_hash)?;
-    state.height.put(rwtxn, &(), &height)?;
+    state.height.put(rwtxn, &(), &prevalidated.next_height)?;
 
     #[cfg(feature = "utreexo")]
     // Apply utreexo accumulator diff
@@ -447,24 +504,28 @@ pub fn connect(
             };
             accumulator_diff.insert((&pointed_output).into());
         }
-        state.utxos.put(rwtxn, &outpoint, output)?;
+        let key = OutPointKey::from(&outpoint);
+        state.utxos.put(rwtxn, &key, output)?;
     }
-    let mut filled_txs: Vec<FilledTransaction> = Vec::new();
+    let mut filled_txs: Vec<FilledTransaction> =
+        Vec::with_capacity(body.transactions.len());
     for transaction in &body.transactions {
-        let mut spent_utxos = Vec::new();
+        let mut spent_utxos = Vec::with_capacity(transaction.inputs.len());
         let txid = transaction.txid();
         for (vin, (outpoint, utxo_hash)) in
             transaction.inputs.iter().enumerate()
         {
             #[cfg(not(feature = "utreexo"))]
             let _ = utxo_hash;
+            let key = OutPointKey::from(outpoint);
             let spent_output =
-                state.utxos.try_get(rwtxn, outpoint)?.ok_or(Error::NoUtxo {
+                state.utxos.try_get(rwtxn, &key)?.ok_or(Error::NoUtxo {
                     outpoint: *outpoint,
                 })?;
             #[cfg(feature = "utreexo")]
             accumulator_diff.remove(utxo_hash.into());
-            state.utxos.delete(rwtxn, outpoint)?;
+            let key = OutPointKey::from(outpoint);
+            state.utxos.delete(rwtxn, &key)?;
             let spent_output = SpentOutput {
                 output: spent_output,
                 inpoint: InPoint::Regular {
@@ -472,7 +533,8 @@ pub fn connect(
                     vin: vin as u32,
                 },
             };
-            state.stxos.put(rwtxn, outpoint, &spent_output)?;
+            let key = OutPointKey::from(outpoint);
+            state.stxos.put(rwtxn, &key, &spent_output)?;
             spent_utxos.push(spent_output.output);
         }
         for (vout, output) in transaction.outputs.iter().enumerate() {
@@ -488,7 +550,8 @@ pub fn connect(
                 };
                 accumulator_diff.insert((&pointed_output).into());
             }
-            state.utxos.put(rwtxn, &outpoint, output)?;
+            let key = OutPointKey::from(&outpoint);
+            state.utxos.put(rwtxn, &key, output)?;
         }
         let filled_tx = FilledTransaction {
             spent_utxos,
@@ -567,11 +630,8 @@ pub fn disconnect_tip(
                     };
                     accumulator_diff.remove((&pointed_output).into());
                 }
-                if state
-                    .utxos
-                    .delete(rwtxn, &outpoint)
-                    .map_err(DbError::from)?
-                {
+                let key = OutPointKey::from(&outpoint);
+                if state.utxos.delete(rwtxn, &key).map_err(DbError::from)? {
                     Ok(())
                 } else {
                     Err(Error::NoUtxo { outpoint })
@@ -585,20 +645,16 @@ pub fn disconnect_tip(
             .try_for_each(|(outpoint, utxo_hash)| {
                 #[cfg(not(feature = "utreexo"))]
                 let _ = utxo_hash;
-                if let Some(spent_output) = state
-                    .stxos
-                    .try_get(rwtxn, outpoint)
-                    .map_err(DbError::from)?
+                let key = OutPointKey::from(outpoint);
+                if let Some(spent_output) =
+                    state.stxos.try_get(rwtxn, &key).map_err(DbError::from)?
                 {
                     #[cfg(feature = "utreexo")]
                     accumulator_diff.insert(utxo_hash.into());
-                    state
-                        .stxos
-                        .delete(rwtxn, outpoint)
-                        .map_err(DbError::from)?;
+                    state.stxos.delete(rwtxn, &key).map_err(DbError::from)?;
                     state
                         .utxos
-                        .put(rwtxn, outpoint, &spent_output.output)
+                        .put(rwtxn, &key, &spent_output.output)
                         .map_err(DbError::from)?;
                     Ok(())
                 } else {
@@ -628,11 +684,8 @@ pub fn disconnect_tip(
                 };
                 accumulator_diff.remove((&pointed_output).into());
             }
-            if state
-                .utxos
-                .delete(rwtxn, &outpoint)
-                .map_err(DbError::from)?
-            {
+            let key = OutPointKey::from(&outpoint);
+            if state.utxos.delete(rwtxn, &key).map_err(DbError::from)? {
                 Ok(())
             } else {
                 Err(Error::NoUtxo { outpoint })

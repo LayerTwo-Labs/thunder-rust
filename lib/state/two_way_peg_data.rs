@@ -14,7 +14,7 @@ use crate::{
     },
     types::{
         AggregatedWithdrawal, AmountOverflowError, InPoint, M6id, OutPoint,
-        Output, OutputContent, SpentOutput, WithdrawalBundle,
+        OutPointKey, Output, OutputContent, SpentOutput, WithdrawalBundle,
         WithdrawalBundleEvent, WithdrawalBundleStatus,
         proto::mainchain::{BlockEvent, TwoWayPegData},
     },
@@ -69,7 +69,7 @@ fn collect_withdrawal_bundle(
                     .main_fee
                     .checked_add(main_fee)
                     .ok_or(AmountOverflowError)?;
-                aggregated.spend_utxos.insert(outpoint, output);
+                aggregated.spend_utxos.insert(outpoint.into(), output);
             }
             Ok::<_, Error>(())
         })?;
@@ -81,7 +81,7 @@ fn collect_withdrawal_bundle(
     aggregated_withdrawals.sort_by_key(|a| std::cmp::Reverse(a.clone()));
     let mut fee = bitcoin::Amount::ZERO;
     let mut spend_utxos = BTreeMap::<OutPoint, Output>::new();
-    let mut bundle_outputs = vec![];
+    let mut bundle_outputs = Vec::with_capacity(MAX_BUNDLE_OUTPUTS);
     for aggregated in &aggregated_withdrawals {
         if bundle_outputs.len() > MAX_BUNDLE_OUTPUTS {
             break;
@@ -131,14 +131,15 @@ fn connect_withdrawal_bundle_submitted(
                 });
                 accumulator_diff.remove(utxo_hash.into());
             }
-            state.utxos.delete(rwtxn, outpoint).map_err(DbError::from)?;
+            let key = OutPointKey::from(outpoint);
+            state.utxos.delete(rwtxn, &key).map_err(DbError::from)?;
             let spent_output = SpentOutput {
                 output: spend_output.clone(),
                 inpoint: InPoint::Withdrawal { m6id },
             };
             state
                 .stxos
-                .put(rwtxn, outpoint, &spent_output)
+                .put(rwtxn, &key, &spent_output)
                 .map_err(DbError::from)?;
         }
         state
@@ -244,15 +245,18 @@ fn connect_withdrawal_bundle_confirmed(
                 #[cfg(feature = "utreexo")]
                 {
                     let utxo_hash = hash(&PointedOutputRef {
-                        outpoint: *outpoint,
+                        outpoint: outpoint.into(),
                         output: &spent_output.output,
                     });
                     accumulator_diff.remove(utxo_hash.into());
                 }
             }
             state.utxos.clear(rwtxn).map_err(DbError::from)?;
-            bundle =
-                WithdrawalBundleInfo::UnknownConfirmed { spend_utxos: utxos };
+            let spend_utxos: BTreeMap<OutPoint, Output> = utxos
+                .into_iter()
+                .map(|(key, output)| (key.into(), output))
+                .collect();
+            bundle = WithdrawalBundleInfo::UnknownConfirmed { spend_utxos };
         } else {
             return Err(Error::UnknownWithdrawalBundleConfirmed {
                 event_block_hash: *event_block_hash,
@@ -302,10 +306,11 @@ fn connect_withdrawal_bundle_failed(
         | WithdrawalBundleInfo::UnknownConfirmed { .. } => (),
         WithdrawalBundleInfo::Known(bundle) => {
             for (outpoint, output) in bundle.spend_utxos() {
-                state.stxos.delete(rwtxn, outpoint).map_err(DbError::from)?;
+                let key = OutPointKey::from(outpoint);
+                state.stxos.delete(rwtxn, &key).map_err(DbError::from)?;
                 state
                     .utxos
-                    .put(rwtxn, outpoint, output)
+                    .put(rwtxn, &key, output)
                     .map_err(DbError::from)?;
                 #[cfg(feature = "utreexo")]
                 {
@@ -400,7 +405,7 @@ fn connect_event(
             let output = &deposit.output;
             state
                 .utxos
-                .put(rwtxn, &outpoint, output)
+                .put(rwtxn, &OutPointKey::from(&outpoint), output)
                 .map_err(DbError::from)?;
             #[cfg(feature = "utreexo")]
             {
@@ -562,7 +567,7 @@ fn disconnect_withdrawal_bundle_submitted(
             for (outpoint, output) in bundle.spend_utxos().iter().rev() {
                 if !state
                     .stxos
-                    .delete(rwtxn, outpoint)
+                    .delete(rwtxn, &OutPointKey::from(outpoint))
                     .map_err(DbError::from)?
                 {
                     return Err(Error::NoStxo {
@@ -571,7 +576,7 @@ fn disconnect_withdrawal_bundle_submitted(
                 };
                 state
                     .utxos
-                    .put(rwtxn, outpoint, output)
+                    .put(rwtxn, &OutPointKey::from(outpoint), output)
                     .map_err(DbError::from)?;
                 #[cfg(feature = "utreexo")]
                 {
@@ -629,11 +634,11 @@ fn disconnect_withdrawal_bundle_confirmed(
             for (outpoint, output) in spend_utxos {
                 state
                     .utxos
-                    .put(rwtxn, &outpoint, &output)
+                    .put(rwtxn, &OutPointKey::from(&outpoint), &output)
                     .map_err(DbError::from)?;
                 if !state
                     .stxos
-                    .delete(rwtxn, &outpoint)
+                    .delete(rwtxn, &OutPointKey::from(&outpoint))
                     .map_err(DbError::from)?
                 {
                     return Err(Error::NoStxo { outpoint });
@@ -691,9 +696,13 @@ fn disconnect_withdrawal_bundle_failed(
                 };
                 state
                     .stxos
-                    .put(rwtxn, outpoint, &spent_output)
+                    .put(rwtxn, &OutPointKey::from(outpoint), &spent_output)
                     .map_err(DbError::from)?;
-                if state.utxos.delete(rwtxn, outpoint).map_err(DbError::from)? {
+                if state
+                    .utxos
+                    .delete(rwtxn, &OutPointKey::from(outpoint))
+                    .map_err(DbError::from)?
+                {
                     return Err(Error::NoUtxo {
                         outpoint: *outpoint,
                     });
@@ -790,7 +799,7 @@ fn disconnect_event(
             let outpoint = OutPoint::Deposit(deposit.outpoint);
             if !state
                 .utxos
-                .delete(rwtxn, &outpoint)
+                .delete(rwtxn, &OutPointKey::from(&outpoint))
                 .map_err(DbError::from)?
             {
                 return Err(Error::NoUtxo { outpoint });

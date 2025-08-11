@@ -138,6 +138,7 @@ impl utoipa::ToSchema for MerkleRoot {
 }
 
 #[derive(
+    BorshDeserialize,
     BorshSerialize,
     Clone,
     Copy,

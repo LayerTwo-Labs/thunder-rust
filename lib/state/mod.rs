@@ -20,9 +20,10 @@ use crate::{
     types::{
         Address, AmountOverflowError, AmountUnderflowError, Authorized,
         AuthorizedTransaction, BlockHash, Body, FilledTransaction, GetAddress,
-        GetValue, Header, InPoint, M6id, MerkleRoot, OutPoint, Output,
-        SpentOutput, Transaction, VERSION, Verify, Version, WithdrawalBundle,
-        WithdrawalBundleStatus, proto::mainchain::TwoWayPegData,
+        GetValue, Header, InPoint, M6id, MerkleRoot, OutPoint, OutPointKey,
+        Output, SpentOutput, Transaction, VERSION, Verify, Version,
+        WithdrawalBundle, WithdrawalBundleStatus,
+        proto::mainchain::TwoWayPegData,
     },
     util::Watchable,
 };
@@ -46,6 +47,7 @@ pub struct PrevalidatedBlock {
     pub computed_merkle_root: MerkleRoot,
     pub total_fees: bitcoin::Amount,
     pub coinbase_value: bitcoin::Amount,
+    pub next_height: u32, // Precomputed next height to avoid DB read in write txn
     #[cfg(feature = "utreexo")]
     pub accumulator_diff: crate::types::AccumulatorDiff,
 }
@@ -79,9 +81,8 @@ pub struct State {
     tip: DatabaseUnique<UnitKey, SerdeBincode<BlockHash>>,
     /// Current height
     height: DatabaseUnique<UnitKey, SerdeBincode<u32>>,
-    pub utxos: DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<Output>>,
-    pub stxos:
-        DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<SpentOutput>>,
+    pub utxos: DatabaseUnique<OutPointKey, SerdeBincode<Output>>,
+    pub stxos: DatabaseUnique<OutPointKey, SerdeBincode<SpentOutput>>,
     /// Pending withdrawal bundle and block height
     pub pending_withdrawal_bundle:
         DatabaseUnique<UnitKey, SerdeBincode<(WithdrawalBundle, u32)>>,
@@ -204,7 +205,11 @@ impl State {
         &self,
         rotxn: &RoTxn,
     ) -> Result<HashMap<OutPoint, Output>, db_error::Iter> {
-        let utxos = self.utxos.iter(rotxn)?.collect()?;
+        let utxos: HashMap<OutPoint, Output> = self
+            .utxos
+            .iter(rotxn)?
+            .map(|(key, output)| Ok((key.into(), output)))
+            .collect()?;
         Ok(utxos)
     }
 
@@ -213,10 +218,11 @@ impl State {
         rotxn: &RoTxn,
         addresses: &HashSet<Address>,
     ) -> Result<HashMap<OutPoint, Output>, db_error::Iter> {
-        let utxos = self
+        let utxos: HashMap<OutPoint, Output> = self
             .utxos
             .iter(rotxn)?
             .filter(|(_, output)| Ok(addresses.contains(&output.address)))
+            .map(|(key, output)| Ok((key.into(), output)))
             .collect()?;
         Ok(utxos)
     }
@@ -289,10 +295,11 @@ impl State {
         rotxn: &RoTxn,
         transaction: &Transaction,
     ) -> Result<FilledTransaction, Error> {
-        let mut spent_utxos = vec![];
+        let mut spent_utxos = Vec::with_capacity(transaction.inputs.len());
         for (outpoint, _) in &transaction.inputs {
+            let key = OutPointKey::from(outpoint);
             let utxo =
-                self.utxos.try_get(rotxn, outpoint)?.ok_or(Error::NoUtxo {
+                self.utxos.try_get(rotxn, &key)?.ok_or(Error::NoUtxo {
                     outpoint: *outpoint,
                 })?;
             spent_utxos.push(utxo);
@@ -459,7 +466,8 @@ impl State {
             .iter(rotxn)
             .map_err(DbError::from)?
             .map_err(|err| DbError::from(err).into())
-            .for_each(|(outpoint, output)| {
+            .for_each(|(outpoint_key, output)| {
+                let outpoint = outpoint_key.into();
                 if let OutPoint::Deposit(_) = outpoint {
                     total_deposit_utxo_value = total_deposit_utxo_value
                         .checked_add(output.get_value())
@@ -473,7 +481,8 @@ impl State {
             .iter(rotxn)
             .map_err(DbError::from)?
             .map_err(|err| DbError::from(err).into())
-            .for_each(|(outpoint, spent_output)| {
+            .for_each(|(outpoint_key, spent_output)| {
+                let outpoint = outpoint_key.into();
                 if let OutPoint::Deposit(_) = outpoint {
                     total_deposit_stxo_value = total_deposit_stxo_value
                         .checked_add(spent_output.output.get_value())

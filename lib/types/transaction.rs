@@ -1,5 +1,6 @@
 use bitcoin::amount::CheckedSum;
 use borsh::BorshSerialize;
+use heed::{BoxedError, BytesDecode, BytesEncode};
 #[cfg(feature = "utreexo")]
 use rustreexo::accumulator::{node_hash::BitcoinNodeHash, proof::Proof};
 use serde::{Deserialize, Serialize};
@@ -79,6 +80,140 @@ impl std::fmt::Display for OutPoint {
                 write!(f, "deposit {txid} {vout}")
             }
         }
+    }
+}
+
+/// Fixed-width lexicographically sortable key for OutPoint
+/// Layout: [tag: u8][id: 32][vout: u32 BE]
+/// - tag: 0 = Regular, 1 = Coinbase, 2 = Deposit
+/// - id: txid/merkle_root/bitcoin::txid
+/// - vout: big-endian for numeric order = lexicographic order
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct OutPointKey([u8; 37]);
+
+impl OutPointKey {
+    /// Get the raw key bytes
+    #[inline]
+    pub fn as_bytes(&self) -> &[u8; 37] {
+        &self.0
+    }
+}
+
+impl From<OutPoint> for OutPointKey {
+    #[inline]
+    fn from(op: OutPoint) -> Self {
+        let mut k = [0u8; 37];
+        match op {
+            OutPoint::Regular {
+                txid: Txid(id),
+                vout,
+            } => {
+                k[0] = 0;
+                k[1..33].copy_from_slice(&id);
+                k[33..37].copy_from_slice(&vout.to_be_bytes());
+            }
+            OutPoint::Coinbase { merkle_root, vout } => {
+                k[0] = 1;
+                let id: Hash = merkle_root.into();
+                k[1..33].copy_from_slice(&id);
+                k[33..37].copy_from_slice(&vout.to_be_bytes());
+            }
+            OutPoint::Deposit(ref bop) => {
+                k[0] = 2;
+                k[1..33].copy_from_slice(bop.txid.as_ref());
+                k[33..37].copy_from_slice(&bop.vout.to_be_bytes());
+            }
+        }
+        Self(k)
+    }
+}
+
+impl From<&OutPoint> for OutPointKey {
+    #[inline]
+    fn from(op: &OutPoint) -> Self {
+        Self::from(*op)
+    }
+}
+
+impl From<OutPointKey> for OutPoint {
+    #[inline]
+    fn from(key: OutPointKey) -> Self {
+        let tag = key.0[0];
+        let mut id = [0u8; 32];
+        id.copy_from_slice(&key.0[1..33]);
+        let vout =
+            u32::from_be_bytes([key.0[33], key.0[34], key.0[35], key.0[36]]);
+
+        match tag {
+            0 => OutPoint::Regular {
+                txid: Txid(id),
+                vout,
+            },
+            1 => OutPoint::Coinbase {
+                merkle_root: MerkleRoot::from(Hash::from(id)),
+                vout,
+            },
+            2 => {
+                use bitcoin::hashes::Hash as BitcoinHash;
+                let txid = bitcoin::Txid::from_byte_array(id);
+                OutPoint::Deposit(bitcoin::OutPoint { txid, vout })
+            }
+            _ => unreachable!("Invalid OutPointKey tag"),
+        }
+    }
+}
+
+impl From<&OutPointKey> for OutPoint {
+    #[inline]
+    fn from(key: &OutPointKey) -> Self {
+        Self::from(*key)
+    }
+}
+
+impl Ord for OutPointKey {
+    #[inline]
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.cmp(&other.0)
+    }
+}
+
+impl PartialOrd for OutPointKey {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl AsRef<[u8]> for OutPointKey {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+// Database key encoding traits for direct LMDB usage
+impl<'a> BytesEncode<'a> for OutPointKey {
+    type EItem = OutPointKey;
+
+    #[inline]
+    fn bytes_encode(
+        item: &'a Self::EItem,
+    ) -> Result<std::borrow::Cow<'a, [u8]>, BoxedError> {
+        Ok(std::borrow::Cow::Borrowed(item.as_ref()))
+    }
+}
+
+impl<'a> BytesDecode<'a> for OutPointKey {
+    type DItem = OutPointKey;
+
+    #[inline]
+    fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem, BoxedError> {
+        if bytes.len() != 37 {
+            return Err("OutPointKey must be exactly 37 bytes".into());
+        }
+        let mut key = [0u8; 37];
+        key.copy_from_slice(bytes);
+        Ok(OutPointKey(key))
     }
 }
 

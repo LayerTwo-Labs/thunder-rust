@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, env, path::Path};
 
 use bitcoin::Amount;
 use criterion::Criterion;
@@ -21,6 +21,31 @@ use crate::{
         proto::mainchain::{self, TwoWayPegData},
     },
 };
+
+// Use mimalloc as the global allocator for better performance
+#[cfg_attr(
+    all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"),
+    global_allocator
+)]
+static GLOBAL: mimalloc_rspack::MiMalloc = mimalloc_rspack::MiMalloc;
+
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+pub fn configure_mimalloc() {
+    // This code is safe because it only sets environment variables
+    unsafe {
+        env::set_var("MIMALLOC_ABANDONED_PAGE_LIMIT", "4");
+        env::set_var("MIMALLOC_ABANDONED_PAGE_RESET", "1");
+        env::set_var("MIMALLOC_ARENA_LIMIT", "4");
+        env::set_var("MIMALLOC_USE_NUMA_NODES", "all");
+        env::set_var("MIMALLOC_EAGER_COMMIT", "1");
+        env::set_var("MIMALLOC_EAGER_REGION_COMMIT", "1");
+        env::set_var("MIMALLOC_SEGMENT_CACHE", "32"); // Increase from default 4. Costs RAM
+        env::set_var("MIMALLOC_LARGE_OS_PAGES", "1"); // Use large OS pages - something to play around with tbh
+        env::set_var("MIMALLOC_RESERVE_HUGE_OS_PAGES", "4"); // Reserve 4x2MB = 8MB huge pages
+        env::set_var("MIMALLOC_PAGE_RESET", "0"); // Don't zero pages on free
+        env::set_var("MIMALLOC_SEGMENT_RESET", "0");
+    }
+}
 
 /// Generate an empty genesis block
 fn genesis_block<Rng>(rng: &mut Rng) -> Block
@@ -200,7 +225,7 @@ fn gen_outputs<Rng>(
 where
     Rng: rand::CryptoRng + rand::Rng,
 {
-    let mut res = Vec::<Output>::new();
+    let mut res = Vec::<Output>::with_capacity(4); // Start with reasonable estimate for output count
     while value > Amount::ZERO {
         let (receiver_addr, _receiver_sk) = signers.new_signer();
         let amount = if !res.is_empty() && rng.r#gen() {
@@ -296,7 +321,7 @@ where
     }
     let mut res_tx = FilledTransaction {
         transaction: Transaction::default(),
-        spent_utxos: Vec::new(),
+        spent_utxos: Vec::with_capacity(4), // Reasonable estimate for transaction inputs
     };
     let mut value_in = Amount::ZERO;
     while let Some((outpoint, output)) = utxo_set.sample_remove() {
@@ -389,8 +414,8 @@ fn gen_block<Rng>(
 where
     Rng: rand::CryptoRng + rand::Rng,
 {
-    let mut txs = Vec::new();
-    let mut used_signers = Vec::new();
+    let mut txs = Vec::with_capacity(txs_per_block as usize);
+    let mut used_signers = Vec::with_capacity((txs_per_block * 2) as usize); // Estimate ~2 inputs per tx
     let mut fees = Amount::ZERO;
     // Generate txs
     {
@@ -423,9 +448,13 @@ where
     };
     // update UTXO set and accumulator
     {
+        // Estimate capacity: coinbase outputs + transaction outputs (avg ~2 per tx)
+        let estimated_capacity =
+            body.coinbase.len() + body.transactions.len() * 2;
         #[cfg(feature = "utreexo")]
-        let mut accumulator_diff = AccumulatorDiff::default();
-        let mut new_utxos = Vec::new();
+        let mut accumulator_diff =
+            AccumulatorDiff::with_capacity(estimated_capacity * 2); // Insert + remove operations
+        let mut new_utxos = Vec::with_capacity(estimated_capacity);
         for (vout, output) in body.coinbase.iter().cloned().enumerate() {
             let outpoint = OutPoint::Coinbase {
                 merkle_root,
@@ -637,13 +666,21 @@ const SEED_PREIMAGE: &[u8] = b"connect-blocks-benchmark";
 /// Number of blocks to process per LMDB transaction.
 /// Batching blocks reduces commit overhead and amortizes B+tree rebalancing.
 /// Higher values improve throughput but increase memory usage and crash recovery time.
-/// Hardcoded to 5 for the specific benchmark, but should be adjusted.
-const BATCH_SIZE: u32 = 5;
+/// Hardcoded to 10 for the specific benchmark, but should be adjusted.
+const BATCH_SIZE: u32 = 10;
 
 pub fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("connect_blocks", |b| {
         use rand::SeedableRng as _;
         let mut rng = rand_chacha::ChaCha20Rng::from_seed(hash(SEED_PREIMAGE));
+        #[cfg(all(
+            target_arch = "x86_64",
+            target_os = "linux",
+            target_env = "gnu"
+        ))]
+        {
+            configure_mimalloc();
+        }
         b.iter_custom(|iters| {
             let mut res = std::time::Duration::ZERO;
             for _ in 0..iters {
