@@ -31,7 +31,7 @@ impl UtxoSelector {
                 let mut utxos: Vec<_> =
                     (*utxos_read).clone().into_iter().collect();
                 drop(utxos_read);
-                utxos.sort_by_key(|(outpoint, _)| format!("{outpoint}"));
+                utxos.sort_by_key(|(outpoint, _)| thunder::types::OutPointKey::from_outpoint(outpoint));
                 (total, utxos)
             })
             .unwrap_or_default();
