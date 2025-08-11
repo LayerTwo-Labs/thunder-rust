@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use clap::Parser as _;
-
+use mimalloc::MiMalloc;
 use tokio::{signal::ctrl_c, sync::oneshot};
 use tracing_subscriber::{
     Layer, filter as tracing_filter, fmt::format, layer::SubscriberExt,
@@ -16,6 +16,9 @@ mod util;
 
 use line_buffer::{LineBuffer, LineBufferWriter};
 use util::saturating_pred_level;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 /// The empty string target `""` can be used to set a default level.
 fn targets_directive_str<'a, Targets>(targets: Targets) -> String

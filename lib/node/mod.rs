@@ -21,8 +21,8 @@ use crate::{
     types::{
         Accumulator, Address, AmountOverflowError, AmountUnderflowError,
         Authorized, AuthorizedTransaction, BlockHash, BmmResult, Body,
-        FilledTransaction, GetValue, Header, Network, OutPoint, Output,
-        SpentOutput, Tip, Transaction, Txid, WithdrawalBundle,
+        FilledTransaction, GetValue, Header, Network, OutPoint, OutPointKey,
+        Output, SpentOutput, Tip, Transaction, Txid, WithdrawalBundle,
         proto::{self, mainchain},
     },
     util::Watchable,
@@ -251,10 +251,11 @@ where
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         let mut spent = vec![];
         for outpoint in outpoints {
+            let key = OutPointKey::from(outpoint);
             if let Some(output) = self
                 .state
                 .stxos
-                .try_get(&rotxn, outpoint)
+                .try_get(&rotxn, &key)
                 .map_err(DbError::from)?
             {
                 spent.push((*outpoint, output));

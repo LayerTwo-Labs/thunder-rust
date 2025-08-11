@@ -19,7 +19,7 @@ pub enum Error {
     #[error("borsh serialization error")]
     BorshSerialize(#[from] borsh::io::Error),
     #[error("ed25519_dalek error")]
-    DalekError(#[from] SignatureError),
+    Dalek(#[from] SignatureError),
     #[error("not enough authorizations")]
     NotEnoughAuthorizations,
     #[error("too many authorizations")]

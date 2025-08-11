@@ -14,7 +14,9 @@ impl Withdrawals {
         });
         if let Some(bundle) = bundle {
             let mut spent_utxos: Vec<_> = bundle.spend_utxos().iter().collect();
-            spent_utxos.sort_by_key(|(outpoint, _)| format!("{outpoint}"));
+            spent_utxos.sort_by_key(|(outpoint, _)| {
+                thunder::types::OutPointKey::from(*outpoint)
+            });
             egui::Grid::new("bundle_utxos")
                 .striped(true)
                 .show(ui, |ui| {
