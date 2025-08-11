@@ -33,6 +33,7 @@ tiny-bip39 = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-util = { workspace = true, features = ["rt"] }
 tonic = { workspace = true }
+typed-arena = "2.0.2"
 tonic-health = "0.12.3"
 # needs to line up with jsonrpsee tower version...
 tower = "0.5.2"

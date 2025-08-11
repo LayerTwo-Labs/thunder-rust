@@ -60,6 +60,7 @@ tokio-util = { workspace = true, features = ["rt"] }
 tonic = { workspace = true }
 tracing = { workspace = true }
 transitive = "1.0.1"
+typed-arena = "2.0.2"
 utoipa = { workspace = true, features = ["macros", "non_strict_integers"] }
 
 [dependencies.educe]

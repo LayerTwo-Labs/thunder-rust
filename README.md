@@ -1,32 +1,23 @@
-# Thunder
+# Improve the Benchmark performance
 
-## Building
+I updated the following (with reasoning) :
 
-Check out the repo with `git clone`, and then
+### Memory Allocation
 
-```bash
-$ git submodule update --init
-$ cargo build
-```
+• Implements `typed-arena::Arena` for `SpentOutput` objects to reduce heap fragmentation and improve cache locality by grouping similar allocations together
 
-## Running
+• Replaces `BTreeMap` collections with `Vec` structures to eliminate balanced tree overhead and enable contiguous memory access patterns
 
-```bash
-# Starts the RPC-API server
-$ cargo run --bin thunder_app -- --headless
+• Pre-calculates `input_count` and `output_count` to initialize vectors with exact capacity, avoiding dynamic reallocations during transaction processing
 
-# Runs the CLI, for interacting with the JSON-RPC server
-$ cargo run --bin thunder_app_cli
+### Parallel Processing & Database Optimizations
 
-# Runs the user interface. Includes an embedded 
-# version of the JSON-RPC server. 
-$ cargo run --bin thunder_app -- --headless
-```
+• Implements `par_sort_unstable()` and `par_sort_unstable_by_key()` to leverage multi-core processing
 
-## Benchmarks
+• Sorts data structures before DB writes to enable sequential LMDB access patterns, reducing disk seeks and improving cache utilization
 
-```bash
-$ RUSTFLAGS="-C target-cpu=native" cargo bench --package thunder --benches --features "bench"
-```
+• Uses both arena-allocated (`spent_outputs_arena`) and regular vectors (`spent_outputs`) to optimize memory layout
 
-Alternatively, if GNU `bc` and `jq` is installed, one can run `scripts/bench.sh` from the root of this repo.
+• Removes BTreeMap insertion/lookup overhead by directly appending to vectors during transaction processing, reducing computational complexity from O(log n) to O(1)
+
+
