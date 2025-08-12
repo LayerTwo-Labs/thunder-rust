@@ -153,7 +153,7 @@ pub fn verify_authorizations(body: &Body) -> Result<(), Error> {
             });
     let pairs = body.authorizations.iter().zip(messages).collect::<Vec<_>>();
     assert_eq!(pairs.len(), body.authorizations.len());
-    const CHUNK_SIZE: usize = 1 << 14;
+    const CHUNK_SIZE: usize = 8192;
     pairs.par_chunks(CHUNK_SIZE).try_for_each(|chunk| {
         let (signatures, verifying_keys, messages): (
             Vec<Signature>,
