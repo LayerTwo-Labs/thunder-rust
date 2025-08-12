@@ -231,3 +231,65 @@ where
         .expect("failed to serialize with borsh to compute a hash");
     blake3::hash(&data_serialized).into()
 }
+
+/// Cross-platform SIMD-optimized batch hashing for merkle computations
+/// Uses BLAKE3's built-in vectorization which auto-detects available SIMD instructions
+pub fn hash_batch_optimized<T>(data_batch: &[T]) -> Vec<Hash>
+where
+    T: BorshSerialize + Sync,
+{
+    if data_batch.is_empty() {
+        return Vec::new();
+    }
+    
+    // For small batches, use regular hashing
+    if data_batch.len() < 4 {
+        return data_batch.iter().map(hash).collect();
+    }
+    
+    // BLAKE3 has built-in SIMD optimization that adapts to the platform
+    // Use parallel hashing for better throughput on multi-core systems
+    use rayon::prelude::*;
+    
+    // Optimal chunk size for SIMD processing (based on BLAKE3's internal buffering)
+    let chunk_size = std::cmp::max(4, data_batch.len() / rayon::current_num_threads().max(1));
+    
+    data_batch
+        .par_chunks(chunk_size)
+        .flat_map(|chunk| {
+            // BLAKE3 automatically uses available SIMD instructions (SSE2, SSE4.1, AVX2, AVX-512, NEON)
+            // based on CPU feature detection at runtime
+            chunk.iter().map(|item| {
+                let data_serialized = borsh::to_vec(item)
+                    .expect("failed to serialize with borsh to compute a hash");
+                blake3::hash(&data_serialized).into()
+            }).collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// SIMD-optimized hash computation for pre-serialized data
+/// Leverages BLAKE3's cross-platform SIMD capabilities
+pub fn hash_preserialized_batch(serialized_data: &[Vec<u8>]) -> Vec<Hash> {
+    if serialized_data.is_empty() {
+        return Vec::new();
+    }
+    
+    if serialized_data.len() < 4 {
+        return serialized_data.iter().map(|data| blake3::hash(data).into()).collect();
+    }
+    
+    // Use BLAKE3's multi-threading capability for large batches
+    use rayon::prelude::*;
+    
+    serialized_data
+        .par_iter()
+        .map(|data| {
+            // BLAKE3 automatically uses the best SIMD implementation available:
+            // - x86/x86_64: AVX-512, AVX2, SSE4.1, SSE2 (runtime detection)
+            // - ARM: NEON (runtime detection) 
+            // - Other: scalar fallback
+            blake3::hash(data).into()
+        })
+        .collect()
+}

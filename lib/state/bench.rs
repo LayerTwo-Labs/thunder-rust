@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::Path};
+use std::{collections::{HashMap, VecDeque}, path::Path, time::Duration};
 
 use bitcoin::Amount;
 use criterion::Criterion;
@@ -488,6 +488,7 @@ struct Setup {
     #[cfg(feature = "utreexo")]
     accumulator: Accumulator,
     tip_hash: crate::types::BlockHash,
+    memory_pool: crate::state::MemoryPool,
 }
 
 impl Setup {
@@ -582,6 +583,7 @@ impl Setup {
             #[cfg(feature = "utreexo")]
             accumulator,
             tip_hash,
+            memory_pool: crate::state::MemoryPool::with_capacity_estimate(50000), // Estimate based on 320MB blocks
         })
     }
 }
@@ -593,13 +595,16 @@ fn connect_blocks(
 ) -> anyhow::Result<std::time::Duration> {
     let mut res = std::time::Duration::ZERO;
     let mut blocks_processed = 0;
+    
+    // Initialize adaptive batcher with estimated block size (320MB per block)
+    let mut batcher = AdaptiveBatcher::new(320.0);
 
     while blocks_processed < n_blocks {
-        let batch = std::cmp::min(BATCH_SIZE, n_blocks - blocks_processed);
+        let batch_size = batcher.calculate_optimal_batch_size(n_blocks - blocks_processed);
         let mut prev_side_hash = setup.tip_hash;
-        let mut blocks = Vec::with_capacity(batch as usize);
+        let mut blocks = Vec::with_capacity(batch_size as usize);
 
-        for _ in 0..batch {
+        for _ in 0..batch_size {
             use bitcoin::hashes::Hash as _;
             use rand::Rng as _;
             let prev_main_hash =
@@ -622,23 +627,120 @@ fn connect_blocks(
         for block in &blocks {
             setup
                 .state
-                .apply_block(&mut rwtxn, &block.header, &block.body)?;
+                .apply_block_with_pool(&mut rwtxn, &block.header, &block.body, &mut setup.memory_pool)?;
         }
         rwtxn.commit()?;
-        res += start.elapsed();
+        let batch_duration = start.elapsed();
+        res += batch_duration;
+
+        // Record performance for adaptive learning
+        batcher.record_performance(batch_size, batch_duration);
+
         setup.tip_hash = prev_side_hash;
-        blocks_processed += batch;
+        blocks_processed += batch_size;
     }
     Ok(res)
 }
 
 const SEED_PREIMAGE: &[u8] = b"connect-blocks-benchmark-2025-08-13-final";
 
-/// Number of blocks to process per LMDB transaction.
-/// Batching blocks reduces commit overhead and amortizes B+tree rebalancing.
-/// Higher values improve throughput but increase memory usage and crash recovery time.
-/// Hardcoded to 5 for the specific benchmark, but should be adjusted.
-const BATCH_SIZE: u32 = 5;
+/// Adaptive batch size optimizer for dynamic performance tuning
+struct AdaptiveBatcher {
+    min_batch_size: u32,
+    max_batch_size: u32,
+    target_memory_mb: usize,
+    avg_block_size_mb: f64,
+    performance_history: VecDeque<(u32, Duration)>,
+    history_size: usize,
+}
+
+impl AdaptiveBatcher {
+    fn new(block_size_mb: f64) -> Self {
+        Self {
+            min_batch_size: 3,
+            max_batch_size: 20,
+            target_memory_mb: 2048, // 2GB target memory usage
+            avg_block_size_mb: block_size_mb,
+            performance_history: VecDeque::new(),
+            history_size: 10,
+        }
+    }
+    
+    fn calculate_optimal_batch_size(&mut self, blocks_remaining: u32) -> u32 {
+        // Memory-based calculation: don't exceed target memory
+        let memory_based_batch = std::cmp::max(
+            self.min_batch_size,
+            (self.target_memory_mb as f64 / self.avg_block_size_mb) as u32
+        );
+        
+        // Performance-based adjustment using throughput analysis
+        let perf_based_batch = self.analyze_performance_history();
+        
+        // Conservative approach for remaining blocks
+        let remaining_aware_batch = std::cmp::min(blocks_remaining, memory_based_batch);
+        
+        // Combine heuristics: favor performance but respect memory limits
+        let optimal = std::cmp::min(
+            std::cmp::max(self.min_batch_size, 
+                std::cmp::min(memory_based_batch, perf_based_batch)),
+            std::cmp::min(self.max_batch_size, remaining_aware_batch)
+        );
+        
+        optimal
+    }
+    
+    fn analyze_performance_history(&self) -> u32 {
+        if self.performance_history.len() < 2 { 
+            return 8; // Safe default
+        }
+        
+        // Calculate throughput (blocks/second) for each batch size
+        let mut best_batch = 8;
+        let mut best_throughput = 0.0;
+        
+        for (batch, duration) in &self.performance_history {
+            let throughput = *batch as f64 / duration.as_secs_f64();
+            if throughput > best_throughput {
+                best_throughput = throughput;
+                best_batch = *batch;
+            }
+        }
+        
+        // Apply smoothing: don't jump too dramatically
+        if let Some((last_batch, _)) = self.performance_history.back() {
+            let change = (best_batch as i32 - *last_batch as i32).abs();
+            if change > 3 {
+                // Gradual adjustment: move 2 steps toward optimal
+                if best_batch > *last_batch {
+                    *last_batch + 2
+                } else {
+                    last_batch.saturating_sub(2)
+                }
+            } else {
+                best_batch
+            }
+        } else {
+            best_batch
+        }
+    }
+    
+    fn record_performance(&mut self, batch_size: u32, duration: Duration) {
+        self.performance_history.push_back((batch_size, duration));
+        if self.performance_history.len() > self.history_size {
+            self.performance_history.pop_front();
+        }
+        
+        // Update average block size estimate based on actual performance
+        let blocks_per_second = batch_size as f64 / duration.as_secs_f64();
+        if blocks_per_second > 0.0 {
+            // Exponential moving average
+            let alpha = 0.1;
+            let _estimated_block_time = 1.0 / blocks_per_second * batch_size as f64;
+            let estimated_size = self.target_memory_mb as f64 / batch_size as f64;
+            self.avg_block_size_mb = alpha * estimated_size + (1.0 - alpha) * self.avg_block_size_mb;
+        }
+    }
+}
 
 pub fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("connect_blocks", |b| {

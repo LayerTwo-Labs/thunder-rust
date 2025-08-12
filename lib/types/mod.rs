@@ -10,7 +10,7 @@ use serde_with::serde_as;
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, HashMap},
-    sync::LazyLock,
+    sync::{Arc, LazyLock, Mutex},
 };
 use thiserror::Error;
 use utoipa::ToSchema;
@@ -610,6 +610,11 @@ pub struct Body {
     pub authorizations: Vec<Authorization>,
 }
 
+// Hash computation cache for Merkle tree operations
+// Using Arc<Mutex> for thread safety in parallel processing
+static MERKLE_HASH_CACHE: LazyLock<Arc<Mutex<HashMap<Txid, Hash>>>> = 
+    LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
+
 impl Body {
     pub fn new(
         authorized_transactions: Vec<AuthorizedTransaction>,
@@ -652,25 +657,21 @@ impl Body {
             .collect()
     }
 
-    // Hash computation cache for Merkle tree operations
-    thread_local! {
-        static MERKLE_HASH_CACHE: std::cell::RefCell<HashMap<Txid, Hash>> =
-            std::cell::RefCell::new(HashMap::new());
-    }
 
     /// Clear the Merkle hash cache (useful for testing or memory management)
     pub fn clear_merkle_hash_cache() {
-        Self::MERKLE_HASH_CACHE.with(|cache| {
-            cache.borrow_mut().clear();
-        });
+        if let Ok(mut cache) = MERKLE_HASH_CACHE.lock() {
+            cache.clear();
+        }
     }
 
     /// Get cache statistics for monitoring
     pub fn get_merkle_cache_stats() -> (usize, usize) {
-        Self::MERKLE_HASH_CACHE.with(|cache| {
-            let cache = cache.borrow();
+        if let Ok(cache) = MERKLE_HASH_CACHE.lock() {
             (cache.len(), cache.capacity())
-        })
+        } else {
+            (0, 0)
+        }
     }
 
     /// Cached hash computation for CbmtLeafPreCommitment
@@ -678,8 +679,7 @@ impl Body {
         leaf_pre_commitment: &CbmtLeafPreCommitment<'a>,
     ) -> Hash {
         let txid = leaf_pre_commitment.tx.txid();
-        Self::MERKLE_HASH_CACHE.with(|cache| {
-            let mut cache = cache.borrow_mut();
+        if let Ok(mut cache) = MERKLE_HASH_CACHE.lock() {
             if let Some(cached_hash) = cache.get(&txid) {
                 *cached_hash
             } else {
@@ -687,7 +687,59 @@ impl Body {
                 cache.insert(txid, hash);
                 hash
             }
-        })
+        } else {
+            // Fallback: compute hash without caching if lock fails
+            hashes::hash(leaf_pre_commitment)
+        }
+    }
+
+    /// SIMD-optimized batch hash computation for merkle leaves
+    /// Uses cross-platform SIMD via BLAKE3's built-in optimizations
+    fn cached_merkle_hash_batch(
+        leaf_pre_commitments: &[CbmtLeafPreCommitment],
+    ) -> Vec<Hash> {
+        if leaf_pre_commitments.len() < 8 {
+            // For small batches, use individual cached hashing
+            return leaf_pre_commitments
+                .iter()
+                .map(Self::cached_merkle_hash)
+                .collect();
+        }
+
+        if let Ok(mut cache) = MERKLE_HASH_CACHE.lock() {
+            let mut results = Vec::with_capacity(leaf_pre_commitments.len());
+            let mut uncached_items = Vec::new();
+            let mut uncached_indices = Vec::new();
+
+            // First pass: collect cached results and identify uncached items
+            for (idx, leaf_pre_commitment) in leaf_pre_commitments.iter().enumerate() {
+                let txid = leaf_pre_commitment.tx.txid();
+                if let Some(cached_hash) = cache.get(&txid) {
+                    results.push(*cached_hash);
+                } else {
+                    results.push([0u8; 32]); // placeholder
+                    uncached_items.push(leaf_pre_commitment);
+                    uncached_indices.push(idx);
+                }
+            }
+
+            // batch compute uncached hashes using SIMD optimization
+            if !uncached_items.is_empty() {
+                let uncached_hashes = hashes::hash_batch_optimized(&uncached_items);
+                
+                // Store in cache and update results
+                for (hash, &idx) in uncached_hashes.iter().zip(&uncached_indices) {
+                    let txid = leaf_pre_commitments[idx].tx.txid();
+                    cache.insert(txid, *hash);
+                    results[idx] = *hash;
+                }
+            }
+
+            results
+        } else {
+            // Fallback: compute all hashes without caching if lock fails
+            hashes::hash_batch_optimized(leaf_pre_commitments)
+        }
     }
 
     fn compute_merkle_leaves_simple_parallel(
@@ -746,9 +798,12 @@ impl Body {
             .enumerate()
             .map(|(chunk_id, chunk)| {
                 let chunk_start_idx = chunk_id * chunk_size;
-                let mut chunk_leaves = Vec::with_capacity(chunk.len());
-                for (local_idx, tx) in chunk.iter().enumerate() {
-                    let global_idx = chunk_start_idx + local_idx;
+                
+                // Prepare all leaf pre-commitments for batch processing
+                let mut leaf_pre_commitments = Vec::with_capacity(chunk.len());
+                let mut fees_and_sizes = Vec::with_capacity(chunk.len());
+                
+                for tx in chunk.iter() {
                     let fees = tx.get_fee().map_err(|err| {
                         ComputeMerkleRootErrorInner {
                             txid: tx.transaction.txid(),
@@ -756,21 +811,34 @@ impl Body {
                         }
                     })?;
                     let canonical_size = tx.transaction.canonical_size();
-                    let leaf_pre_commitment = CbmtLeafPreCommitment {
+                    
+                    leaf_pre_commitments.push(CbmtLeafPreCommitment {
                         fee: fees,
                         canonical_size,
                         tx: &tx.transaction,
-                    };
-                    // Use cached hash computation instead of direct hash call
-                    let commitment =
-                        Self::cached_merkle_hash(&leaf_pre_commitment);
-                    chunk_leaves.push(CbmtNode {
-                        commitment,
-                        fees,
-                        canonical_size,
-                        index: (global_idx + n_txs) - 1,
                     });
+                    fees_and_sizes.push((fees, canonical_size));
                 }
+                
+                // Use SIMD-optimized batch hash computation
+                let commitments = Self::cached_merkle_hash_batch(&leaf_pre_commitments);
+                
+                // Build final nodes
+                let chunk_leaves: Vec<CbmtNode> = commitments
+                    .into_iter()
+                    .enumerate()
+                    .map(|(local_idx, commitment)| {
+                        let global_idx = chunk_start_idx + local_idx;
+                        let (fees, canonical_size) = fees_and_sizes[local_idx];
+                        CbmtNode {
+                            commitment,
+                            fees,
+                            canonical_size,
+                            index: (global_idx + n_txs) - 1,
+                        }
+                    })
+                    .collect();
+                
                 Ok(chunk_leaves)
             })
             .collect::<Result<Vec<_>, ComputeMerkleRootError>>()?;
