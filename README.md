@@ -10,6 +10,9 @@ I updated the following (with reasoning) :
 
 • Pre-calculates `input_count` and `output_count` to initialize vectors with exact capacity, avoiding dynamic reallocations during transaction processing
 
+• Implements temporary vector reuse with `temp_outpoints` and `temp_spent_outputs` that are cleared and reused across transactions to minimize allocations
+
+
 ### Parallel Processing & Database Optimizations
 
 • Implements `par_sort_unstable()` and `par_sort_unstable_by_key()` to leverage multi-core processing
@@ -20,4 +23,4 @@ I updated the following (with reasoning) :
 
 • Removes BTreeMap insertion/lookup overhead by directly appending to vectors during transaction processing, reducing computational complexity from O(log n) to O(1)
 
-
+• Implements single-pass processing with reused temporary buffers and batch operations using `extend_from_slice()` for better memory access patterns

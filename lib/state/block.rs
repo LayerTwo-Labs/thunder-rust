@@ -361,8 +361,9 @@ pub fn connect_prevalidated(
     let mut spent_outputs = Vec::with_capacity(input_count);
     let mut new_utxos = Vec::with_capacity(output_count + body.coinbase.len());
 
-    // Arena-allocated vector for spent outputs to reduce heap fragmentation
-    let mut spent_outputs_arena = Vec::with_capacity(input_count);
+    // Temporary working vectors for reuse across transactions to reduce allocations
+    let mut temp_outpoints = Vec::with_capacity(input_count);
+    let mut temp_spent_outputs = Vec::with_capacity(input_count);
 
     // Handle coinbase transaction outputs first
     for (index, output) in body.coinbase.iter().enumerate() {
@@ -377,13 +378,17 @@ pub fn connect_prevalidated(
     for tx_data in &prevalidated.filled_transactions {
         let transaction_id = tx_data.transaction.txid();
 
+        // Clear and reuse temporary vectors for this transaction
+        temp_outpoints.clear();
+        temp_spent_outputs.clear();
+
         // Handle transaction inputs (spending existing UTXOs)
         for (input_idx, (outpoint_ref, _hash)) in
             tx_data.transaction.inputs.iter().enumerate()
         {
             let consumed_utxo = &tx_data.spent_utxos[input_idx];
 
-            deletion_queue.push(*outpoint_ref);
+            temp_outpoints.push(*outpoint_ref);
 
             // Use arena allocation for spent output to reduce heap fragmentation
             let spent_output_data = SpentOutput {
@@ -393,10 +398,14 @@ pub fn connect_prevalidated(
                     vin: input_idx as u32,
                 },
             };
-            let spent_output =
-                spent_output_arena.alloc(spent_output_data.clone());
-            spent_outputs_arena.push((*outpoint_ref, spent_output));
-            spent_outputs.push((*outpoint_ref, spent_output_data));
+            let spent_output = spent_output_arena.alloc(spent_output_data.clone());
+            temp_spent_outputs.push((*outpoint_ref, spent_output));
+        }
+
+        // Batch append to main vectors for better memory access patterns
+        deletion_queue.extend_from_slice(&temp_outpoints);
+        for (outpoint, spent_output) in &temp_spent_outputs {
+            spent_outputs.push((*outpoint, (*spent_output).clone()));
         }
 
         // Handle transaction outputs (creating new UTXOs)
@@ -443,6 +452,8 @@ pub fn connect_prevalidated(
         let () = accumulator.apply_diff(prevalidated.accumulator_diff)?;
         state.utreexo_accumulator.put(rwtxn, &(), &accumulator)?;
     }
+        
+    // Arena allocator will handle bulk deallocation automatically when dropped
 
     Ok(merkle_root)
 }
