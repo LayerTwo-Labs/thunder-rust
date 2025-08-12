@@ -10,7 +10,6 @@
 | **Collections** | We had some BTree usage and expensive Ord derives for comparisons | Removed BTree usage from the hot path so we avoid expensive rebalancing. Rewrote `Ord` to work with a bytes-first `OutpointKey` to avoid expensive Struct comparisons |
 | **Rayon Par** | Used extensively already | Extended the use to our new Vec collections to shave some extra time off |
 | **HashMaps** | Fast, but not fast enough, and used for double spend detection | Switched to Vecs with parallel iterators
-| **Vector allocs** | Generally left to fend for themselves in terms of allocation | Most hot-path Vecs now get pre-allocated to sensible defaults. Avoids strain on growth and reallocation |
 | **Validation steps** | Double tip and merkle root verification | Verify tip once in prevalidate and carry - same with merkle
 
 ### Why💡
