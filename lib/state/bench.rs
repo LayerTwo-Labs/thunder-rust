@@ -632,7 +632,7 @@ fn connect_blocks(
     Ok(res)
 }
 
-const SEED_PREIMAGE: &[u8] = b"connect-blocks-benchmark";
+const SEED_PREIMAGE: &[u8] = b"connect-blocks-benchmark-2025-08-13-final";
 
 /// Number of blocks to process per LMDB transaction.
 /// Batching blocks reduces commit overhead and amortizes B+tree rebalancing.
