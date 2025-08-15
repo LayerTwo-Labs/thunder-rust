@@ -398,7 +398,8 @@ pub fn connect_prevalidated(
                     vin: input_idx as u32,
                 },
             };
-            let spent_output = spent_output_arena.alloc(spent_output_data.clone());
+            let spent_output =
+                spent_output_arena.alloc(spent_output_data.clone());
             temp_spent_outputs.push((*outpoint_ref, spent_output));
         }
 
@@ -452,7 +453,7 @@ pub fn connect_prevalidated(
         let () = accumulator.apply_diff(prevalidated.accumulator_diff)?;
         state.utreexo_accumulator.put(rwtxn, &(), &accumulator)?;
     }
-        
+
     // Arena allocator will handle bulk deallocation automatically when dropped
 
     Ok(merkle_root)
