@@ -156,27 +156,27 @@ pub fn verify_authorizations(body: &Body) -> Result<(), Error> {
     // Dynamically chunk sizing based on total signatures
     // For small batches, use single chunk; for large batches, optimize chunk size
     let chunk_size = if body.authorizations.len() < 1024 {
-        body.authorizations.len()  // Single chunk for small batches
+        body.authorizations.len() // Single chunk for small batches
     } else {
         // Optimal chunk size: aim for 2-4 chunks per CPU core
         let num_cpus = rayon::current_num_threads();
         std::cmp::max(1024, body.authorizations.len() / (num_cpus * 3))
-            .min(1 << 14)  // Cap at 16384
+            .min(1 << 14) // Cap at 16384
     };
-    
+
     pairs.par_chunks(chunk_size).try_for_each(|chunk| {
         // Pre-allocate vectors for better memory efficiency
         let chunk_len = chunk.len();
         let mut signatures = Vec::with_capacity(chunk_len);
         let mut verifying_keys = Vec::with_capacity(chunk_len);
         let mut messages = Vec::with_capacity(chunk_len);
-        
+
         for (auth, msg) in chunk {
             signatures.push(auth.signature);
             verifying_keys.push(auth.verifying_key);
             messages.push(*msg);
         }
-        
+
         ed25519_dalek::verify_batch(&messages, &signatures, &verifying_keys)
     })?;
     Ok(())

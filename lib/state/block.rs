@@ -2,9 +2,9 @@
 
 use std::collections::{BTreeMap, HashSet};
 
+use rayon::prelude::*;
 #[cfg(feature = "utreexo")]
 use rustreexo::accumulator::node_hash::BitcoinNodeHash;
-use rayon::prelude::*;
 use sneed::{RoTxn, RwTxn, db::error::Error as DbError};
 
 #[cfg(feature = "utreexo")]
@@ -193,7 +193,7 @@ pub fn prevalidate_parallel(
         .try_get(rotxn, &())
         .map_err(DbError::from)?
         .unwrap_or_default();
-    
+
     // Sequential transaction filling (required due to RoTxn not being Sync)
     // But we can parallelize the validation afterwards
     let filled_transactions: Vec<_> = body
@@ -201,12 +201,12 @@ pub fn prevalidate_parallel(
         .iter()
         .map(|t| state.fill_transaction(rotxn, t))
         .collect::<Result<_, _>>()?;
-    
+
     let merkle_root = Body::compute_merkle_root(
         body.coinbase.as_slice(),
         filled_transactions.as_slice(),
     )?;
-    
+
     #[cfg(feature = "utreexo")]
     let mut accumulator_diff = AccumulatorDiff::default();
     let mut coinbase_value = bitcoin::Amount::ZERO;
@@ -236,7 +236,7 @@ pub fn prevalidate_parallel(
         };
         return Err(err);
     }
-    
+
     // Parallel validation of individual transactions
     let validation_results: Vec<_> = filled_transactions
         .par_iter()
@@ -244,21 +244,27 @@ pub fn prevalidate_parallel(
         .map(|(tx_index, filled_transaction)| -> Result<_, Error> {
             #[cfg(feature = "utreexo")]
             let txid = filled_transaction.transaction.txid();
-            
+
             // Collect spent UTXOs for conflict detection later
-            let spent_outpoints: Vec<OutPoint> = filled_transaction.transaction.inputs
+            let spent_outpoints: Vec<OutPoint> = filled_transaction
+                .transaction
+                .inputs
                 .iter()
                 .map(|(outpoint, _)| *outpoint)
                 .collect();
-            
+
             #[cfg(feature = "utreexo")]
-            let spent_utxo_hashes: Vec<BitcoinNodeHash> = filled_transaction.transaction.inputs
+            let spent_utxo_hashes: Vec<BitcoinNodeHash> = filled_transaction
+                .transaction
+                .inputs
                 .iter()
                 .map(|(_, utxo_hash)| utxo_hash.into())
                 .collect();
-            
+
             #[cfg(feature = "utreexo")]
-            let output_diffs: Vec<PointedOutput> = filled_transaction.transaction.outputs
+            let output_diffs: Vec<PointedOutput> = filled_transaction
+                .transaction
+                .outputs
                 .iter()
                 .enumerate()
                 .map(|(vout, output)| {
@@ -272,10 +278,10 @@ pub fn prevalidate_parallel(
                     }
                 })
                 .collect();
-            
+
             // Validate transaction and calculate fee (this is thread-safe)
             let fee = state.validate_filled_transaction(filled_transaction)?;
-            
+
             Ok((
                 tx_index,
                 fee,
@@ -287,14 +293,15 @@ pub fn prevalidate_parallel(
             ))
         })
         .collect::<Result<Vec<_>, Error>>()?;
-    
+
     // Sequential conflict detection and accumulator updates
     let mut spent_utxos = HashSet::new();
     let mut total_fees = bitcoin::Amount::ZERO;
-    
+
     for result_tuple in validation_results {
         #[cfg(feature = "utreexo")]
-        let (tx_index, fee, spent_outpoints, spent_utxo_hashes, output_diffs) = result_tuple;
+        let (tx_index, fee, spent_outpoints, spent_utxo_hashes, output_diffs) =
+            result_tuple;
         #[cfg(not(feature = "utreexo"))]
         let (_tx_index, fee, spent_outpoints) = result_tuple;
         // Sequential double-spend check
@@ -304,23 +311,20 @@ pub fn prevalidate_parallel(
             }
             spent_utxos.insert(*outpoint);
         }
-        
-        total_fees = total_fees
-            .checked_add(fee)
-            .ok_or(AmountOverflowError)?;
-        
+
+        total_fees = total_fees.checked_add(fee).ok_or(AmountOverflowError)?;
+
         #[cfg(feature = "utreexo")]
         {
             // Sequential utreexo proof verification using transaction index
             let tx_filled = &filled_transactions[tx_index];
             let txid = tx_filled.transaction.txid();
-            if !accumulator.verify(
-                &tx_filled.transaction.proof,
-                &spent_utxo_hashes,
-            )? {
+            if !accumulator
+                .verify(&tx_filled.transaction.proof, &spent_utxo_hashes)?
+            {
                 return Err(Error::UtreexoProofFailed { txid });
             }
-            
+
             // Sequential accumulator updates
             for utxo_hash in spent_utxo_hashes {
                 accumulator_diff.remove(utxo_hash);
@@ -330,7 +334,7 @@ pub fn prevalidate_parallel(
             }
         }
     }
-    
+
     if coinbase_value > total_fees {
         return Err(Error::NotEnoughFees);
     }
@@ -348,7 +352,7 @@ pub fn prevalidate_parallel(
     if Authorization::verify_body(body).is_err() {
         return Err(Error::Authorization);
     }
-    
+
     #[cfg(feature = "utreexo")]
     {
         let () = accumulator.apply_diff(accumulator_diff.clone())?;
@@ -646,13 +650,18 @@ pub fn connect_prevalidated_with_pool(
     }
 
     // Estimate operations for memory pool sizing
-    let estimated_ops = body.coinbase.len() + 
-        prevalidated.filled_transactions.iter()
-            .map(|tx| tx.transaction.inputs.len() + tx.transaction.outputs.len())
+    let estimated_ops = body.coinbase.len()
+        + prevalidated
+            .filled_transactions
+            .iter()
+            .map(|tx| {
+                tx.transaction.inputs.len() + tx.transaction.outputs.len()
+            })
             .sum::<usize>();
-    
+
     pool.prepare_for_batch(estimated_ops);
-    let (utxo_deletes, utxo_puts, stxo_puts, _spent_utxos) = pool.get_operation_buffers();
+    let (utxo_deletes, utxo_puts, stxo_puts, _spent_utxos) =
+        pool.get_operation_buffers();
 
     #[cfg(feature = "utreexo")]
     let mut accumulator = state
@@ -700,7 +709,13 @@ pub fn connect_prevalidated_with_pool(
     }
 
     // Execute bulk database operations
-    bulk_execute_database_operations(state, rwtxn, utxo_deletes, stxo_puts, utxo_puts)?;
+    bulk_execute_database_operations(
+        state,
+        rwtxn,
+        utxo_deletes,
+        stxo_puts,
+        utxo_puts,
+    )?;
 
     let block_hash = header.hash();
     let height = state.try_get_height(rwtxn)?.map_or(0, |height| height + 1);
@@ -727,13 +742,18 @@ fn bulk_execute_database_operations(
 ) -> Result<(), Error> {
     // Sort operations for better LMDB performance (cache locality)
     let mut sorted_deletes = utxo_deletes.to_vec();
-    sorted_deletes.sort_by_key(|outpoint| borsh::to_vec(outpoint).unwrap_or_default());
-    
+    sorted_deletes
+        .sort_by_key(|outpoint| borsh::to_vec(outpoint).unwrap_or_default());
+
     let mut sorted_stxo_puts = stxo_puts.to_vec();
-    sorted_stxo_puts.sort_by_key(|(outpoint, _)| borsh::to_vec(outpoint).unwrap_or_default());
-    
+    sorted_stxo_puts.sort_by_key(|(outpoint, _)| {
+        borsh::to_vec(outpoint).unwrap_or_default()
+    });
+
     let mut sorted_utxo_puts = utxo_puts.to_vec();
-    sorted_utxo_puts.sort_by_key(|(outpoint, _)| borsh::to_vec(outpoint).unwrap_or_default());
+    sorted_utxo_puts.sort_by_key(|(outpoint, _)| {
+        borsh::to_vec(outpoint).unwrap_or_default()
+    });
 
     // Execute in optimal order: deletes first (frees space), then inserts
     for outpoint in sorted_deletes {

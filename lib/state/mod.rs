@@ -57,51 +57,54 @@ pub struct MemoryPool {
     utxo_deletes: Vec<OutPoint>,
     utxo_puts: Vec<(OutPoint, Output)>,
     stxo_puts: Vec<(OutPoint, SpentOutput)>,
-    
-    // Transaction processing buffers  
+
+    // Transaction processing buffers
     spent_utxos: HashSet<OutPoint>,
-    
+
     // Capacity tracking for adaptive growth
     max_utxos_estimate: usize,
     growth_factor: f32,
 }
 
 impl MemoryPool {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self::with_capacity_estimate(10000) // Start with reasonable default
     }
-    
+
     pub fn with_capacity_estimate(estimated_utxos: usize) -> Self {
         let capacity = (estimated_utxos as f32 * 1.5) as usize; // 50% buffer
-        
+
         Self {
             utxo_deletes: Vec::with_capacity(capacity),
             utxo_puts: Vec::with_capacity(capacity),
-            stxo_puts: Vec::with_capacity(capacity), 
+            stxo_puts: Vec::with_capacity(capacity),
             spent_utxos: HashSet::with_capacity(capacity),
             max_utxos_estimate: capacity,
             growth_factor: 1.2,
         }
     }
-    
+
     pub fn prepare_for_batch(&mut self, estimated_operations: usize) {
         // Clear without deallocating
         self.utxo_deletes.clear();
         self.utxo_puts.clear();
         self.stxo_puts.clear();
         self.spent_utxos.clear();
-        
+
         // Grow capacity if needed
         if estimated_operations > self.max_utxos_estimate {
-            let new_capacity = (estimated_operations as f32 * self.growth_factor) as usize;
+            let new_capacity =
+                (estimated_operations as f32 * self.growth_factor) as usize;
             self.grow_to_capacity(new_capacity);
             self.max_utxos_estimate = new_capacity;
         }
     }
-    
+
     fn grow_to_capacity(&mut self, capacity: usize) {
         if self.utxo_deletes.capacity() < capacity {
-            self.utxo_deletes.reserve(capacity - self.utxo_deletes.capacity());
+            self.utxo_deletes
+                .reserve(capacity - self.utxo_deletes.capacity());
         }
         if self.utxo_puts.capacity() < capacity {
             self.utxo_puts.reserve(capacity - self.utxo_puts.capacity());
@@ -110,17 +113,26 @@ impl MemoryPool {
             self.stxo_puts.reserve(capacity - self.stxo_puts.capacity());
         }
         if self.spent_utxos.capacity() < capacity {
-            self.spent_utxos.reserve(capacity - self.spent_utxos.capacity());
+            self.spent_utxos
+                .reserve(capacity - self.spent_utxos.capacity());
         }
     }
-    
-    pub fn get_operation_buffers(&mut self) -> (
+
+    #[allow(clippy::type_complexity)]
+    pub fn get_operation_buffers(
+        &mut self,
+    ) -> (
         &mut Vec<OutPoint>,
         &mut Vec<(OutPoint, Output)>,
         &mut Vec<(OutPoint, SpentOutput)>,
         &mut HashSet<OutPoint>,
     ) {
-        (&mut self.utxo_deletes, &mut self.utxo_puts, &mut self.stxo_puts, &mut self.spent_utxos)
+        (
+            &mut self.utxo_deletes,
+            &mut self.utxo_puts,
+            &mut self.stxo_puts,
+            &mut self.spent_utxos,
+        )
     }
 }
 
@@ -636,8 +648,15 @@ impl State {
         pool: &mut MemoryPool,
     ) -> Result<(), Error> {
         // Use parallel prevalidation for better performance
-        let prevalidated = self.prevalidate_block_parallel(rwtxn, header, body)?;
-        self.connect_prevalidated_block_with_pool(rwtxn, header, body, prevalidated, pool)?;
+        let prevalidated =
+            self.prevalidate_block_parallel(rwtxn, header, body)?;
+        self.connect_prevalidated_block_with_pool(
+            rwtxn,
+            header,
+            body,
+            prevalidated,
+            pool,
+        )?;
         Ok(())
     }
 
@@ -649,7 +668,14 @@ impl State {
         prevalidated: PrevalidatedBlock,
         pool: &mut MemoryPool,
     ) -> Result<MerkleRoot, Error> {
-        block::connect_prevalidated_with_pool(self, rwtxn, header, body, prevalidated, pool)
+        block::connect_prevalidated_with_pool(
+            self,
+            rwtxn,
+            header,
+            body,
+            prevalidated,
+            pool,
+        )
     }
 
     pub fn disconnect_tip(

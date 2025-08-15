@@ -612,7 +612,7 @@ pub struct Body {
 
 // Hash computation cache for Merkle tree operations
 // Using Arc<Mutex> for thread safety in parallel processing
-static MERKLE_HASH_CACHE: LazyLock<Arc<Mutex<HashMap<Txid, Hash>>>> = 
+static MERKLE_HASH_CACHE: LazyLock<Arc<Mutex<HashMap<Txid, Hash>>>> =
     LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
 
 impl Body {
@@ -656,7 +656,6 @@ impl Body {
             })
             .collect()
     }
-
 
     /// Clear the Merkle hash cache (useful for testing or memory management)
     pub fn clear_merkle_hash_cache() {
@@ -712,7 +711,9 @@ impl Body {
             let mut uncached_indices = Vec::new();
 
             // First pass: collect cached results and identify uncached items
-            for (idx, leaf_pre_commitment) in leaf_pre_commitments.iter().enumerate() {
+            for (idx, leaf_pre_commitment) in
+                leaf_pre_commitments.iter().enumerate()
+            {
                 let txid = leaf_pre_commitment.tx.txid();
                 if let Some(cached_hash) = cache.get(&txid) {
                     results.push(*cached_hash);
@@ -725,10 +726,13 @@ impl Body {
 
             // batch compute uncached hashes using SIMD optimization
             if !uncached_items.is_empty() {
-                let uncached_hashes = hashes::hash_batch_optimized(&uncached_items);
-                
+                let uncached_hashes =
+                    hashes::hash_batch_optimized(&uncached_items);
+
                 // Store in cache and update results
-                for (hash, &idx) in uncached_hashes.iter().zip(&uncached_indices) {
+                for (hash, &idx) in
+                    uncached_hashes.iter().zip(&uncached_indices)
+                {
                     let txid = leaf_pre_commitments[idx].tx.txid();
                     cache.insert(txid, *hash);
                     results[idx] = *hash;
@@ -798,11 +802,11 @@ impl Body {
             .enumerate()
             .map(|(chunk_id, chunk)| {
                 let chunk_start_idx = chunk_id * chunk_size;
-                
+
                 // Prepare all leaf pre-commitments for batch processing
                 let mut leaf_pre_commitments = Vec::with_capacity(chunk.len());
                 let mut fees_and_sizes = Vec::with_capacity(chunk.len());
-                
+
                 for tx in chunk.iter() {
                     let fees = tx.get_fee().map_err(|err| {
                         ComputeMerkleRootErrorInner {
@@ -811,7 +815,7 @@ impl Body {
                         }
                     })?;
                     let canonical_size = tx.transaction.canonical_size();
-                    
+
                     leaf_pre_commitments.push(CbmtLeafPreCommitment {
                         fee: fees,
                         canonical_size,
@@ -819,10 +823,11 @@ impl Body {
                     });
                     fees_and_sizes.push((fees, canonical_size));
                 }
-                
+
                 // Use SIMD-optimized batch hash computation
-                let commitments = Self::cached_merkle_hash_batch(&leaf_pre_commitments);
-                
+                let commitments =
+                    Self::cached_merkle_hash_batch(&leaf_pre_commitments);
+
                 // Build final nodes
                 let chunk_leaves: Vec<CbmtNode> = commitments
                     .into_iter()
@@ -838,7 +843,7 @@ impl Body {
                         }
                     })
                     .collect();
-                
+
                 Ok(chunk_leaves)
             })
             .collect::<Result<Vec<_>, ComputeMerkleRootError>>()?;
