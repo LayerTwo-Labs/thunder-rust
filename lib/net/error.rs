@@ -12,6 +12,7 @@ use crate::net::PeerConnectionError;
 pub struct AlreadyConnected(pub SocketAddr);
 
 /// Another connection can be accepted after a non-fatal error
+#[allow(clippy::duplicated_attributes)]
 #[derive(transitive::Transitive)]
 #[fatality(splitable)]
 #[transitive(
