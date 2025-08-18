@@ -661,7 +661,7 @@ fn connect_blocks(
     Ok(res)
 }
 
-const SEED_PREIMAGE: &[u8] = b"connect-blocks-benchmark";
+const SEED_PREIMAGE: &[u8] = b"connect-blocks-benchmark-2025-08-19";
 
 /// Number of blocks to process per LMDB transaction.
 /// Batching blocks reduces commit overhead and amortizes B+tree rebalancing.
@@ -684,8 +684,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         b.iter_custom(|iters| {
             let mut res = std::time::Duration::ZERO;
             for _ in 0..iters {
-                let mut setup = Setup::new(&mut rng, 800_000).unwrap();
-                res += connect_blocks(&mut setup, 200_000, 10).unwrap();
+                let mut setup = Setup::new(&mut rng, 24_000_000).unwrap();
+                res += connect_blocks(&mut setup, 600_000, 10).unwrap();
             }
             res
         })

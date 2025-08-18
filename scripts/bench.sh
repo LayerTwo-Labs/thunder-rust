@@ -6,5 +6,5 @@ MEAN_S=$(echo "scale=2; $MEAN_NANOS / 1000000000" | bc -l)
 MEDIAN_S=$(echo "scale=2; $MEDIAN_NANOS / 1000000000" | bc -l)
 echo "*************"
 echo "YOUR SCORE:  ${MEAN_S}"
-echo "Verified 10x 320mb blocks in ${MEAN_S} seconds (mean) / ${MEDIAN_S} seconds (median)."
+echo "Verified 10x 960mb blocks in ${MEAN_S} seconds (mean) / ${MEDIAN_S} seconds (median)."
 echo "*************"
