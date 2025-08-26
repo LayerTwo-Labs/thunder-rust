@@ -55,6 +55,17 @@ pub trait Rpc {
         address: Address,
     ) -> RpcResult<String>;
 
+    /// Delete peer from known_peers DB.
+    /// Connections to the peer are not terminated.
+    #[method(name = "forget_peer")]
+    async fn forget_peer(
+        &self,
+        #[open_api_method_arg(schema(
+            PartialSchema = "thunder_schema::SocketAddr"
+        ))]
+        addr: SocketAddr,
+    ) -> RpcResult<()>;
+
     /// Generate a mnemonic seed phrase
     #[method(name = "generate_mnemonic")]
     async fn generate_mnemonic(&self) -> RpcResult<String>;
