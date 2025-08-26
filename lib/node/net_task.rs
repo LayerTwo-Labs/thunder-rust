@@ -454,7 +454,7 @@ struct NetTask {
 }
 
 impl NetTask {
-    async fn handle_response(
+    fn handle_response(
         ctxt: &NetTaskContext,
         // Attempt to switch to a descendant tip once a body has been
         // stored, if all other ancestor bodies are available.
@@ -488,7 +488,7 @@ impl NetTask {
                     // Invalid response
                     tracing::warn!(%addr, ?req, ?resp,"Invalid response from peer; unexpected block hash");
                     let () = ctxt.net.remove_active_peer(addr);
-                    return Ok(());
+                    return Ok::<_, Error>(());
                 }
                 {
                     let mut rwtxn =
@@ -501,13 +501,22 @@ impl NetTask {
                 // now available
                 {
                     let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
-                    let missing_bodies = ctxt
+                    let ancestor_height = if let Some(ancestor) = ancestor {
+                        Some(ctxt.archive.get_height(&rotxn, ancestor)?)
+                    } else {
+                        None
+                    };
+                    let earliest_missing_body = ctxt
                         .archive
-                        .get_missing_bodies(&rotxn, block_hash, ancestor)?;
-                    if let Some(earliest_missing_body) = missing_bodies.first()
-                    {
+                        .iter_missing_bodies(
+                            &rotxn,
+                            block_hash,
+                            ancestor_height.map_or(0, |height| height + 1),
+                        )
+                        .next()?;
+                    if let Some(earliest_missing_body) = earliest_missing_body {
                         descendant_tips
-                            .entry(*earliest_missing_body)
+                            .entry(earliest_missing_body)
                             .or_default()
                             .entry(descendant_tip)
                             .or_default()
@@ -584,27 +593,36 @@ impl NetTask {
                         return Ok(());
                     };
                     for (descendant_tip, sources) in block_descendant_tips {
-                        let common_ancestor = if let Some(tip) = tip {
-                            ctxt.archive.last_common_ancestor(
-                                &rotxn,
-                                descendant_tip.block_hash,
-                                tip.block_hash,
-                            )?
+                        let common_ancestor_height = if let Some(tip) = tip
+                            && let Some(common_ancestor) =
+                                ctxt.archive.last_common_ancestor(
+                                    &rotxn,
+                                    descendant_tip.block_hash,
+                                    tip.block_hash,
+                                )? {
+                            Some(
+                                ctxt.archive
+                                    .get_height(&rotxn, common_ancestor)?,
+                            )
                         } else {
                             None
                         };
-                        let missing_bodies = ctxt.archive.get_missing_bodies(
-                            &rotxn,
-                            descendant_tip.block_hash,
-                            common_ancestor,
-                        )?;
+                        let earliest_missing_body = ctxt
+                            .archive
+                            .iter_missing_bodies(
+                                &rotxn,
+                                descendant_tip.block_hash,
+                                common_ancestor_height
+                                    .map_or(0, |height| height + 1),
+                            )
+                            .next()?;
                         // If a better tip is ready, send a notification
                         'better_tip: {
                             let next_tip = if let Some(earliest_missing_body) =
-                                missing_bodies.first()
+                                earliest_missing_body
                             {
                                 descendant_tips
-                                    .entry(*earliest_missing_body)
+                                    .entry(earliest_missing_body)
                                     .or_default()
                                     .entry(descendant_tip)
                                     .or_default()
@@ -612,7 +630,7 @@ impl NetTask {
 
                                 // Parent of the earlist missing body
                                 ctxt.archive
-                                    .get_header(&rotxn, *earliest_missing_body)?
+                                    .get_header(&rotxn, earliest_missing_body)?
                                     .prev_side_hash
                                     .map(|tip_hash| {
                                         let bmm_verification = ctxt
@@ -735,27 +753,31 @@ impl NetTask {
                     prev_side_hash = Some(header.hash());
                 }
                 // Store new headers
-                let mut rwtxn = ctxt.env.write_txn().map_err(EnvError::from)?;
-                for header in &headers {
-                    let block_hash = header.hash();
-                    if ctxt
-                        .archive
-                        .try_get_header(&rwtxn, block_hash)?
-                        .is_none()
-                    {
-                        if let Some(parent) = header.prev_side_hash
-                            && ctxt
-                                .archive
-                                .try_get_header(&rwtxn, parent)?
-                                .is_none()
+                let () = tokio::task::block_in_place(|| {
+                    let mut rwtxn =
+                        ctxt.env.write_txn().map_err(EnvError::from)?;
+                    for header in &headers {
+                        let block_hash = header.hash();
+                        if ctxt
+                            .archive
+                            .try_get_header(&rwtxn, block_hash)?
+                            .is_none()
                         {
-                            break;
-                        } else {
-                            ctxt.archive.put_header(&mut rwtxn, header)?;
+                            if let Some(parent) = header.prev_side_hash
+                                && ctxt
+                                    .archive
+                                    .try_get_header(&rwtxn, parent)?
+                                    .is_none()
+                            {
+                                break;
+                            } else {
+                                ctxt.archive.put_header(&mut rwtxn, header)?;
+                            }
                         }
                     }
-                }
-                rwtxn.commit().map_err(RwTxnError::from)?;
+                    rwtxn.commit().map_err(RwTxnError::from)?;
+                    Ok::<_, Error>(())
+                })?;
                 // Notify peer connection that headers are available
                 let message = PeerConnectionMessage::Headers(peer_state_id);
                 let _: bool = ctxt.net.push_internal_message(message, addr);
@@ -1078,15 +1100,16 @@ impl NetTask {
                                 req = format!("{req:#?}"),
                                 "mail box: received PeerConnectionInfo::Response"
                             );
-                            let () = Self::handle_response(
-                                &self.ctxt,
-                                &mut descendant_tips,
-                                &self.new_tip_ready_tx,
-                                addr,
-                                resp,
-                                req,
-                            )
-                            .await?;
+                            let () = tokio::task::block_in_place(|| {
+                                Self::handle_response(
+                                    &self.ctxt,
+                                    &mut descendant_tips,
+                                    &self.new_tip_ready_tx,
+                                    addr,
+                                    resp,
+                                    req,
+                                )
+                            })?;
                         }
                     }
                 }

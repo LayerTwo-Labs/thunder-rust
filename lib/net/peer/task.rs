@@ -15,14 +15,18 @@ use crate::{
     net::peer::{
         BanReason, Connection, ConnectionContext, Info, PeerState, PeerStateId,
         Request, TipInfo,
-        error::Error,
-        mailbox::{self, InternalMessage, MailboxItem},
+        error::{Error, blocking_task},
+        mailbox::{
+            self, BlockingTaskFn, ForwardResponseItem, ForwardResponseResult,
+            InternalMessage, MailboxItem,
+        },
         message::{self, Heartbeat, RequestMessage, ResponseMessage},
         request_queue,
     },
     types::{
         AuthorizedTransaction, BlockHash, BmmResult, Header, Tip, VERSION,
     },
+    util::join_set,
 };
 
 pub(in crate::net::peer) struct ConnectionTask {
@@ -44,16 +48,16 @@ impl ConnectionTask {
     /// and `None` if the peer tip is not better.
     fn check_peer_tip_and_request_headers(
         ctxt: &ConnectionContext,
-        request_queue: &mut request_queue::Sender,
+        request_queue: &request_queue::Sender,
         tip_info: Option<&TipInfo>,
         peer_tip_info: &TipInfo,
         peer_state_id: PeerStateId,
-    ) -> Result<Option<bool>, Error> {
+    ) -> Result<Option<bool>, blocking_task::TaskError> {
         // Check if the peer tip is better, requesting headers if necessary
         let Some(tip_info) = tip_info else {
             // No tip.
             // Request headers from peer if necessary
-            let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
+            let rotxn = ctxt.env.read_txn()?;
             if ctxt
                 .archive
                 .try_get_header(&rotxn, peer_tip_info.tip.block_hash)?
@@ -79,7 +83,7 @@ impl ConnectionTask {
                 // No tip ancestor can have greater height,
                 // so peer tip is better.
                 // Request headers if necessary
-                let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
+                let rotxn = ctxt.env.read_txn()?;
                 if ctxt
                     .archive
                     .try_get_header(&rotxn, peer_tip_info.tip.block_hash)?
@@ -111,7 +115,7 @@ impl ConnectionTask {
             (Ordering::Less, Ordering::Equal) => {
                 // Within the same mainchain lineage, prefer lower work
                 // Otherwise, prefer tip with greater work
-                let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
+                let rotxn = ctxt.env.read_txn()?;
                 if ctxt.archive.shared_mainchain_lineage(
                     &rotxn,
                     tip_info.tip.main_block_hash,
@@ -146,7 +150,7 @@ impl ConnectionTask {
             (Ordering::Greater, Ordering::Equal) => {
                 // Within the same mainchain lineage, prefer lower work
                 // Otherwise, prefer tip with greater work
-                let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
+                let rotxn = ctxt.env.read_txn()?;
                 if !ctxt.archive.shared_mainchain_lineage(
                     &rotxn,
                     tip_info.tip.main_block_hash,
@@ -181,7 +185,7 @@ impl ConnectionTask {
             (Ordering::Less, Ordering::Greater) => {
                 // Need to check if tip ancestor before common
                 // mainchain ancestor had greater or equal height
-                let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
+                let rotxn = ctxt.env.read_txn()?;
                 let main_ancestor = ctxt.archive.last_common_main_ancestor(
                     &rotxn,
                     tip_info.tip.main_block_hash,
@@ -235,7 +239,7 @@ impl ConnectionTask {
             (Ordering::Greater, Ordering::Less) => {
                 // Need to check if peer's tip ancestor before common
                 // mainchain ancestor had greater or equal height
-                let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
+                let rotxn = ctxt.env.read_txn()?;
                 if ctxt
                     .archive
                     .try_get_header(&rotxn, peer_tip_info.tip.block_hash)?
@@ -295,7 +299,7 @@ impl ConnectionTask {
                 }
                 // Need to compare tip ancestor and peer's tip ancestor
                 // before common mainchain ancestor
-                let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
+                let rotxn = ctxt.env.read_txn()?;
                 if ctxt
                     .archive
                     .try_get_header(&rotxn, peer_tip_info.tip.block_hash)?
@@ -428,18 +432,18 @@ impl ConnectionTask {
     ///   * verify BMM
     ///   * request missing bodies
     ///   * notify net task / node that new tip is ready
-    async fn handle_peer_state(
+    fn handle_peer_state(
         ctxt: &ConnectionContext,
         info_tx: &mpsc::UnboundedSender<Info>,
-        request_queue: &mut request_queue::Sender,
+        request_queue: &request_queue::Sender,
         peer_state: &PeerState,
-    ) -> Result<(), Error> {
+    ) -> Result<(), blocking_task::TaskError> {
         let Some(peer_tip_info) = peer_state.tip_info else {
             // Nothing to do in this case
             return Ok(());
         };
         let tip_info = 'tip_info: {
-            let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
+            let rotxn = ctxt.env.read_txn()?;
             let Some(tip) = ctxt.state.try_get_tip(&rotxn)? else {
                 break 'tip_info None;
             };
@@ -464,7 +468,7 @@ impl ConnectionTask {
         // Check claimed work, request mainchain headers if necessary, verify
         // BMM
         {
-            let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
+            let rotxn = ctxt.env.read_txn()?;
             match ctxt.archive.try_get_main_header_info(
                 &rotxn,
                 &peer_tip_info.tip.main_block_hash,
@@ -476,7 +480,7 @@ impl ConnectionTask {
                     };
                     info_tx
                         .unbounded_send(info)
-                        .map_err(|_| Error::SendInfo)?;
+                        .map_err(|_| blocking_task::TaskError::SendInfo)?;
                     return Ok(());
                 }
                 Some(_main_header_info) => {
@@ -489,7 +493,9 @@ impl ConnectionTask {
                             tip: peer_tip_info.tip,
                             total_work: peer_tip_info.total_work,
                         };
-                        return Err(Error::PeerBan(ban_reason));
+                        return Err(blocking_task::TaskError::PeerBan(
+                            ban_reason,
+                        ));
                     }
                     let bmm_commitment = ctxt
                         .archive
@@ -501,7 +507,9 @@ impl ConnectionTask {
                     if bmm_commitment != Some(peer_tip_info.tip.block_hash) {
                         let ban_reason =
                             BanReason::BmmVerificationFailed(peer_tip_info.tip);
-                        return Err(Error::PeerBan(ban_reason));
+                        return Err(blocking_task::TaskError::PeerBan(
+                            ban_reason,
+                        ));
                     }
                 }
             }
@@ -519,7 +527,7 @@ impl ConnectionTask {
         }
         // Check BMM now that headers are available
         {
-            let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
+            let rotxn = ctxt.env.read_txn()?;
             let Some(BmmResult::Verified) = ctxt.archive.try_get_bmm_result(
                 &rotxn,
                 peer_tip_info.tip.block_hash,
@@ -528,7 +536,7 @@ impl ConnectionTask {
             else {
                 let ban_reason =
                     BanReason::BmmVerificationFailed(peer_tip_info.tip);
-                return Err(Error::PeerBan(ban_reason));
+                return Err(blocking_task::TaskError::PeerBan(ban_reason));
             };
         }
         // Request missing bodies, or notify that a new tip is ready
@@ -536,7 +544,7 @@ impl ConnectionTask {
             Option<BlockHash>,
             Vec<BlockHash>,
         ) = {
-            let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
+            let rotxn = ctxt.env.read_txn()?;
             let common_ancestor = if let Some(tip_info) = tip_info {
                 ctxt.archive.last_common_ancestor(
                     &rotxn,
@@ -546,32 +554,40 @@ impl ConnectionTask {
             } else {
                 None
             };
-            let missing_bodies = ctxt.archive.get_missing_bodies(
-                &rotxn,
-                peer_tip_info.tip.block_hash,
-                common_ancestor,
-            )?;
+            const MAX_BLOCK_REQUESTS: usize = 100;
+            let start_height = if let Some(common_ancestor) = common_ancestor {
+                ctxt.archive.get_height(&rotxn, common_ancestor)?
+            } else {
+                0
+            };
+            let missing_bodies = ctxt
+                .archive
+                .iter_missing_bodies(
+                    &rotxn,
+                    peer_tip_info.tip.block_hash,
+                    start_height,
+                )
+                .take(MAX_BLOCK_REQUESTS)
+                .collect()?;
             (common_ancestor, missing_bodies)
         };
         if missing_bodies.is_empty() {
             let info = Info::NewTipReady(peer_tip_info.tip);
-            info_tx.unbounded_send(info).map_err(|_| Error::SendInfo)?;
+            info_tx
+                .unbounded_send(info)
+                .map_err(|_| blocking_task::TaskError::SendInfo)?;
         } else {
-            const MAX_BLOCK_REQUESTS: usize = 100;
             // Request missing bodies
-            missing_bodies
-                .into_iter()
-                .take(MAX_BLOCK_REQUESTS)
-                .try_for_each(|block_hash| {
-                    let request = message::GetBlockRequest {
-                        block_hash,
-                        descendant_tip: Some(peer_tip_info.tip),
-                        peer_state_id: Some(peer_state.into()),
-                        ancestor: common_ancestor,
-                    };
-                    let _: bool = request_queue.send_request(request.into())?;
-                    Ok::<_, Error>(())
-                })?;
+            missing_bodies.into_iter().try_for_each(|block_hash| {
+                let request = message::GetBlockRequest {
+                    block_hash,
+                    descendant_tip: Some(peer_tip_info.tip),
+                    peer_state_id: Some(peer_state.into()),
+                    ancestor: common_ancestor,
+                };
+                let _: bool = request_queue.send_request(request.into())?;
+                Ok::<_, blocking_task::TaskError>(())
+            })?;
         }
         Ok(())
     }
@@ -597,31 +613,38 @@ impl ConnectionTask {
         Ok(())
     }
 
-    async fn handle_get_headers(
+    fn handle_get_headers(
         ctxt: &ConnectionContext,
+        forward_response_spawner: &join_set::Spawner<ForwardResponseResult>,
         response_tx: SendStream,
         start: HashSet<BlockHash>,
         end: BlockHash,
-    ) -> Result<(), Error> {
-        let response = {
-            let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
-            if ctxt.archive.try_get_header(&rotxn, end)?.is_some() {
-                let mut headers: Vec<Header> = ctxt
-                    .archive
-                    .ancestors(&rotxn, end)
-                    .take_while(|block_hash| Ok(!start.contains(block_hash)))
-                    .map(|block_hash| {
-                        ctxt.archive.get_header(&rotxn, block_hash)
-                    })
-                    .collect()?;
-                headers.reverse();
-                ResponseMessage::Headers(headers)
-            } else {
-                ResponseMessage::NoHeader { block_hash: end }
-            }
-        };
-        let () = Connection::send_response(response_tx, response).await?;
-        Ok(())
+    ) {
+        let env = ctxt.env.clone();
+        let archive = ctxt.archive.clone();
+        forward_response_spawner.spawn_blocking(move || {
+            let response = {
+                let rotxn = env.read_txn()?;
+                if archive.try_get_header(&rotxn, end)?.is_some() {
+                    let mut headers: Vec<Header> = archive
+                        .ancestor_headers(&rotxn, end)
+                        .take_while(|(block_hash, _)| {
+                            Ok(!start.contains(block_hash))
+                        })
+                        .map(|(_, header)| Ok(header))
+                        .collect()?;
+                    headers.reverse();
+                    ResponseMessage::Headers(headers)
+                } else {
+                    ResponseMessage::NoHeader { block_hash: end }
+                }
+            };
+            let serialized_response = bincode::serialize(&response)?;
+            Ok(ForwardResponseItem {
+                serialized_response,
+                response_tx,
+            })
+        });
     }
 
     async fn handle_push_tx(
@@ -659,9 +682,9 @@ impl ConnectionTask {
     }
 
     async fn handle_peer_request(
-        ctxt: &ConnectionContext,
+        ctxt: &Arc<ConnectionContext>,
         info_tx: &mpsc::UnboundedSender<Info>,
-        request_queue: &mut request_queue::Sender,
+        mailbox_sender: &mailbox::Sender,
         peer_state: &mut Option<PeerStateId>,
         // Map associating peer state hashes to peer state
         peer_states: &mut HashMap<PeerStateId, PeerState>,
@@ -674,13 +697,20 @@ impl ConnectionTask {
                 let new_peer_state_id = (&new_peer_state).into();
                 peer_states.insert(new_peer_state_id, new_peer_state);
                 if *peer_state != Some(new_peer_state_id) {
-                    let () = Self::handle_peer_state(
-                        ctxt,
-                        info_tx,
-                        request_queue,
-                        &new_peer_state,
-                    )
-                    .await?;
+                    let ctxt = Arc::clone(ctxt);
+                    let info_tx = info_tx.clone();
+                    let request_queue = mailbox_sender.request_tx.clone();
+                    let () = mailbox_sender
+                        .blocking_task_queue_tx
+                        .unbounded_send(Box::new(move || {
+                            Self::handle_peer_state(
+                                &ctxt,
+                                &info_tx,
+                                &request_queue,
+                                &new_peer_state,
+                            )
+                        }))
+                        .map_err(|_| Error::SendBlockingTask)?;
                     *peer_state = Some(new_peer_state_id);
                 }
                 Ok(())
@@ -700,7 +730,16 @@ impl ConnectionTask {
                     height: _,
                     peer_state_id: _,
                 },
-            )) => Self::handle_get_headers(ctxt, response_tx, start, end).await,
+            )) => {
+                let () = Self::handle_get_headers(
+                    ctxt,
+                    &mailbox_sender.forward_response_spawner,
+                    response_tx,
+                    start,
+                    end,
+                );
+                Ok(())
+            }
             RequestMessage::Request(Request::PushTransaction(
                 message::PushTransactionRequest { transaction },
             )) => {
@@ -710,10 +749,11 @@ impl ConnectionTask {
         }
     }
 
-    async fn handle_internal_message(
-        ctxt: &ConnectionContext,
+    fn handle_internal_message(
+        ctxt: &Arc<ConnectionContext>,
         info_tx: &mpsc::UnboundedSender<Info>,
-        request_queue: &mut request_queue::Sender,
+        request_queue: &request_queue::Sender,
+        blocking_task_queue_tx: &mpsc::UnboundedSender<BlockingTaskFn>,
         // known peer states
         peer_states: &HashMap<PeerStateId, PeerState>,
         msg: InternalMessage,
@@ -727,16 +767,23 @@ impl ConnectionTask {
                     tracing::warn!("{block_not_found}");
                     return Ok(());
                 }
-                let Some(peer_state) = peer_states.get(&peer_state_id) else {
+                let Some(peer_state) = peer_states.get(&peer_state_id).copied()
+                else {
                     return Err(Error::MissingPeerState(peer_state_id));
                 };
-                let () = Self::handle_peer_state(
-                    ctxt,
-                    info_tx,
-                    request_queue,
-                    peer_state,
-                )
-                .await?;
+                let ctxt = Arc::clone(ctxt);
+                let info_tx = info_tx.clone();
+                let request_queue = request_queue.clone();
+                let () = blocking_task_queue_tx
+                    .unbounded_send(Box::new(move || {
+                        Self::handle_peer_state(
+                            &ctxt,
+                            &info_tx,
+                            &request_queue,
+                            &peer_state,
+                        )
+                    }))
+                    .map_err(|_| Error::SendBlockingTask)?;
             }
             InternalMessage::BmmVerificationError(err) => {
                 let err: anyhow::Error = err;
@@ -749,22 +796,30 @@ impl ConnectionTask {
             InternalMessage::MainchainAncestors(peer_state_id)
             | InternalMessage::Headers(peer_state_id)
             | InternalMessage::BodiesAvailable(peer_state_id) => {
-                let Some(peer_state) = peer_states.get(&peer_state_id) else {
+                let Some(peer_state) = peer_states.get(&peer_state_id).copied()
+                else {
                     return Err(Error::MissingPeerState(peer_state_id));
                 };
-                let () = Self::handle_peer_state(
-                    ctxt,
-                    info_tx,
-                    request_queue,
-                    peer_state,
-                )
-                .await?;
+                let ctxt = Arc::clone(ctxt);
+                let info_tx = info_tx.clone();
+                let request_queue = request_queue.clone();
+                let () = blocking_task_queue_tx
+                    .unbounded_send(Box::new(move || {
+                        Self::handle_peer_state(
+                            &ctxt,
+                            &info_tx,
+                            &request_queue,
+                            &peer_state,
+                        )
+                    }))
+                    .map_err(|_| Error::SendBlockingTask)?;
             }
         }
         Ok(())
     }
 
-    pub async fn run(mut self) -> Result<(), Error> {
+    pub async fn run(self) -> Result<(), Error> {
+        let ctxt = Arc::new(self.ctxt);
         // current peer state
         let mut peer_state = Option::<PeerStateId>::None;
         // known peer states
@@ -777,33 +832,41 @@ impl ConnectionTask {
                 MailboxItem::Error(err) => return Err(err.into()),
                 MailboxItem::InternalMessage(msg) => {
                     let () = Self::handle_internal_message(
-                        &self.ctxt,
+                        &ctxt,
                         &self.info_tx,
-                        &mut self.mailbox_tx.request_tx,
+                        &self.mailbox_tx.request_tx,
+                        &self.mailbox_tx.blocking_task_queue_tx,
                         &peer_states,
                         msg,
-                    )
-                    .await?;
+                    )?;
+                }
+                MailboxItem::ForwardResponse(ForwardResponseItem {
+                    serialized_response,
+                    response_tx,
+                }) => {
+                    self.mailbox_tx.send_response_spawner.spawn(async move {
+                        Connection::send_serialized_response(
+                            response_tx,
+                            &serialized_response,
+                        )
+                        .await
+                    });
                 }
                 MailboxItem::Heartbeat => {
                     let tip_info = 'tip_info: {
                         let rotxn =
-                            self.ctxt.env.read_txn().map_err(EnvError::from)?;
-                        let Some(tip) = self.ctxt.state.try_get_tip(&rotxn)?
-                        else {
+                            ctxt.env.read_txn().map_err(EnvError::from)?;
+                        let Some(tip) = ctxt.state.try_get_tip(&rotxn)? else {
                             break 'tip_info None;
                         };
-                        let tip_height = self
-                            .ctxt
+                        let tip_height = ctxt
                             .state
                             .try_get_height(&rotxn)?
                             .expect("Height for tip should be known");
-                        let bmm_verification = self
-                            .ctxt
+                        let bmm_verification = ctxt
                             .archive
                             .get_best_main_verification(&rotxn, tip)?;
-                        let total_work = self
-                            .ctxt
+                        let total_work = ctxt
                             .archive
                             .get_total_work(&rotxn, bmm_verification)?;
                         let tip = Tip {
@@ -824,9 +887,9 @@ impl ConnectionTask {
                 }
                 MailboxItem::PeerRequest((request, response_tx)) => {
                     let () = Self::handle_peer_request(
-                        &self.ctxt,
+                        &ctxt,
                         &self.info_tx,
-                        &mut self.mailbox_tx.request_tx,
+                        &self.mailbox_tx,
                         &mut peer_state,
                         &mut peer_states,
                         response_tx,

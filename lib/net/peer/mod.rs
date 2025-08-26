@@ -241,6 +241,28 @@ impl Connection {
         Ok(Self::receive_response(recv, read_response_limit).await)
     }
 
+    async fn send_serialized_response(
+        mut response_tx: SendStream,
+        serialized_response: &[u8],
+    ) -> Result<(), error::connection::SendResponse> {
+        tracing::trace!(
+            send_id = %response_tx.id(),
+            "Sending response"
+        );
+        response_tx
+            .write_all(serialized_response)
+            .await
+            .map_err(|err| {
+                {
+                    error::connection::Send::Write {
+                        stream_id: response_tx.id(),
+                        source: err,
+                    }
+                }
+                .into()
+            })
+    }
+
     async fn send_response(
         mut response_tx: SendStream,
         response: ResponseMessage,

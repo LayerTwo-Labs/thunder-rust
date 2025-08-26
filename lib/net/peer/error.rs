@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::net::peer::{BanReason, PeerStateId};
+use crate::net::peer::PeerStateId;
 
 pub(in crate::net::peer) mod connection {
     use thiserror::Error;
@@ -190,15 +190,85 @@ pub(in crate::net::peer) mod request_queue {
     }
 }
 
+pub(in crate::net::peer) mod blocking_task {
+    use thiserror::Error;
+
+    #[derive(Debug, Error)]
+    pub enum TaskError {
+        #[error("archive error")]
+        Archive(#[from] crate::archive::Error),
+        #[error("peer should be banned; {0}")]
+        PeerBan(#[from] crate::net::peer::BanReason),
+        #[error(transparent)]
+        ReadTxn(#[from] sneed::env::error::ReadTxn),
+        #[error("Failed to push info message")]
+        SendInfo,
+        #[error(transparent)]
+        SendRequest(#[from] super::request_queue::SendRequest),
+        #[error("state error")]
+        State(#[from] crate::state::Error),
+    }
+
+    #[derive(Debug, Error)]
+    pub enum Error {
+        #[error("Failed to execute blocking task to completion")]
+        Join(#[from] tokio::task::JoinError),
+        #[error(transparent)]
+        Task(Box<TaskError>),
+    }
+
+    impl From<TaskError> for Error {
+        fn from(err: TaskError) -> Self {
+            Self::Task(Box::new(err))
+        }
+    }
+}
+
+pub(in crate::net::peer) mod forward_response {
+    use thiserror::Error;
+
+    #[derive(Debug, Error)]
+    pub enum TaskError {
+        #[error("archive error")]
+        Archive(#[source] Box<crate::archive::Error>),
+        #[error("bincode error")]
+        Bincode(#[from] bincode::Error),
+        #[error(transparent)]
+        ReadTxn(#[from] sneed::env::error::ReadTxn),
+    }
+
+    impl From<crate::archive::Error> for TaskError {
+        fn from(err: crate::archive::Error) -> Self {
+            Self::Archive(Box::new(err))
+        }
+    }
+
+    #[derive(Debug, Error)]
+    pub enum Error {
+        #[error("Failed to execute task to completion")]
+        Join(#[from] tokio::task::JoinError),
+        #[error(transparent)]
+        Task(#[from] TaskError),
+    }
+}
+
 pub mod mailbox {
     #[derive(thiserror::Error, Debug)]
     pub enum Error {
+        #[error("Blocking task error")]
+        BlockingTask(#[from] super::blocking_task::Error),
+        #[error("Failed to generate response")]
+        ForwardResponse(#[from] super::forward_response::Error),
         #[error("Heartbeat timeout")]
         HeartbeatTimeout,
+        #[error("Failed to send response")]
+        JoinSendResponse(#[source] tokio::task::JoinError),
         #[error(transparent)]
         ReceiveRequest(#[from] super::connection::ReceiveRequest),
         #[error(transparent)]
         RequestQueue(#[from] super::request_queue::Error),
+        #[error(transparent)]
+        SendResponse(#[from] super::connection::SendResponse),
     }
 }
 
@@ -215,14 +285,14 @@ pub enum Error {
     Mailbox(#[from] mailbox::Error),
     #[error("missing peer state for id {0}")]
     MissingPeerState(PeerStateId),
-    #[error("peer should be banned; {0}")]
-    PeerBan(#[from] BanReason),
     #[error(transparent)]
     ReceiveResponse(#[from] connection::ReceiveResponse),
-    #[error("Failed to push info message")]
-    SendInfo,
+    #[error("Failed to push blocking task")]
+    SendBlockingTask,
     #[error(transparent)]
     SendHeartbeat(#[from] request_queue::SendHeartbeat),
+    #[error("Failed to push info message")]
+    SendInfo,
     #[error(transparent)]
     SendRequest(#[from] request_queue::SendRequest),
     #[error(transparent)]

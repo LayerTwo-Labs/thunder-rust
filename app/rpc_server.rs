@@ -73,6 +73,13 @@ impl RpcServer for RpcServerImpl {
         Ok(deposit_address)
     }
 
+    async fn forget_peer(&self, addr: SocketAddr) -> RpcResult<()> {
+        match self.app.node.forget_peer(&addr) {
+            Ok(_) => Ok(()),
+            Err(err) => Err(custom_err(err)),
+        }
+    }
+
     async fn generate_mnemonic(&self) -> RpcResult<String> {
         let mnemonic = bip39::Mnemonic::new(
             bip39::MnemonicType::Words12,

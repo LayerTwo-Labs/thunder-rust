@@ -25,6 +25,9 @@ pub enum Command {
     },
     /// Format a deposit address
     FormatDepositAddress { address: Address },
+    /// Delete peer from known_peers DB.
+    /// Connections to the peer are not terminated.
+    ForgetPeer { addr: SocketAddr },
     /// Generate a mnemonic seed phrase
     GenerateMnemonic,
     /// Get the best mainchain block hash
@@ -136,6 +139,10 @@ where
         }
         Command::FormatDepositAddress { address } => {
             rpc_client.format_deposit_address(address).await?
+        }
+        Command::ForgetPeer { addr } => {
+            rpc_client.forget_peer(addr).await?;
+            String::default()
         }
         Command::GetBlock { block_hash } => {
             let block = rpc_client.get_block(block_hash).await?;
