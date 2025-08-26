@@ -10,7 +10,8 @@ use heed::types::{SerdeBincode, Unit};
 use parking_lot::RwLock;
 use quinn::{ClientConfig, Endpoint, ServerConfig};
 use sneed::{
-    DatabaseUnique, EnvError, RwTxnError, UnitKey, db::error::Error as DbError,
+    DatabaseUnique, EnvError, RwTxn, RwTxnError, UnitKey,
+    db::error::Error as DbError,
 };
 use tokio_stream::StreamNotifyClose;
 use tracing::instrument;
@@ -279,6 +280,18 @@ impl Net {
         tracing::trace!("connect peer: adding to active peers");
         self.add_active_peer(addr, connection_handle)?;
         Ok(())
+    }
+
+    /// Delete peer from known_peers DB.
+    /// Connections to the peer are not terminated.
+    pub fn forget_peer(
+        &self,
+        rwtxn: &mut RwTxn,
+        addr: &SocketAddr,
+    ) -> Result<bool, Error> {
+        self.known_peers
+            .delete(rwtxn, addr)
+            .map_err(|err| DbError::from(err).into())
     }
 
     pub const SEED_NODE_ADDRS: &[SocketAddr] = {

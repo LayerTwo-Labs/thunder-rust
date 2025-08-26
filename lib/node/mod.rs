@@ -473,6 +473,13 @@ where
             .map_err(Error::from)
     }
 
+    pub fn forget_peer(&self, addr: &SocketAddr) -> Result<bool, Error> {
+        let mut rwtxn = self.env.write_txn().map_err(EnvError::from)?;
+        let res = self.net.forget_peer(&mut rwtxn, addr)?;
+        rwtxn.commit().map_err(RwTxnError::from)?;
+        Ok(res)
+    }
+
     pub fn get_active_peers(&self) -> Vec<Peer> {
         self.net.get_active_peers()
     }

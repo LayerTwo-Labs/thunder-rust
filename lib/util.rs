@@ -50,6 +50,25 @@ pub mod join_set {
                 abort_handle
             })
         }
+
+        /// Spawn a blocking task on the underlying join set.
+        /// Returns an [`AbortHandle`] if the task was spawned successfully,
+        /// `None` if the receiver has been dropped and the task could not be
+        /// spawned.
+        pub fn spawn_blocking<F>(&self, task: F) -> Option<AbortHandle>
+        where
+            F: FnOnce() -> T + Send + 'static,
+            T: Send + 'static,
+        {
+            self.inner.upgrade().map(|inner| {
+                let mut inner_lock = inner.lock();
+                let abort_handle = inner_lock.join_set.spawn_blocking(task);
+                if let Some(waker) = inner_lock.waker.take() {
+                    waker.wake();
+                }
+                abort_handle
+            })
+        }
     }
 
     /// Used to receive task results. Must be polled in order to clear

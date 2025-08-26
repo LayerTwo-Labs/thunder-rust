@@ -4,6 +4,7 @@ use std::{collections::HashSet, num::NonZeroU32, sync::Arc};
 
 use futures::{Stream, StreamExt, channel::mpsc, stream};
 use governor::{DefaultDirectRateLimiter, Quota};
+use parking_lot::Mutex;
 
 use crate::{
     net::peer::{
@@ -128,16 +129,17 @@ impl ErrorRx {
     }
 }
 
+#[derive(Clone)]
 pub struct Sender {
     heartbeat_tx: mpsc::UnboundedSender<Heartbeat>,
     request_tx: mpsc::UnboundedSender<Request>,
     /// Used to deduplicate requests
-    request_hashes: HashSet<Hash>,
+    request_hashes: Arc<Mutex<HashSet<Hash>>>,
 }
 
 impl Sender {
     pub fn send_heartbeat(
-        &mut self,
+        &self,
         heartbeat: Heartbeat,
     ) -> Result<(), error::request_queue::SendHeartbeat> {
         self.heartbeat_tx
@@ -149,11 +151,11 @@ impl Sender {
     /// are duplicates of messages that have already been sent.
     /// Returns `Ok(false)` if the request was ignored.
     pub fn send_request(
-        &mut self,
+        &self,
         request: Request,
     ) -> Result<bool, error::request_queue::SendRequest> {
         let request_hash = hash(&request);
-        if self.request_hashes.insert(request_hash) {
+        if self.request_hashes.lock().insert(request_hash) {
             let () = self
                 .request_tx
                 .unbounded_send(request)
@@ -171,7 +173,7 @@ pub fn new() -> (Sender, ErrorRx) {
     let sender = Sender {
         heartbeat_tx,
         request_tx,
-        request_hashes: HashSet::new(),
+        request_hashes: Arc::new(Mutex::new(HashSet::new())),
     };
     let rate_limiter = DefaultDirectRateLimiter::direct(REQUEST_QUOTA);
     let error_rx = ErrorRx {
