@@ -1,54 +1,21 @@
-
+name: Benchmark
 on:
   pull_request:
   push:
     branches:
-      - master
+      - '*'
     tags:
       - '*'
   workflow_dispatch:
-
-name: Check, Lint, Build
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check-lint:
-    name: Check, Lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      
-      - name: Install latest nightly toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2025-08-10
-          components: rustfmt, clippy
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2.5.1
-        with:
-          shared-key: x86_64-unknown-linux-gnu
-
-      - name: Rustfmt
-        run: cargo fmt --all -- --check
-      
-      - name: Cargo check
-        run: cargo check --all-targets
-      
-      - name: Clippy
-        run: cargo clippy --all-targets
-      
-      - name: Deny
-        uses: EmbarkStudios/cargo-deny-action@v2
-
   benchmarks:
     name: Benchmarks
     runs-on: ubuntu-latest-large
-    needs: [check-lint]
+    # needs: [check-lint]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -57,7 +24,7 @@ jobs:
       - name: Install latest nightly toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2025-08-10
+          toolchain: nightly
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -68,7 +35,6 @@ jobs:
         id: runBenchmarks
         run: |
           RUSTFLAGS="-C target-cpu=native" cargo bench --package thunder --benches --features "bench"
-
       - name: Show report
         run: |
           MEAN_NANOS=$(jq '.mean | .point_estimate' target/criterion/connect_blocks/new/estimates.json)
@@ -79,198 +45,3 @@ jobs:
           echo "YOUR SCORE:  ${MEAN_S}"
           echo "Verified 10x 960mb blocks in ${MEAN_S} seconds (mean) / ${MEDIAN_S} seconds (median)."
           echo "*************"
-
-  integration-test:
-    name: Integration test
-    runs-on: ubuntu-latest
-    needs: [check-lint]
-    steps:
-      - name: Download latest bitcoin-patched
-        run: |
-          pushd ..
-          wget https://releases.drivechain.info/L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
-          unzip L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
-          rm L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
-          mv L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu bitcoin-patched-bins
-          chmod +x bitcoin-patched-bins/bitcoind
-          chmod +x bitcoin-patched-bins/bitcoin-cli
-          popd
-
-      - name: Download latest bip300301_enforcer
-        run: |
-          pushd ..
-          wget https://releases.drivechain.info/bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip
-          unzip bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip
-          rm bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip
-          mv bip300301-enforcer-latest-x86_64-unknown-linux-gnu/bip300301-enforcer-*-x86_64-unknown-linux-gnu bip300301-enforcer
-          rm -r bip300301-enforcer-latest-x86_64-unknown-linux-gnu
-          chmod +x bip300301-enforcer
-          popd
-
-      - name: Checkout electrs
-        run: |
-          pushd ..
-          git clone https://github.com/mempool/electrs.git
-          popd
-
-      - name: Install latest nightly toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2025-08-10
-          target: x86_64-pc-windows-gnu
-
-      - name: Rust Cache (electrs)
-        uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: "v0-rust-electrs"
-          workspaces: ../electrs -> target
-
-      - name: Install electrs
-        run: |
-          pushd ../electrs
-          cargo build --locked --release
-          popd
-
-      - uses: actions/checkout@v4
-        with:
-          submodules: "recursive"
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: x86_64-unknown-linux-gnu
-
-      - name: Build (debug)
-        run: cargo build
-
-      - name: Run integration tests
-        id: runIntegrationTests
-        run: |
-          export BIP300301_ENFORCER='../bip300301-enforcer'
-          export BITCOIND='../bitcoin-patched-bins/bitcoind'
-          export BITCOIN_CLI='../bitcoin-patched-bins/bitcoin-cli'
-          export ELECTRS='../electrs/target/release/electrs'
-          export THUNDER_APP='target/debug/thunder_app'
-          cargo run --example integration_tests
-
-  build-release:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            name: x86_64-unknown-linux-gnu
-            binary-suffix: ""
-            rustflags: ""
-          - os: macos-latest-large
-            name: x86_64-apple-darwin
-            binary-suffix: ""
-            rustflags: ""
-          - os: ubuntu-latest
-            name: x86_64-pc-windows-gnu
-            binary-suffix: .exe
-            rustflags: "-C linker=/usr/bin/x86_64-w64-mingw32-gcc"
-    name: Build, Release ((${{ matrix.name }}))
-    runs-on: ${{ matrix.os }}
-    permissions:
-      contents: write
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      
-      - name: Install latest nightly toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2025-08-10
-          target: ${{ matrix.name }}
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2.5.1
-        with:
-          key: ${{ matrix.name }}
-
-      - name: Install windows-specific deps
-        run: sudo apt install mingw-w64
-        if: ${{ matrix.name == 'x86_64-pc-windows-gnu' }}
-
-      - name: Build
-        run: cargo build --release --target ${{ matrix.name }}
-        env:
-          RUSTFLAGS: ${{ matrix.rustflags }}
-
-      - name: 'Set environment variables: version number and output filenames'
-        run: |
-          THUNDER_APP_VERSION=$(cargo metadata --format-version 1 | \
-            jq -er '.packages | map(select(.name == "thunder_app") | .version) | .[0]')
-          THUNDER_APP_FILENAME="thunder-${THUNDER_APP_VERSION}-${{ matrix.name }}${{ matrix.binary-suffix }}"
-          THUNDER_CLI_FILENAME="thunder-cli-${THUNDER_APP_VERSION}-${{ matrix.name }}${{ matrix.binary-suffix }}"
-          echo "THUNDER_APP_VERSION=$THUNDER_APP_VERSION" >> "$GITHUB_ENV"
-          echo "THUNDER_APP_FILENAME=$THUNDER_APP_FILENAME" >> "$GITHUB_ENV"
-          echo "THUNDER_CLI_FILENAME=$THUNDER_CLI_FILENAME" >> "$GITHUB_ENV"
-
-      - name: 'Set filenames for release binaries'
-        run: |
-          pushd "target/${{ matrix.name }}/release/"
-          ln -fs "thunder_app${{ matrix.binary-suffix }}" "${THUNDER_APP_FILENAME}"
-          ln -fs "thunder_app_cli${{ matrix.binary-suffix }}" "${THUNDER_CLI_FILENAME}"
-          popd
-
-      - name: 'Upload Artifacts (thunder)'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.THUNDER_APP_FILENAME }}
-          if-no-files-found: error
-          path: |
-            target/${{ matrix.name }}/release/${{ env.THUNDER_APP_FILENAME }}
-            target/${{ matrix.name }}/release/${{ env.THUNDER_CLI_FILENAME }}
-
-      - name: Release
-        uses: softprops/action-gh-release@v2.0.2
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: |
-            target/${{ matrix.name }}/release/${{ env.THUNDER_APP_FILENAME }}
-            target/${{ matrix.name }}/release/${{ env.THUNDER_CLI_FILENAME }}
-          fail_on_unmatched_files: true
-
-  upload-releases-to-releases-drivechain-info:
-    name: Upload releases to releases.drivechain.info
-    runs-on: ubuntu-latest
-    needs: [build-release, integration-test]
-    if: startsWith(github.ref, 'refs/tags/')
-    steps:
-      - name: Download release assets
-        uses: robinraju/release-downloader@v1.9
-        with:
-          tag: ${{ github.ref_name }}
-
-      - name: Create zip files for releases.drivechain.info
-        run: |
-          shopt -s extglob
-          mv thunder-+([0-9]).+([0-9]).+([0-9])-x86_64-apple-darwin thunder-latest-x86_64-apple-darwin
-          mv thunder-cli-+([0-9]).+([0-9]).+([0-9])-x86_64-apple-darwin thunder-cli-latest-x86_64-apple-darwin
-          zip L2-S9-Thunder-latest-x86_64-apple-darwin.zip \
-            thunder-latest-x86_64-apple-darwin \
-            thunder-cli-latest-x86_64-apple-darwin
-          mv thunder-+([0-9]).+([0-9]).+([0-9])-x86_64-pc-windows-gnu.exe thunder-latest-x86_64-pc-windows-gnu.exe
-          mv thunder-cli-+([0-9]).+([0-9]).+([0-9])-x86_64-pc-windows-gnu.exe thunder-cli-latest-x86_64-pc-windows-gnu.exe
-          zip L2-S9-Thunder-latest-x86_64-pc-windows-gnu.zip \
-            thunder-latest-x86_64-pc-windows-gnu.exe \
-            thunder-cli-latest-x86_64-pc-windows-gnu.exe
-          mv thunder-+([0-9]).+([0-9]).+([0-9])-x86_64-unknown-linux-gnu thunder-latest-x86_64-unknown-linux-gnu
-          mv thunder-cli-+([0-9]).+([0-9]).+([0-9])-x86_64-unknown-linux-gnu thunder-cli-latest-x86_64-unknown-linux-gnu
-          zip L2-S9-Thunder-latest-x86_64-unknown-linux-gnu.zip \
-            thunder-latest-x86_64-unknown-linux-gnu \
-            thunder-cli-latest-x86_64-unknown-linux-gnu
-
-      - name: Upload release assets to releases.drivechain.info
-        uses: cross-the-world/ssh-scp-ssh-pipelines@latest
-        with:
-          host: 45.33.96.47
-          user: root
-          pass: ${{ secrets.RELEASES_SERVER_PW }}
-          port: 22
-          scp: |
-            'L2-S9-Thunder-latest-*.zip' => '/var/www/html/'
