@@ -534,7 +534,6 @@ struct CbmtNode {
     index: usize,
 }
 
-
 impl PartialOrd for CbmtNode {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
@@ -561,12 +560,13 @@ impl merkle_cbt::merkle_tree::Merge for MergeFeeSizeTotal {
         // see https://github.com/nervosnetwork/merkle-tree/blob/5d1898263e7167560fdaa62f09e8d52991a1c712/README.md#tree-struct
         assert_eq!(lnode.index + 1, rnode.index);
         let index = (lnode.index - 1) / 2;
-        let commitment = hashes::hash_with_scratch_buffer(&CbmtNodePreCommitment {
-            left_commitment: lnode.commitment,
-            fees,
-            canonical_size,
-            right_commitment: rnode.commitment,
-        });
+        let commitment =
+            hashes::hash_with_scratch_buffer(&CbmtNodePreCommitment {
+                left_commitment: lnode.commitment,
+                fees,
+                canonical_size,
+                right_commitment: rnode.commitment,
+            });
         Self::Item {
             commitment,
             fees,
@@ -658,10 +658,10 @@ impl Body {
             ..
         } = {
             let n_txs = txs.len();
-            
+
             // Pre-allocate Vec for direct indexing by parallel threads
             let mut leaves = vec![CbmtNode::default(); n_txs];
-            
+
             // Use Rayon to compute leaves in parallel across all CPU cores
             use rayon::prelude::*;
             let results: Result<Vec<_>, ComputeMerkleRootError> = txs
@@ -681,7 +681,9 @@ impl Body {
                         tx: &tx.transaction,
                     };
                     let node = CbmtNode {
-                        commitment: hashes::hash_with_scratch_buffer(&leaf_pre_commitment),
+                        commitment: hashes::hash_with_scratch_buffer(
+                            &leaf_pre_commitment,
+                        ),
                         fees,
                         canonical_size,
                         // see https://github.com/nervosnetwork/merkle-tree/blob/5d1898263e7167560fdaa62f09e8d52991a1c712/README.md#tree-struct
@@ -690,12 +692,12 @@ impl Body {
                     Ok((idx, node))
                 })
                 .collect();
-            
+
             // Fill the pre-allocated vector with computed nodes
             for (idx, node) in results? {
                 leaves[idx] = node;
             }
-            
+
             // Replace tree-based CBMT with parallel levelized approach for better performance
             if n_txs >= 1000 {
                 // Use optimized parallel level merging for large transaction sets
@@ -714,16 +716,18 @@ impl Body {
 
     /// Optimized level-by-level parallel merkle tree construction
     /// Processes each level of the tree in parallel for maximum performance
-    fn compute_merkle_root_levelized_parallel(mut current_level: Vec<CbmtNode>) -> CbmtNode {
+    fn compute_merkle_root_levelized_parallel(
+        mut current_level: Vec<CbmtNode>,
+    ) -> CbmtNode {
         use rayon::prelude::*;
-        
+
         while current_level.len() > 1 {
             // Handle odd number of nodes by duplicating the last node (standard merkle tree approach)
             if current_level.len() % 2 == 1 {
                 let last_node = current_level.last().unwrap().clone();
                 current_level.push(last_node);
             }
-            
+
             // Process pairs of nodes in parallel across all CPU cores
             current_level = current_level
                 .par_chunks_exact(2)
@@ -731,18 +735,21 @@ impl Body {
                 .map(|(parent_idx, pair)| {
                     let lnode = &pair[0];
                     let rnode = &pair[1];
-                    
+
                     // Compute parent node using the same merge logic as MergeFeeSizeTotal
                     let fees = lnode.fees + rnode.fees;
-                    let canonical_size = lnode.canonical_size + rnode.canonical_size;
-                    
-                    let commitment = hashes::hash_with_scratch_buffer(&CbmtNodePreCommitment {
-                        left_commitment: lnode.commitment,
-                        fees,
-                        canonical_size,
-                        right_commitment: rnode.commitment,
-                    });
-                    
+                    let canonical_size =
+                        lnode.canonical_size + rnode.canonical_size;
+
+                    let commitment = hashes::hash_with_scratch_buffer(
+                        &CbmtNodePreCommitment {
+                            left_commitment: lnode.commitment,
+                            fees,
+                            canonical_size,
+                            right_commitment: rnode.commitment,
+                        },
+                    );
+
                     CbmtNode {
                         commitment,
                         fees,
@@ -752,9 +759,12 @@ impl Body {
                 })
                 .collect();
         }
-        
+
         // Return the root node
-        current_level.into_iter().next().expect("Tree should have exactly one root")
+        current_level
+            .into_iter()
+            .next()
+            .expect("Tree should have exactly one root")
     }
 
     #[cfg(feature = "utreexo")]
