@@ -12,11 +12,10 @@ use sneed::{Env, EnvError};
 #[cfg(feature = "utreexo")]
 use crate::types::{Accumulator, AccumulatorDiff};
 use crate::{
-    authorization::Authorization,
     state::State,
     types::{
-        Address, Block, Body, FilledTransaction, GetValue as _, Header,
-        MerkleRoot, OutPoint, Output, OutputContent, PointedOutputRef,
+        Address, Authorization, Block, Body, FilledTransaction, GetValue as _,
+        Header, MerkleRoot, OutPoint, Output, OutputContent, PointedOutputRef,
         Transaction, hash,
         proto::mainchain::{self, TwoWayPegData},
     },
@@ -75,7 +74,7 @@ where
     Rng: rand::CryptoRng + rand::Rng,
 {
     let sk = SigningKey::generate(rng);
-    let addr = crate::authorization::get_address(&sk.verifying_key());
+    let addr = crate::types::get_address(&sk.verifying_key());
     (addr, sk)
 }
 
@@ -385,7 +384,7 @@ fn batch_sign_txs(
         .into_par_iter()
         .map(|(tx, sk)| Authorization {
             verifying_key: sk.verifying_key(),
-            signature: crate::authorization::sign(&sk, tx).unwrap(),
+            signature: crate::types::sign(&sk, tx).unwrap(),
         })
         .collect_into_vec(&mut res);
     Ok(res)
@@ -647,13 +646,13 @@ fn connect_blocks(
             blocks.push(block);
         }
         let start = std::time::Instant::now();
-        let mut rwtxn = setup.env.write_txn()?;
         for block in &blocks {
-            setup
-                .state
-                .apply_block(&mut rwtxn, &block.header, &block.body)?;
+            setup.state.apply_block_parallel(
+                &setup.env,
+                &block.header,
+                &block.body,
+            )?;
         }
-        rwtxn.commit()?;
         res += start.elapsed();
         setup.tip_hash = prev_side_hash;
         blocks_processed += batch;

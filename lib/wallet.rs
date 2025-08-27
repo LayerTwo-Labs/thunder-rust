@@ -8,6 +8,8 @@ use byteorder::{BigEndian, ByteOrder};
 use ed25519_dalek_bip32::{ChildIndex, DerivationPath, ExtendedSigningKey};
 use fallible_iterator::FallibleIterator as _;
 use futures::{Stream, StreamExt};
+
+use crate::types::get_address;
 use heed::types::{Bytes, SerdeBincode, U8};
 #[cfg(feature = "utreexo")]
 use rustreexo::accumulator::node_hash::BitcoinNodeHash;
@@ -19,13 +21,10 @@ use sneed::{
 use tokio_stream::{StreamMap, wrappers::WatchStream};
 
 #[cfg(feature = "utreexo")]
-use crate::types::{Accumulator, UtreexoError};
-pub use crate::{
-    authorization::{Authorization, get_address},
-    types::{
-        Address, AuthorizedTransaction, GetValue, InPoint, OutPoint,
-        OutPointKey, Output, OutputContent, SpentOutput, Transaction,
-    },
+use crate::types::{Accumulator, UtreexoError, get_address};
+pub use crate::types::{
+    Address, Authorization, AuthorizedTransaction, GetValue, InPoint, OutPoint,
+    OutPointKey, Output, OutputContent, SpentOutput, Transaction,
 };
 use crate::{
     types::{
@@ -57,7 +56,9 @@ pub enum Error {
     #[error(transparent)]
     AmountUnderflow(#[from] AmountUnderflowError),
     #[error("authorization error")]
-    Authorization(#[from] crate::authorization::Error),
+    Authorization(#[from] crate::types::AuthorizationError),
+    #[error("authorization error")]
+    AuthorizationLib(#[from] crate::authorization::Error),
     #[error("bip32 error")]
     Bip32(#[from] ed25519_dalek_bip32::Error),
     #[error(transparent)]
@@ -461,7 +462,8 @@ impl Wallet {
         transaction: Transaction,
     ) -> Result<AuthorizedTransaction, Error> {
         let txn = self.env.read_txn().map_err(EnvError::from)?;
-        let mut authorizations = Vec::with_capacity(transaction.inputs.len());
+        let mut addresses_signing_keys =
+            Vec::with_capacity(transaction.inputs.len());
         for (outpoint, _) in &transaction.inputs {
             let key = OutPointKey::from(outpoint);
             let spent_utxo = self
@@ -478,17 +480,20 @@ impl Wallet {
                 })?;
             let index = BigEndian::read_u32(&index);
             let signing_key = self.get_signing_key(&txn, index)?;
-            let signature =
-                crate::authorization::sign(&signing_key, &transaction)?;
-            authorizations.push(Authorization {
-                verifying_key: signing_key.verifying_key(),
-                signature,
-            });
+            addresses_signing_keys.push((spent_utxo.address, signing_key));
         }
-        Ok(AuthorizedTransaction {
-            authorizations,
+        let addresses_signing_keys_refs: Vec<(
+            Address,
+            &ed25519_dalek::SigningKey,
+        )> = addresses_signing_keys
+            .iter()
+            .map(|(addr, key)| (*addr, key))
+            .collect();
+        crate::authorization::authorize(
+            &addresses_signing_keys_refs,
             transaction,
-        })
+        )
+        .map_err(Error::AuthorizationLib)
     }
 
     pub fn get_new_address(&self) -> Result<Address, Error> {

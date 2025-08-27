@@ -1,4 +1,4 @@
-use borsh::BorshSerialize;
+use borsh::{BorshDeserialize, BorshSerialize};
 #[cfg(feature = "utreexo")]
 use hashlink::{LinkedHashMap, linked_hash_map};
 #[cfg(feature = "utreexo")]
@@ -15,8 +15,11 @@ use std::{
 use thiserror::Error;
 use utoipa::ToSchema;
 
-use crate::{
-    authorization::Authorization, types::transaction::ComputeFeeError,
+use crate::types::transaction::ComputeFeeError;
+
+// Re-export ed25519_dalek types for authorization
+pub use ed25519_dalek::{
+    Signature, SignatureError, Signer, SigningKey, Verifier, VerifyingKey,
 };
 
 mod address;
@@ -25,6 +28,9 @@ pub mod proto;
 pub mod schema;
 mod transaction;
 
+pub use crate::authorization::{
+    Authorization, AuthorizationError, Verify, authorize, sign,
+};
 pub use address::Address;
 pub use hashes::{BlockHash, Hash, M6id, MerkleRoot, Txid, hash};
 pub use transaction::{
@@ -88,6 +94,17 @@ where
 }
 
 #[cfg(feature = "utreexo")]
+fn borsh_deserialize_utreexo_nodehash<R>(
+    reader: &mut R,
+) -> borsh::io::Result<BitcoinNodeHash>
+where
+    R: borsh::io::Read,
+{
+    let bytes: [u8; 32] = borsh::BorshDeserialize::deserialize_reader(reader)?;
+    Ok(BitcoinNodeHash::from(bytes))
+}
+
+#[cfg(feature = "utreexo")]
 fn borsh_serialize_utreexo_roots<W>(
     roots: &[BitcoinNodeHash],
     writer: &mut W,
@@ -106,6 +123,24 @@ where
     borsh::BorshSerialize::serialize(&roots, writer)
 }
 
+#[cfg(feature = "utreexo")]
+fn borsh_deserialize_utreexo_roots<R>(
+    reader: &mut R,
+) -> borsh::io::Result<Vec<BitcoinNodeHash>>
+where
+    R: borsh::io::Read,
+{
+    #[derive(BorshDeserialize)]
+    #[repr(transparent)]
+    struct DeserializeBitcoinNodeHash(
+        #[borsh(deserialize_with = "borsh_deserialize_utreexo_nodehash")]
+        BitcoinNodeHash,
+    );
+    let roots: Vec<DeserializeBitcoinNodeHash> =
+        borsh::BorshDeserialize::deserialize_reader(reader)?;
+    Ok(roots.into_iter().map(|r| r.0).collect())
+}
+
 fn borsh_serialize_bitcoin_block_hash<W>(
     block_hash: &bitcoin::BlockHash,
     writer: &mut W,
@@ -114,11 +149,72 @@ where
     W: borsh::io::Write,
 {
     let bytes: &[u8; 32] = block_hash.as_ref();
-    borsh::BorshSerialize::serialize(bytes, writer)
+    <[u8; 32] as BorshSerialize>::serialize(bytes, writer)
+}
+
+fn borsh_deserialize_bitcoin_block_hash<R>(
+    reader: &mut R,
+) -> borsh::io::Result<bitcoin::BlockHash>
+where
+    R: borsh::io::Read,
+{
+    let bytes: [u8; 32] = borsh::BorshDeserialize::deserialize_reader(reader)?;
+    Ok(bitcoin::BlockHash::from_raw_hash(<bitcoin::hashes::sha256d::Hash as bitcoin::hashes::Hash>::from_byte_array(bytes)))
+}
+
+fn borsh_serialize_verifying_key<W>(
+    vk: &VerifyingKey,
+    writer: &mut W,
+) -> borsh::io::Result<()>
+where
+    W: borsh::io::Write,
+{
+    BorshSerialize::serialize(&vk.as_bytes(), writer)
+}
+
+fn borsh_deserialize_verifying_key<R>(
+    reader: &mut R,
+) -> borsh::io::Result<VerifyingKey>
+where
+    R: borsh::io::Read,
+{
+    let bytes: [u8; 32] = borsh::BorshDeserialize::deserialize_reader(reader)?;
+    VerifyingKey::from_bytes(&bytes).map_err(|e| {
+        borsh::io::Error::new(borsh::io::ErrorKind::InvalidData, e.to_string())
+    })
+}
+
+fn borsh_serialize_signature<W>(
+    sig: &Signature,
+    writer: &mut W,
+) -> borsh::io::Result<()>
+where
+    W: borsh::io::Write,
+{
+    BorshSerialize::serialize(&sig.to_bytes(), writer)
+}
+
+fn borsh_deserialize_signature<R>(
+    reader: &mut R,
+) -> borsh::io::Result<Signature>
+where
+    R: borsh::io::Read,
+{
+    let bytes: [u8; 64] = borsh::BorshDeserialize::deserialize_reader(reader)?;
+    Ok(Signature::from_bytes(&bytes))
+}
+
+pub fn get_address(verifying_key: &VerifyingKey) -> Address {
+    use crate::types::hash;
+    let verifying_key_bytes = verifying_key.as_bytes();
+    let hash = hash(verifying_key_bytes);
+    let mut address_bytes = [0u8; 20];
+    address_bytes.copy_from_slice(&hash[..20]);
+    Address(address_bytes)
 }
 
 #[derive(
-    BorshSerialize,
+    BorshDeserialize,
     Clone,
     Debug,
     Deserialize,
@@ -131,14 +227,34 @@ where
 pub struct Header {
     pub merkle_root: MerkleRoot,
     pub prev_side_hash: Option<BlockHash>,
-    #[borsh(serialize_with = "borsh_serialize_bitcoin_block_hash")]
+    #[borsh(
+        serialize_with = "borsh_serialize_bitcoin_block_hash",
+        deserialize_with = "borsh_deserialize_bitcoin_block_hash"
+    )]
     #[schema(value_type = schema::BitcoinBlockHash)]
     pub prev_main_hash: bitcoin::BlockHash,
     /// Utreexo roots
     #[cfg(feature = "utreexo")]
-    #[borsh(serialize_with = "borsh_serialize_utreexo_roots")]
+    #[borsh(
+        serialize_with = "borsh_serialize_utreexo_roots",
+        deserialize_with = "borsh_deserialize_utreexo_roots"
+    )]
     #[schema(value_type = Vec<schema::UtreexoNodeHash>)]
     pub roots: Vec<BitcoinNodeHash>,
+}
+
+impl BorshSerialize for Header {
+    fn serialize<W: borsh::io::Write>(
+        &self,
+        writer: &mut W,
+    ) -> borsh::io::Result<()> {
+        BorshSerialize::serialize(&self.merkle_root, writer)?;
+        BorshSerialize::serialize(&self.prev_side_hash, writer)?;
+        borsh_serialize_bitcoin_block_hash(&self.prev_main_hash, writer)?;
+        #[cfg(feature = "utreexo")]
+        borsh_serialize_utreexo_roots(&self.roots, writer)?;
+        Ok(())
+    }
 }
 
 impl Header {
@@ -599,7 +715,15 @@ pub enum ModifyMemForestError {
     Utreexo(#[from] UtreexoError),
 }
 
-#[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize, ToSchema)]
+#[derive(
+    BorshDeserialize,
+    BorshSerialize,
+    Clone,
+    Debug,
+    Deserialize,
+    Serialize,
+    ToSchema,
+)]
 pub struct Body {
     pub coinbase: Vec<Output>,
     pub transactions: Vec<Transaction>,
@@ -652,6 +776,21 @@ impl Body {
         coinbase: &[Output],
         txs: &[FilledTransaction],
     ) -> Result<MerkleRoot, ComputeMerkleRootError> {
+        // Use parallel computation for larger transaction sets
+        const PARALLEL_THRESHOLD: usize = 100;
+
+        if txs.len() >= PARALLEL_THRESHOLD {
+            Self::compute_merkle_root_parallel(coinbase, txs)
+        } else {
+            Self::compute_merkle_root_sequential(coinbase, txs)
+        }
+    }
+
+    /// Sequential Merkle root computation for smaller transaction sets
+    fn compute_merkle_root_sequential(
+        coinbase: &[Output],
+        txs: &[FilledTransaction],
+    ) -> Result<MerkleRoot, ComputeMerkleRootError> {
         let CbmtNode {
             commitment: txs_root,
             ..
@@ -682,6 +821,54 @@ impl Body {
                     })
                 })
                 .collect::<Result<_, _>>()?;
+            CbmtWithFeeTotal::build_merkle_root(leaves.as_slice())
+        };
+        // FIXME: Compute actual merkle root instead of just a hash.
+        let coinbase_root = hashes::hash(&coinbase);
+        // TODO: Should this include `total_fees`?
+        let root = hashes::hash(&(coinbase_root, txs_root)).into();
+        Ok(root)
+    }
+
+    /// Parallel Merkle root computation for larger transaction sets
+    fn compute_merkle_root_parallel(
+        coinbase: &[Output],
+        txs: &[FilledTransaction],
+    ) -> Result<MerkleRoot, ComputeMerkleRootError> {
+        use rayon::prelude::*;
+
+        let CbmtNode {
+            commitment: txs_root,
+            ..
+        } = {
+            let n_txs = txs.len();
+            // Parallel computation of leaf nodes
+            let leaves: Result<Vec<_>, _> = txs
+                .par_iter()
+                .enumerate()
+                .map(|(idx, tx)| {
+                    let fees = tx.get_fee().map_err(|err| {
+                        ComputeMerkleRootErrorInner {
+                            txid: tx.transaction.txid(),
+                            source: err,
+                        }
+                    })?;
+                    let canonical_size = tx.transaction.canonical_size();
+                    let leaf_pre_commitment = CbmtLeafPreCommitment {
+                        fee: fees,
+                        canonical_size,
+                        tx: &tx.transaction,
+                    };
+                    Ok::<_, ComputeMerkleRootError>(CbmtNode {
+                        commitment: hashes::hash(&leaf_pre_commitment),
+                        fees,
+                        canonical_size,
+                        // see https://github.com/nervosnetwork/merkle-tree/blob/5d1898263e7167560fdaa62f09e8d52991a1c712/README.md#tree-struct
+                        index: (idx + n_txs) - 1,
+                    })
+                })
+                .collect();
+            let leaves = leaves?;
             CbmtWithFeeTotal::build_merkle_root(leaves.as_slice())
         };
         // FIXME: Compute actual merkle root instead of just a hash.
@@ -784,14 +971,6 @@ impl Body {
     }
 }
 
-pub trait Verify {
-    type Error;
-    fn verify_transaction(
-        transaction: &AuthorizedTransaction,
-    ) -> Result<(), Self::Error>;
-    fn verify_body(body: &Body) -> Result<(), Self::Error>;
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum BmmResult {
     Verified,
@@ -801,6 +980,7 @@ pub enum BmmResult {
 /// A tip refers to both a sidechain block AND the mainchain block that commits
 /// to it.
 #[derive(
+    BorshDeserialize,
     BorshSerialize,
     Clone,
     Copy,
@@ -813,7 +993,10 @@ pub enum BmmResult {
 )]
 pub struct Tip {
     pub block_hash: BlockHash,
-    #[borsh(serialize_with = "borsh_serialize_bitcoin_block_hash")]
+    #[borsh(
+        serialize_with = "borsh_serialize_bitcoin_block_hash",
+        deserialize_with = "borsh_deserialize_bitcoin_block_hash"
+    )]
     pub main_block_hash: bitcoin::BlockHash,
 }
 
@@ -827,6 +1010,7 @@ pub enum Network {
 
 /// Semver-compatible version
 #[derive(
+    BorshDeserialize,
     BorshSerialize,
     Clone,
     Copy,

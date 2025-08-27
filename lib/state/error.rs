@@ -52,6 +52,8 @@ pub enum Error {
     #[error(transparent)]
     BorshSerialize(borsh::io::Error),
     #[error(transparent)]
+    BorshDeserialize(borsh::io::Error),
+    #[error(transparent)]
     ComputeMerkleRoot(#[from] ComputeMerkleRootError),
     #[error(transparent)]
     Db(#[from] sneed::Error),
@@ -104,4 +106,6 @@ pub enum Error {
     WrongPubKeyForAddress,
     #[error(transparent)]
     WithdrawalBundle(#[from] WithdrawalBundleError),
+    #[error("{0}")]
+    Other(String),
 }

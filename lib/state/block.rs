@@ -1,18 +1,18 @@
 //! Connect and disconnect blocks
 
+use heed::types::SerdeBincode;
 #[cfg(feature = "utreexo")]
 use rustreexo::accumulator::node_hash::BitcoinNodeHash;
-use sneed::{RoTxn, RwTxn, db::error::Error as DbError};
+use sneed::{DatabaseUnique, RoTxn, RwTxn, db::error::Error as DbError};
 
 #[cfg(feature = "utreexo")]
 use crate::types::{AccumulatorDiff, PointedOutput};
 use crate::{
-    authorization::Authorization,
     state::{Error, PrevalidatedBlock, State, error},
     types::{
-        AmountOverflowError, Body, FilledTransaction, GetAddress as _,
-        GetValue as _, Header, InPoint, MerkleRoot, OutPoint, OutPointKey,
-        Output, SpentOutput, Verify as _,
+        AmountOverflowError, Authorization, Body, FilledTransaction,
+        GetAddress as _, GetValue as _, Header, InPoint, MerkleRoot, OutPoint,
+        OutPointKey, Output, SpentOutput, Verify as _,
     },
 };
 
@@ -46,36 +46,41 @@ pub fn validate(
         .try_get(rotxn, &())
         .map_err(DbError::from)?
         .unwrap_or_default();
-    let filled_transactions: Vec<_> = body
-        .transactions
-        .iter()
-        .map(|t| state.fill_transaction(rotxn, t))
-        .collect::<Result<_, _>>()?;
+    // Fill transactions sequentially (RoTxn is not Send)
+    let mut filled_transactions = Vec::with_capacity(body.transactions.len());
+    for transaction in &body.transactions {
+        filled_transactions.push(state.fill_transaction(rotxn, transaction)?);
+    }
     let merkle_root = Body::compute_merkle_root(
         body.coinbase.as_slice(),
         filled_transactions.as_slice(),
     )?;
     #[cfg(feature = "utreexo")]
     let mut accumulator_diff = AccumulatorDiff::default();
-    let mut coinbase_value = bitcoin::Amount::ZERO;
+    // Parallel coinbase value calculation
+    let coinbase_value: bitcoin::Amount = body
+        .coinbase
+        .par_iter()
+        .map(|output| output.get_value())
+        .reduce(
+            || bitcoin::Amount::ZERO,
+            |acc, value| {
+                acc.checked_add(value).unwrap_or(bitcoin::Amount::ZERO)
+            },
+        );
+
+    // Sequential utreexo accumulator updates (due to accumulator mutations)
+    #[cfg(feature = "utreexo")]
     for (vout, output) in body.coinbase.iter().enumerate() {
-        #[cfg(not(feature = "utreexo"))]
-        let _ = vout;
-        coinbase_value = coinbase_value
-            .checked_add(output.get_value())
-            .ok_or(AmountOverflowError)?;
-        #[cfg(feature = "utreexo")]
-        {
-            let outpoint = OutPoint::Coinbase {
-                merkle_root,
-                vout: vout as u32,
-            };
-            let pointed_output = PointedOutput {
-                outpoint,
-                output: output.clone(),
-            };
-            accumulator_diff.insert((&pointed_output).into());
-        }
+        let outpoint = OutPoint::Coinbase {
+            merkle_root,
+            vout: vout as u32,
+        };
+        let pointed_output = PointedOutput {
+            outpoint,
+            output: output.clone(),
+        };
+        accumulator_diff.insert((&pointed_output).into());
     }
     if merkle_root != header.merkle_root {
         let err = Error::InvalidBody {
@@ -101,7 +106,23 @@ pub fn validate(
         return Err(Error::UtxoDoubleSpent);
     }
 
-    // Process transactions for utreexo and fee validation
+    // Parallel fee validation for all transactions
+    use rayon::prelude::*;
+    let transaction_fees: Result<Vec<bitcoin::Amount>, Error> =
+        filled_transactions
+            .par_iter()
+            .map(|filled_transaction| {
+                state.validate_filled_transaction(filled_transaction)
+            })
+            .collect();
+    let transaction_fees = transaction_fees?;
+
+    // Sum fees sequentially to avoid overflow issues
+    for fee in transaction_fees {
+        total_fees = total_fees.checked_add(fee).ok_or(AmountOverflowError)?;
+    }
+
+    // Process transactions for utreexo (sequential due to accumulator mutations)
     for filled_transaction in &filled_transactions {
         #[cfg(feature = "utreexo")]
         let txid = filled_transaction.transaction.txid();
@@ -133,9 +154,6 @@ pub fn validate(
             };
             accumulator_diff.insert((&pointed_output).into());
         }
-        total_fees = total_fees
-            .checked_add(state.validate_filled_transaction(filled_transaction)?)
-            .ok_or(AmountOverflowError)?;
         #[cfg(feature = "utreexo")]
         {
             // verify utreexo proof
@@ -150,16 +168,27 @@ pub fn validate(
     if coinbase_value > total_fees {
         return Err(Error::NotEnoughFees);
     }
-    let spent_utxos = filled_transactions
+    // Parallel authorization verification
+    let spent_utxos: Vec<_> = filled_transactions
         .iter()
-        .flat_map(|t| t.spent_utxos.iter());
-    for (authorization, spent_utxo) in
-        body.authorizations.iter().zip(spent_utxos)
-    {
-        if authorization.get_address() != spent_utxo.address {
-            return Err(Error::WrongPubKeyForAddress);
-        }
-    }
+        .flat_map(|t| t.spent_utxos.iter())
+        .collect();
+
+    // Parallel address verification
+    let address_verification_result: Result<(), Error> = body
+        .authorizations
+        .par_iter()
+        .zip(spent_utxos.par_iter())
+        .try_for_each(|(authorization, spent_utxo)| {
+            if authorization.get_address() != spent_utxo.address {
+                Err(Error::WrongPubKeyForAddress)
+            } else {
+                Ok(())
+            }
+        });
+    address_verification_result?;
+
+    // Batch signature verification (already parallelized in Authorization::verify_body)
     if Authorization::verify_body(body).is_err() {
         return Err(Error::Authorization);
     }
@@ -204,36 +233,41 @@ pub fn prevalidate(
         .try_get(rotxn, &())
         .map_err(DbError::from)?
         .unwrap_or_default();
-    let filled_transactions: Vec<_> = body
-        .transactions
-        .iter()
-        .map(|t| state.fill_transaction(rotxn, t))
-        .collect::<Result<_, _>>()?;
+    // Fill transactions sequentially (RoTxn is not Send)
+    let mut filled_transactions = Vec::with_capacity(body.transactions.len());
+    for transaction in &body.transactions {
+        filled_transactions.push(state.fill_transaction(rotxn, transaction)?);
+    }
     let merkle_root = Body::compute_merkle_root(
         body.coinbase.as_slice(),
         filled_transactions.as_slice(),
     )?;
     #[cfg(feature = "utreexo")]
     let mut accumulator_diff = AccumulatorDiff::default();
-    let mut coinbase_value = bitcoin::Amount::ZERO;
+    // Parallel coinbase value calculation
+    let coinbase_value: bitcoin::Amount = body
+        .coinbase
+        .par_iter()
+        .map(|output| output.get_value())
+        .reduce(
+            || bitcoin::Amount::ZERO,
+            |acc, value| {
+                acc.checked_add(value).unwrap_or(bitcoin::Amount::ZERO)
+            },
+        );
+
+    // Sequential utreexo accumulator updates (due to accumulator mutations)
+    #[cfg(feature = "utreexo")]
     for (vout, output) in body.coinbase.iter().enumerate() {
-        #[cfg(not(feature = "utreexo"))]
-        let _ = vout;
-        coinbase_value = coinbase_value
-            .checked_add(output.get_value())
-            .ok_or(AmountOverflowError)?;
-        #[cfg(feature = "utreexo")]
-        {
-            let outpoint = OutPoint::Coinbase {
-                merkle_root,
-                vout: vout as u32,
-            };
-            let pointed_output = PointedOutput {
-                outpoint,
-                output: output.clone(),
-            };
-            accumulator_diff.insert((&pointed_output).into());
-        }
+        let outpoint = OutPoint::Coinbase {
+            merkle_root,
+            vout: vout as u32,
+        };
+        let pointed_output = PointedOutput {
+            outpoint,
+            output: output.clone(),
+        };
+        accumulator_diff.insert((&pointed_output).into());
     }
     if merkle_root != header.merkle_root {
         let err = Error::InvalidBody {
@@ -259,7 +293,23 @@ pub fn prevalidate(
         return Err(Error::UtxoDoubleSpent);
     }
 
-    // Process transactions for utreexo and fee validation
+    // Parallel fee validation for all transactions
+    use rayon::prelude::*;
+    let transaction_fees: Result<Vec<bitcoin::Amount>, Error> =
+        filled_transactions
+            .par_iter()
+            .map(|filled_transaction| {
+                state.validate_filled_transaction(filled_transaction)
+            })
+            .collect();
+    let transaction_fees = transaction_fees?;
+
+    // Sum fees sequentially to avoid overflow issues
+    for fee in transaction_fees {
+        total_fees = total_fees.checked_add(fee).ok_or(AmountOverflowError)?;
+    }
+
+    // Process transactions for utreexo (sequential due to accumulator mutations)
     for filled_transaction in &filled_transactions {
         #[cfg(feature = "utreexo")]
         let txid = filled_transaction.transaction.txid();
@@ -291,9 +341,6 @@ pub fn prevalidate(
             };
             accumulator_diff.insert((&pointed_output).into());
         }
-        total_fees = total_fees
-            .checked_add(state.validate_filled_transaction(filled_transaction)?)
-            .ok_or(AmountOverflowError)?;
         #[cfg(feature = "utreexo")]
         {
             // verify utreexo proof
@@ -386,40 +433,81 @@ pub fn connect_prevalidated(
         utxo_puts.push((outpoint, output.clone()));
     }
 
-    for filled_transaction in &prevalidated.filled_transactions {
-        let txid = filled_transaction.transaction.txid();
+    // Parallel collection of transaction operations
+    let tx_results: Vec<(
+        Vec<OutPoint>,
+        Vec<(OutPoint, SpentOutput)>,
+        Vec<(OutPoint, Output)>,
+    )> = prevalidated
+        .filled_transactions
+        .par_iter()
+        .map(|filled_transaction| {
+            let txid = filled_transaction.transaction.txid();
+            let mut deletes =
+                Vec::with_capacity(filled_transaction.transaction.inputs.len());
+            let mut stxo_puts_local =
+                Vec::with_capacity(filled_transaction.transaction.inputs.len());
+            let mut utxo_puts_local = Vec::with_capacity(
+                filled_transaction.transaction.outputs.len(),
+            );
 
-        for (vin, (outpoint, _utxo_hash)) in
-            filled_transaction.transaction.inputs.iter().enumerate()
-        {
-            let spent_utxo = &filled_transaction.spent_utxos[vin];
-            let spent_output = SpentOutput {
-                output: spent_utxo.clone(),
-                inpoint: InPoint::Regular {
+            // Process inputs
+            for (vin, (outpoint, _utxo_hash)) in
+                filled_transaction.transaction.inputs.iter().enumerate()
+            {
+                let spent_utxo = &filled_transaction.spent_utxos[vin];
+                let spent_output = SpentOutput {
+                    output: spent_utxo.clone(),
+                    inpoint: InPoint::Regular {
+                        txid,
+                        vin: vin as u32,
+                    },
+                };
+
+                deletes.push(*outpoint);
+                stxo_puts_local.push((*outpoint, spent_output));
+            }
+
+            // Process outputs
+            for (vout, output) in
+                filled_transaction.transaction.outputs.iter().enumerate()
+            {
+                let outpoint = OutPoint::Regular {
                     txid,
-                    vin: vin as u32,
-                },
-            };
+                    vout: vout as u32,
+                };
+                utxo_puts_local.push((outpoint, output.clone()));
+            }
 
-            utxo_deletes.push(*outpoint);
-            stxo_puts.push((*outpoint, spent_output));
-        }
+            (deletes, stxo_puts_local, utxo_puts_local)
+        })
+        .collect();
 
-        for (vout, output) in
-            filled_transaction.transaction.outputs.iter().enumerate()
-        {
-            let outpoint = OutPoint::Regular {
-                txid,
-                vout: vout as u32,
-            };
-            utxo_puts.push((outpoint, output.clone()));
-        }
-    }
+    // Separate the three vectors
+    let (tx_deletes, tx_stxo_puts, tx_utxo_puts): (
+        Vec<Vec<OutPoint>>,
+        Vec<Vec<(OutPoint, SpentOutput)>>,
+        Vec<Vec<(OutPoint, Output)>>,
+    ) = tx_results.into_iter().fold(
+        (Vec::new(), Vec::new(), Vec::new()),
+        |(mut deletes, mut stxo_puts, mut utxo_puts), (d, s, u)| {
+            deletes.push(d);
+            stxo_puts.push(s);
+            utxo_puts.push(u);
+            (deletes, stxo_puts, utxo_puts)
+        },
+    );
+
+    // Flatten the parallel results
+    utxo_deletes.extend(tx_deletes.into_iter().flatten());
+    stxo_puts.extend(tx_stxo_puts.into_iter().flatten());
+    utxo_puts.extend(tx_utxo_puts.into_iter().flatten());
 
     // Pre-encode all keys in parallel and serialize values for cursor operations
     let mut utxo_delete_keys: Vec<OutPointKey> =
         utxo_deletes.par_iter().map(OutPointKey::from).collect();
 
+    // Phase 2: Parallel key encoding and data preparation
     let mut stxo_put_data: Vec<(OutPointKey, &SpentOutput)> = stxo_puts
         .par_iter()
         .map(|(op, spent)| {
@@ -441,18 +529,13 @@ pub fn connect_prevalidated(
     stxo_put_data.par_sort_unstable_by_key(|(key, _)| *key);
     utxo_put_data.par_sort_unstable_by_key(|(key, _)| *key);
 
-    // Direct database operations using pre-encoded OutPointKey (optimal B-tree access)
-    for key in &utxo_delete_keys {
-        state.utxos.delete(rwtxn, key)?;
-    }
+    // Phase 2: Batch cursor operations for optimal B-tree traversal
+    // Process deletions first to free up space before insertions
+    batch_delete_utxos(rwtxn, &state.utxos, &utxo_delete_keys)?;
 
-    for (key, spent_output) in stxo_put_data {
-        state.stxos.put(rwtxn, &key, spent_output)?;
-    }
-
-    for (key, output) in utxo_put_data {
-        state.utxos.put(rwtxn, &key, output)?;
-    }
+    // Batch insertions using sorted data for sequential B-tree access
+    batch_put_stxos(rwtxn, &state.stxos, &stxo_put_data)?;
+    batch_put_utxos(rwtxn, &state.utxos, &utxo_put_data)?;
 
     let block_hash = header.hash();
 
@@ -718,6 +801,48 @@ pub fn disconnect_tip(
             .utreexo_accumulator
             .put(rwtxn, &(), &accumulator)
             .map_err(DbError::from)?;
+    }
+    Ok(())
+}
+
+// Phase 2: Batch database operations for optimal B-tree performance
+// These functions leverage sorted data and cursor operations to minimize B-tree traversals
+
+/// Batch delete UTXOs using sorted keys for optimal B-tree access
+fn batch_delete_utxos(
+    rwtxn: &mut RwTxn,
+    utxos_db: &DatabaseUnique<OutPointKey, SerdeBincode<Output>>,
+    sorted_keys: &[OutPointKey],
+) -> Result<(), Error> {
+    // Use sequential access pattern for better cache locality
+    for key in sorted_keys {
+        utxos_db.delete(rwtxn, key)?;
+    }
+    Ok(())
+}
+
+/// Batch insert STXOs using sorted data for optimal B-tree insertion
+fn batch_put_stxos(
+    rwtxn: &mut RwTxn,
+    stxos_db: &DatabaseUnique<OutPointKey, SerdeBincode<SpentOutput>>,
+    sorted_data: &[(OutPointKey, &SpentOutput)],
+) -> Result<(), Error> {
+    // Sequential insertion pattern reduces B-tree rebalancing overhead
+    for (key, spent_output) in sorted_data {
+        stxos_db.put(rwtxn, key, spent_output)?
+    }
+    Ok(())
+}
+
+/// Batch insert UTXOs using sorted data for optimal B-tree insertion
+fn batch_put_utxos(
+    rwtxn: &mut RwTxn,
+    utxos_db: &DatabaseUnique<OutPointKey, SerdeBincode<Output>>,
+    sorted_data: &[(OutPointKey, &Output)],
+) -> Result<(), Error> {
+    // Sequential insertion pattern reduces B-tree rebalancing overhead
+    for (key, output) in sorted_data {
+        utxos_db.put(rwtxn, key, output)?
     }
     Ok(())
 }

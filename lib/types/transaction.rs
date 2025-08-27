@@ -1,5 +1,5 @@
 use bitcoin::amount::CheckedSum;
-use borsh::BorshSerialize;
+use borsh::{BorshDeserialize, BorshSerialize};
 use heed::{BoxedError, BytesDecode, BytesEncode};
 #[cfg(feature = "utreexo")]
 use rustreexo::accumulator::{node_hash::BitcoinNodeHash, proof::Proof};
@@ -8,7 +8,7 @@ use thiserror::Error;
 use utoipa::ToSchema;
 
 use super::{Address, AmountOverflowError, Hash, M6id, MerkleRoot, Txid, hash};
-use crate::authorization::Authorization;
+use crate::types::Authorization;
 
 pub trait GetAddress {
     fn get_address(&self) -> Address;
@@ -36,8 +36,21 @@ where
     borsh::BorshSerialize::serialize(&(txid_bytes, vout), writer)
 }
 
+fn borsh_deserialize_bitcoin_outpoint<R>(
+    reader: &mut R,
+) -> borsh::io::Result<bitcoin::OutPoint>
+where
+    R: borsh::io::Read,
+{
+    let (txid_bytes, vout): ([u8; 32], u32) =
+        borsh::BorshDeserialize::deserialize_reader(reader)?;
+    use bitcoin::hashes::Hash as BitcoinHash;
+    let txid = bitcoin::Txid::from_byte_array(txid_bytes);
+    Ok(bitcoin::OutPoint { txid, vout })
+}
+
 #[derive(
-    BorshSerialize,
+    BorshDeserialize,
     Clone,
     Copy,
     Debug,
@@ -64,9 +77,36 @@ pub enum OutPoint {
     // Created by mainchain deposits.
     #[schema(value_type = crate::types::schema::BitcoinOutPoint)]
     Deposit(
-        #[borsh(serialize_with = "borsh_serialize_bitcoin_outpoint")]
+        #[borsh(
+            serialize_with = "borsh_serialize_bitcoin_outpoint",
+            deserialize_with = "borsh_deserialize_bitcoin_outpoint"
+        )]
         bitcoin::OutPoint,
     ),
+}
+
+impl BorshSerialize for OutPoint {
+    fn serialize<W: borsh::io::Write>(
+        &self,
+        writer: &mut W,
+    ) -> borsh::io::Result<()> {
+        match self {
+            OutPoint::Regular { txid, vout } => {
+                BorshSerialize::serialize(&0u8, writer)?;
+                BorshSerialize::serialize(txid, writer)?;
+                BorshSerialize::serialize(vout, writer)
+            }
+            OutPoint::Coinbase { merkle_root, vout } => {
+                BorshSerialize::serialize(&1u8, writer)?;
+                BorshSerialize::serialize(merkle_root, writer)?;
+                BorshSerialize::serialize(vout, writer)
+            }
+            OutPoint::Deposit(bitcoin_outpoint) => {
+                BorshSerialize::serialize(&2u8, writer)?;
+                borsh_serialize_bitcoin_outpoint(bitcoin_outpoint, writer)
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for OutPoint {
@@ -97,34 +137,97 @@ impl OutPointKey {
     pub fn as_bytes(&self) -> &[u8; 37] {
         &self.0
     }
+
+    /// Fast comparison for same tag types (cache-friendly)
+    #[inline]
+    pub fn fast_cmp_same_tag(&self, other: &Self) -> std::cmp::Ordering {
+        // Skip tag comparison when we know they're the same type
+        // Compare ID first (32 bytes), then vout (4 bytes)
+        match self.0[1..33].cmp(&other.0[1..33]) {
+            std::cmp::Ordering::Equal => self.0[33..37].cmp(&other.0[33..37]),
+            other => other,
+        }
+    }
+
+    /// Get the tag byte for type checking
+    #[inline]
+    pub fn tag(&self) -> u8 {
+        self.0[0]
+    }
+
+    /// Get the vout as u32 without full deserialization
+    #[inline]
+    pub fn vout(&self) -> u32 {
+        u32::from_be_bytes([self.0[33], self.0[34], self.0[35], self.0[36]])
+    }
+
+    /// Get the ID bytes (txid/merkle_root)
+    #[inline]
+    pub fn id_bytes(&self) -> &[u8; 32] {
+        // Safety: we know bytes 1..33 form a 32-byte array
+        unsafe { &*(self.0[1..33].as_ptr() as *const [u8; 32]) }
+    }
 }
 
 impl From<OutPoint> for OutPointKey {
     #[inline]
     fn from(op: OutPoint) -> Self {
-        let mut k = [0u8; 37];
-        match op {
-            OutPoint::Regular {
-                txid: Txid(id),
-                vout,
-            } => {
-                k[0] = 0;
-                k[1..33].copy_from_slice(&id);
-                k[33..37].copy_from_slice(&vout.to_be_bytes());
+        // Use uninitialized array for better performance
+        let mut k = std::mem::MaybeUninit::<[u8; 37]>::uninit();
+        let k_ptr = k.as_mut_ptr() as *mut u8;
+
+        unsafe {
+            match op {
+                OutPoint::Regular {
+                    txid: Txid(id),
+                    vout,
+                } => {
+                    *k_ptr = 0;
+                    std::ptr::copy_nonoverlapping(
+                        id.as_ptr(),
+                        k_ptr.add(1),
+                        32,
+                    );
+                    let vout_bytes = vout.to_be_bytes();
+                    std::ptr::copy_nonoverlapping(
+                        vout_bytes.as_ptr(),
+                        k_ptr.add(33),
+                        4,
+                    );
+                }
+                OutPoint::Coinbase { merkle_root, vout } => {
+                    *k_ptr = 1;
+                    let id: Hash = merkle_root.into();
+                    std::ptr::copy_nonoverlapping(
+                        id.as_ptr(),
+                        k_ptr.add(1),
+                        32,
+                    );
+                    let vout_bytes = vout.to_be_bytes();
+                    std::ptr::copy_nonoverlapping(
+                        vout_bytes.as_ptr(),
+                        k_ptr.add(33),
+                        4,
+                    );
+                }
+                OutPoint::Deposit(ref bop) => {
+                    *k_ptr = 2;
+                    let txid_bytes: &[u8; 32] = bop.txid.as_ref();
+                    std::ptr::copy_nonoverlapping(
+                        txid_bytes.as_ptr(),
+                        k_ptr.add(1),
+                        32,
+                    );
+                    let vout_bytes = bop.vout.to_be_bytes();
+                    std::ptr::copy_nonoverlapping(
+                        vout_bytes.as_ptr(),
+                        k_ptr.add(33),
+                        4,
+                    );
+                }
             }
-            OutPoint::Coinbase { merkle_root, vout } => {
-                k[0] = 1;
-                let id: Hash = merkle_root.into();
-                k[1..33].copy_from_slice(&id);
-                k[33..37].copy_from_slice(&vout.to_be_bytes());
-            }
-            OutPoint::Deposit(ref bop) => {
-                k[0] = 2;
-                k[1..33].copy_from_slice(bop.txid.as_ref());
-                k[33..37].copy_from_slice(&bop.vout.to_be_bytes());
-            }
+            Self(k.assume_init())
         }
-        Self(k)
     }
 }
 
@@ -139,23 +242,22 @@ impl From<OutPointKey> for OutPoint {
     #[inline]
     fn from(key: OutPointKey) -> Self {
         let tag = key.0[0];
-        let mut id = [0u8; 32];
-        id.copy_from_slice(&key.0[1..33]);
-        let vout =
-            u32::from_be_bytes([key.0[33], key.0[34], key.0[35], key.0[36]]);
+        // Use direct pointer access for better performance
+        let id_bytes = key.id_bytes();
+        let vout = key.vout();
 
         match tag {
             0 => OutPoint::Regular {
-                txid: Txid(id),
+                txid: Txid(*id_bytes),
                 vout,
             },
             1 => OutPoint::Coinbase {
-                merkle_root: MerkleRoot::from(Hash::from(id)),
+                merkle_root: MerkleRoot::from(Hash::from(*id_bytes)),
                 vout,
             },
             2 => {
                 use bitcoin::hashes::Hash as BitcoinHash;
-                let txid = bitcoin::Txid::from_byte_array(id);
+                let txid = bitcoin::Txid::from_byte_array(*id_bytes);
                 OutPoint::Deposit(bitcoin::OutPoint { txid, vout })
             }
             _ => unreachable!("Invalid OutPointKey tag"),
@@ -218,7 +320,18 @@ impl<'a> BytesDecode<'a> for OutPointKey {
 }
 
 /// Reference to a tx input.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(
+    BorshDeserialize,
+    BorshSerialize,
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    Hash,
+    PartialEq,
+    Serialize,
+)]
 pub enum InPoint {
     /// Transaction input
     Regular {
@@ -242,6 +355,16 @@ where
     borsh::BorshSerialize::serialize(&bitcoin_amount.to_sat(), writer)
 }
 
+fn borsh_deserialize_bitcoin_amount<R>(
+    reader: &mut R,
+) -> borsh::io::Result<bitcoin::Amount>
+where
+    R: borsh::io::Read,
+{
+    let sats: u64 = borsh::BorshDeserialize::deserialize_reader(reader)?;
+    Ok(bitcoin::Amount::from_sat(sats))
+}
+
 fn borsh_serialize_bitcoin_address<V, W>(
     bitcoin_address: &bitcoin::Address<V>,
     writer: &mut W,
@@ -255,6 +378,19 @@ where
         .assume_checked_ref()
         .script_pubkey();
     borsh::BorshSerialize::serialize(spk.as_bytes(), writer)
+}
+
+fn borsh_deserialize_bitcoin_address<R>(
+    reader: &mut R,
+) -> borsh::io::Result<bitcoin::Address<bitcoin::address::NetworkUnchecked>>
+where
+    R: borsh::io::Read,
+{
+    let address_string: String =
+        borsh::BorshDeserialize::deserialize_reader(reader)?;
+    address_string.parse().map_err(|e| {
+        borsh::io::Error::new(borsh::io::ErrorKind::InvalidData, e)
+    })
 }
 
 mod content {
@@ -299,18 +435,37 @@ mod content {
         serde_with::FromInto<HumanReadableRepr>,
     >;
 
-    #[derive(borsh::BorshSerialize, Clone, Debug, Eq, PartialEq)]
+    #[derive(
+        borsh::BorshDeserialize,
+        borsh::BorshSerialize,
+        Clone,
+        Debug,
+        Eq,
+        PartialEq,
+    )]
     pub enum Content {
         Value(
-            #[borsh(serialize_with = "super::borsh_serialize_bitcoin_amount")]
+            #[borsh(
+                serialize_with = "super::borsh_serialize_bitcoin_amount",
+                deserialize_with = "super::borsh_deserialize_bitcoin_amount"
+            )]
             bitcoin::Amount,
         ),
         Withdrawal {
-            #[borsh(serialize_with = "super::borsh_serialize_bitcoin_amount")]
+            #[borsh(
+                serialize_with = "super::borsh_serialize_bitcoin_amount",
+                deserialize_with = "super::borsh_deserialize_bitcoin_amount"
+            )]
             value: bitcoin::Amount,
-            #[borsh(serialize_with = "super::borsh_serialize_bitcoin_amount")]
+            #[borsh(
+                serialize_with = "super::borsh_serialize_bitcoin_amount",
+                deserialize_with = "super::borsh_deserialize_bitcoin_amount"
+            )]
             main_fee: bitcoin::Amount,
-            #[borsh(serialize_with = "super::borsh_serialize_bitcoin_address")]
+            #[borsh(
+                serialize_with = "super::borsh_serialize_bitcoin_address",
+                deserialize_with = "super::borsh_deserialize_bitcoin_address"
+            )]
             main_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         },
     }
@@ -443,6 +598,7 @@ mod content {
 pub use content::Content;
 
 #[derive(
+    BorshDeserialize,
     BorshSerialize,
     Clone,
     Debug,
@@ -466,6 +622,7 @@ impl GetValue for Output {
 }
 
 #[derive(
+    BorshDeserialize,
     BorshSerialize,
     Clone,
     Debug,
@@ -503,7 +660,14 @@ impl From<PointedOutputRef<'_>> for BitcoinNodeHash {
 }
 
 #[derive(
-    BorshSerialize, Clone, Debug, Default, Deserialize, Serialize, ToSchema,
+    BorshDeserialize,
+    BorshSerialize,
+    Clone,
+    Debug,
+    Default,
+    Deserialize,
+    Serialize,
+    ToSchema,
 )]
 pub struct Transaction {
     #[schema(value_type = Vec<(OutPoint, String)>)]
@@ -529,7 +693,16 @@ impl Transaction {
 }
 
 /// Representation of a spent output
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(
+    BorshDeserialize,
+    BorshSerialize,
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    PartialEq,
+    Serialize,
+)]
 pub struct SpentOutput {
     pub output: Output,
     pub inpoint: InPoint,
@@ -586,7 +759,9 @@ impl FilledTransaction {
     }
 }
 
-#[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize)]
+#[derive(
+    BorshDeserialize, BorshSerialize, Clone, Debug, Deserialize, Serialize,
+)]
 pub struct Authorized<T> {
     pub transaction: T,
     /// Authorizations are called witnesses in Bitcoin.

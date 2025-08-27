@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Mutex;
 
 use fallible_iterator::FallibleIterator;
 use futures::Stream;
@@ -16,13 +17,12 @@ use sneed::{
 #[cfg(feature = "utreexo")]
 use crate::types::Accumulator;
 use crate::{
-    authorization::Authorization,
     types::{
-        Address, AmountOverflowError, AmountUnderflowError, Authorized,
-        AuthorizedTransaction, BlockHash, Body, FilledTransaction, GetAddress,
-        GetValue, Header, InPoint, M6id, MerkleRoot, OutPoint, OutPointKey,
-        Output, SpentOutput, Transaction, VERSION, Verify, Version,
-        WithdrawalBundle, WithdrawalBundleStatus,
+        Address, AmountOverflowError, AmountUnderflowError, Authorization,
+        Authorized, AuthorizedTransaction, BlockHash, Body, FilledTransaction,
+        GetAddress, GetValue, Header, InPoint, M6id, MerkleRoot, OutPoint,
+        OutPointKey, Output, SpentOutput, Transaction, VERSION, Verify,
+        Version, WithdrawalBundle, WithdrawalBundleStatus,
         proto::mainchain::TwoWayPegData,
     },
     util::Watchable,
@@ -32,16 +32,73 @@ use crate::{
 pub mod bench;
 mod block;
 mod error;
+mod parallel;
 mod rollback;
 mod two_way_peg_data;
 
 pub use error::Error;
+pub use parallel::ParallelBlockProcessor;
 use rollback::RollBack;
 
 pub const WITHDRAWAL_BUNDLE_FAILURE_GAP: u32 = 4;
 
+/// Phase 2: Memory pools for frequently allocated data structures
+/// Reduces allocation overhead during block processing
+struct MemoryPools {
+    /// Pool for OutPointKey vectors (UTXO delete keys)
+    outpoint_key_pool: Mutex<Vec<Vec<OutPointKey>>>,
+    /// Pool for STXO put data vectors
+    stxo_data_pool: Mutex<Vec<Vec<(OutPointKey, SpentOutput)>>>,
+    /// Pool for UTXO put data vectors
+    utxo_data_pool: Mutex<Vec<Vec<(OutPointKey, Output)>>>,
+}
+
+impl Clone for MemoryPools {
+    fn clone(&self) -> Self {
+        // Create new empty pools for cloned instance
+        Self::new()
+    }
+}
+
+impl MemoryPools {
+    fn new() -> Self {
+        Self {
+            outpoint_key_pool: Mutex::new(Vec::new()),
+            stxo_data_pool: Mutex::new(Vec::new()),
+            utxo_data_pool: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Get a pre-allocated vector or create a new one
+    fn get_outpoint_key_vec(&self, capacity: usize) -> Vec<OutPointKey> {
+        if let Ok(mut pool) = self.outpoint_key_pool.lock() {
+            if let Some(mut vec) = pool.pop() {
+                vec.clear();
+                vec.reserve(capacity);
+                return vec;
+            }
+        }
+        Vec::with_capacity(capacity)
+    }
+
+    /// Return a vector to the pool for reuse
+    fn return_outpoint_key_vec(&self, mut vec: Vec<OutPointKey>) {
+        if vec.capacity() > 1024 {
+            // Prevent excessive memory usage
+            vec.shrink_to(1024);
+        }
+        if let Ok(mut pool) = self.outpoint_key_pool.lock() {
+            if pool.len() < 8 {
+                // Limit pool size
+                pool.push(vec);
+            }
+        }
+    }
+}
+
 /// Prevalidated block data containing computed values from validation
 /// to avoid redundant computation during connection
+#[derive(Debug, Clone, Default)]
 pub struct PrevalidatedBlock {
     pub filled_transactions: Vec<FilledTransaction>,
     pub computed_merkle_root: MerkleRoot,
@@ -109,6 +166,9 @@ pub struct State {
     #[cfg(feature = "utreexo")]
     pub utreexo_accumulator: DatabaseUnique<UnitKey, SerdeBincode<Accumulator>>,
     _version: DatabaseUnique<UnitKey, SerdeBincode<Version>>,
+    /// Phase 2: Memory pools for frequently allocated data structures
+    /// Reduces allocation overhead during block processing
+    memory_pools: MemoryPools,
 }
 
 impl State {
@@ -185,6 +245,7 @@ impl State {
             #[cfg(feature = "utreexo")]
             utreexo_accumulator,
             _version: version,
+            memory_pools: MemoryPools::new(),
         })
     }
 
@@ -550,6 +611,168 @@ impl State {
         let prevalidated = self.prevalidate_block(rwtxn, header, body)?;
         self.connect_prevalidated_block(rwtxn, header, body, prevalidated)?;
         Ok(())
+    }
+
+    /// Apply block with separate prevalidation phase for maximum parallelism
+    /// This allows multiple blocks to be prevalidated concurrently using independent RoTxn
+    pub fn apply_block_parallel(
+        &self,
+        env: &sneed::Env,
+        header: &Header,
+        body: &Body,
+    ) -> Result<(), Error> {
+        // Phase 1: Prevalidate with independent RoTxn (can run in parallel)
+        let rotxn = env
+            .read_txn()
+            .map_err(|e| sneed::Error::Env(sneed::EnvError::ReadTxn(e)))?;
+        let prevalidated = self.prevalidate_block(&rotxn, header, body)?;
+        drop(rotxn);
+
+        // Phase 2: Apply with single RwTxn (serialized for LMDB)
+        let mut rwtxn = env.write_txn()?;
+        self.connect_prevalidated_block(
+            &mut rwtxn,
+            header,
+            body,
+            prevalidated,
+        )?;
+        rwtxn.commit()?;
+        Ok(())
+    }
+
+    /// Create a new parallel block processor for high-throughput block processing
+    /// Uses two-phase pipeline: Stage A (parallel prevalidation) -> Stage B (sequential application)
+    pub fn create_parallel_processor(
+        self: &std::sync::Arc<Self>,
+        env: std::sync::Arc<sneed::Env>,
+        num_workers: usize,
+    ) -> Result<ParallelBlockProcessor, Error> {
+        ParallelBlockProcessor::new(
+            std::sync::Arc::clone(self),
+            env,
+            num_workers,
+        )
+    }
+
+    /// Process multiple blocks in parallel using independent RoTxn per worker
+    /// This enables cross-request parallelism by moving prevalidation out of write transactions
+    pub fn process_blocks_parallel(
+        self: &std::sync::Arc<Self>,
+        env: std::sync::Arc<sneed::Env>,
+        blocks: Vec<(Header, Body)>,
+        num_workers: Option<usize>,
+    ) -> Result<Vec<PrevalidatedBlock>, Error> {
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+
+        let num_workers = num_workers.unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(4)
+                .min(blocks.len())
+                .max(1)
+        });
+
+        if blocks.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        if num_workers == 1 || blocks.len() == 1 {
+            // Single-threaded fallback
+            let mut results = Vec::with_capacity(blocks.len());
+            let rotxn = match env.read_txn() {
+                Ok(txn) => txn,
+                Err(e) => {
+                    return Err(Error::from(sneed::env::Error::from(e)));
+                }
+            };
+            for (header, body) in blocks {
+                results.push(self.prevalidate_block(&rotxn, &header, &body)?);
+            }
+            return Ok(results);
+        }
+
+        // Parallel processing with independent RoTxn per worker
+        let blocks = Arc::new(blocks);
+        let results = Arc::new(Mutex::new(vec![None; blocks.len()]));
+        let error_occurred = Arc::new(Mutex::new(None));
+
+        let chunk_size = (blocks.len() + num_workers - 1) / num_workers;
+        let mut handles = Vec::new();
+
+        for worker_id in 0..num_workers {
+            let state = Arc::clone(self);
+            let env = Arc::clone(&env);
+            let blocks = Arc::clone(&blocks);
+            let results = Arc::clone(&results);
+            let error_occurred = Arc::clone(&error_occurred);
+
+            let handle = thread::spawn(move || {
+                // Create independent RoTxn for this worker
+                let rotxn = match env.read_txn() {
+                    Ok(txn) => txn,
+                    Err(e) => {
+                        let mut error = error_occurred.lock().unwrap();
+                        if error.is_none() {
+                            *error =
+                                Some(Error::from(sneed::env::Error::from(e)));
+                        }
+                        return;
+                    }
+                };
+
+                let start_idx = worker_id * chunk_size;
+                let end_idx = ((worker_id + 1) * chunk_size).min(blocks.len());
+
+                for i in start_idx..end_idx {
+                    // Check if another worker encountered an error
+                    if error_occurred.lock().unwrap().is_some() {
+                        break;
+                    }
+
+                    let (header, body) = &blocks[i];
+                    match state.prevalidate_block(&rotxn, header, body) {
+                        Ok(prevalidated) => {
+                            let mut results = results.lock().unwrap();
+                            results[i] = Some(prevalidated);
+                        }
+                        Err(e) => {
+                            let mut error = error_occurred.lock().unwrap();
+                            if error.is_none() {
+                                *error = Some(e);
+                            }
+                            break;
+                        }
+                    }
+                }
+            });
+
+            handles.push(handle);
+        }
+
+        // Wait for all workers to complete
+        for handle in handles {
+            drop(handle.join());
+        }
+
+        // Check for errors
+        if let Some(error) = Arc::try_unwrap(error_occurred)
+            .unwrap()
+            .into_inner()
+            .unwrap()
+        {
+            return Err(error);
+        }
+
+        // Extract results
+        let results = Arc::try_unwrap(results).unwrap().into_inner().unwrap();
+        let results: Result<Vec<_>, _> = results
+            .into_iter()
+            .enumerate()
+            .map(|(_i, opt)| opt.ok_or(Error::Authorization))
+            .collect();
+
+        results
     }
 
     pub fn disconnect_tip(

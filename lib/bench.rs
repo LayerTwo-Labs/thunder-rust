@@ -3,8 +3,6 @@
 
 use criterion::{Criterion, criterion_group, criterion_main};
 
-#[allow(dead_code, unused_imports)]
-mod authorization;
 #[allow(dead_code)]
 mod state;
 #[allow(dead_code)]
