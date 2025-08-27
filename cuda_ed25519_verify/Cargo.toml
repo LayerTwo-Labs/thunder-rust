@@ -1,0 +1,34 @@
+[package]
+name = "cuda_ed25519_verify"
+version = "0.1.0"
+edition = "2021"
+description = "Simple threaded CUDA Ed25519 signature verification library"
+license = "Zlib"
+repository = "https://github.com/your-repo/cuda_ed25519_verify"
+keywords = ["ed25519", "cryptography", "signatures", "cuda", "threading"]
+categories = ["cryptography", "hardware-support"]
+
+[dependencies]
+ed25519-dalek = { version = "3.0.0-pre.0", features = ["batch"] }
+borsh = { version = "1.0", features = ["derive"] }
+rand = "0.8"
+anyhow = "1.0"
+
+[build-dependencies]
+bindgen = "0.70"
+cc = "1.0"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "gpu_verification"
+harness = false
+
+[lib]
+name = "cuda_ed25519_verify"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["cuda"]
+cuda = []

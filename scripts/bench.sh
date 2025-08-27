@@ -1,5 +1,5 @@
 #!/bin/sh
-RUSTFLAGS="-C target-cpu=native" cargo bench --package thunder --benches --features "bench"
+RUSTFLAGS="-C target-cpu=native" cargo bench --package thunder --benches --features "bench, gpu-verification"
 MEAN_NANOS=$(jq '.mean | .point_estimate' target/criterion/connect_blocks/new/estimates.json)
 MEDIAN_NANOS=$(jq '.median | .point_estimate' target/criterion/connect_blocks/new/estimates.json)
 MEAN_S=$(echo "scale=2; $MEAN_NANOS / 1000000000" | bc -l)

@@ -61,6 +61,7 @@ tonic = { workspace = true }
 tracing = { workspace = true }
 transitive = "1.0.1"
 utoipa = { workspace = true, features = ["macros", "non_strict_integers"] }
+cuda_ed25519_verify = { path = "../cuda_ed25519_verify", optional = true }
 
 [dependencies.educe]
 version = "0.6.0"
@@ -88,6 +89,7 @@ bench = [
 ]
 clap = ["dep:clap"]
 utreexo = ["dep:rustreexo"]
+gpu-verification = ["dep:cuda_ed25519_verify"]
 
 [lints]
 workspace = true
