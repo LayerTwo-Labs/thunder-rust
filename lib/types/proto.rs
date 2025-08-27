@@ -835,6 +835,7 @@ pub mod mainchain {
                 prev_block_hash,
                 height,
                 work,
+                timestamp: _timestamp,
             } = header_info;
             let block_hash = block_hash
                 .as_ref()

@@ -667,7 +667,7 @@ const SEED_PREIMAGE: &[u8] = b"connect-blocks-benchmark-2025-08-19";
 /// Batching blocks reduces commit overhead and amortizes B+tree rebalancing.
 /// Higher values improve throughput but increase memory usage and crash recovery time.
 /// Hardcoded to 10 for the specific benchmark, but should be adjusted.
-const BATCH_SIZE: u32 = 10;
+const BATCH_SIZE: u32 = 5;
 
 pub fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("connect_blocks", |b| {
