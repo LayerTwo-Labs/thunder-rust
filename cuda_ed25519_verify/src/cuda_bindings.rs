@@ -160,7 +160,11 @@ pub fn verify_signatures_cuda(
             flat_public_keys.as_ptr(),
             flat_public_keys.len(),
         )?;
-        cuda_memcpy_h2d(d_messages, flat_messages.as_ptr(), flat_messages.len())?;
+        cuda_memcpy_h2d(
+            d_messages,
+            flat_messages.as_ptr(),
+            flat_messages.len(),
+        )?;
         cuda_memcpy_h2d(
             d_message_lengths,
             message_lengths.as_ptr() as *const c_uchar,

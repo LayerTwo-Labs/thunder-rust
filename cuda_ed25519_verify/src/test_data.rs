@@ -41,9 +41,7 @@ pub struct Output {
 
 /// Generate test data using the EXACT SAME logic as the working test_phase1_complete example
 /// This is the gold standard that we know works perfectly
-pub fn generate_test_data(
-    batch_size: usize,
-) -> Result<TestData> {
+pub fn generate_test_data(batch_size: usize) -> Result<TestData> {
     use rand::rngs::OsRng;
     use std::time::Instant;
 
@@ -146,15 +144,10 @@ pub fn verify_test_data_cpu(
     let batch_size = signatures.len();
 
     // Convert to ed25519_dalek types
-    let dalek_signatures: Vec<Signature> = signatures
-        .iter()
-        .map(Signature::from_bytes)
-        .collect();
+    let dalek_signatures: Vec<Signature> =
+        signatures.iter().map(Signature::from_bytes).collect();
     let dalek_public_keys: std::result::Result<Vec<VerifyingKey>, _> =
-        public_keys
-            .iter()
-            .map(VerifyingKey::from_bytes)
-            .collect();
+        public_keys.iter().map(VerifyingKey::from_bytes).collect();
     let dalek_public_keys = dalek_public_keys.map_err(|e| {
         crate::error::CudaError::InvalidInput(format!(
             "Invalid public key: {}",
