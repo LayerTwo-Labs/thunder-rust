@@ -12,8 +12,6 @@ use crate::types::{
     get_address,
 };
 
-use hex;
-
 fn borsh_serialize_verifying_key<W>(
     vk: &VerifyingKey,
     writer: &mut W,
@@ -148,7 +146,7 @@ impl utoipa::ToSchema for Authorization {
 
 impl utoipa::PartialSchema for Authorization {
     fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-        use utoipa::openapi::*;
+        use utoipa::openapi::{Object, RefOr, Schema, schema};
         let obj = Object::builder()
             .property(
                 "verifying_key",

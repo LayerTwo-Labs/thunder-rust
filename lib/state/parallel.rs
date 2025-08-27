@@ -170,7 +170,7 @@ impl ValidationWorker {
                 };
                 let key = OutPointKey::from(&outpoint);
                 let serialized = borsh::to_vec(output)
-                    .map_err(|e| crate::state::Error::BorshSerialize(e))?;
+                    .map_err(crate::state::Error::BorshSerialize)?;
                 Ok::<(OutPointKey, Vec<u8>), crate::state::Error>((
                     key, serialized,
                 ))
@@ -283,7 +283,7 @@ impl ValidationWorker {
             };
 
             // Send result to Stage B coordinator
-            if let Err(_) = self.result_sender.send(validation_result) {
+            if self.result_sender.send(validation_result).is_err() {
                 tracing::warn!(
                     "Worker {} failed to send result - coordinator may have shut down",
                     self.worker_id
@@ -512,7 +512,7 @@ impl WriterCoordinator {
             // Deserialize the SpentOutput to use with the typed database
             let spent_output: SpentOutput =
                 borsh::from_slice(serialized_spent_output)
-                    .map_err(|e| Error::BorshDeserialize(e))?;
+                    .map_err(Error::BorshDeserialize)?;
             self.state.stxos.put(rwtxn, key, &spent_output)?;
         }
 
@@ -521,7 +521,7 @@ impl WriterCoordinator {
             // Deserialize the Output to use with the typed database
             let output: crate::types::Output =
                 borsh::from_slice(serialized_output)
-                    .map_err(|e| Error::BorshDeserialize(e))?;
+                    .map_err(Error::BorshDeserialize)?;
             self.state.utxos.put(rwtxn, key, &output)?;
         }
 
@@ -554,7 +554,7 @@ impl ParallelBlockProcessor {
         env: Arc<Env>,
         num_workers: usize,
     ) -> Result<Self, Error> {
-        let num_workers = num_workers.min(MAX_PARALLEL_BLOCKS).max(1);
+        let num_workers = num_workers.clamp(1, MAX_PARALLEL_BLOCKS);
 
         // Create channels for Stage A (parallel workers)
         let mut work_senders = Vec::with_capacity(num_workers);
@@ -713,13 +713,10 @@ impl Drop for ParallelBlockProcessor {
             self.work_senders.clear();
 
             // Wait for coordinator if still running
-            if let Some(coordinator_handle) = self.coordinator_handle.take() {
-                if let Err(e) = coordinator_handle.join() {
-                    tracing::error!(
-                        "Coordinator panicked during drop: {:?}",
-                        e
-                    );
-                }
+            if let Some(coordinator_handle) = self.coordinator_handle.take()
+                && let Err(e) = coordinator_handle.join()
+            {
+                tracing::error!("Coordinator panicked during drop: {:?}", e);
             }
         }
     }
@@ -832,17 +829,17 @@ mod tests {
         };
 
         // Test coordination logic
-        if let Some(work) = pending_work.remove(&result.block_id) {
-            if result.result.is_ok() {
-                let pending = PendingBlock {
-                    block_id: work.block_id,
-                    header: work.header,
-                    body: work.body,
-                    prevalidated: result.result.unwrap(),
-                    serialized_data: result.serialized_data,
-                };
-                pending_blocks.insert(work.block_id, pending);
-            }
+        if let Some(work) = pending_work.remove(&result.block_id)
+            && result.result.is_ok()
+        {
+            let pending = PendingBlock {
+                block_id: work.block_id,
+                header: work.header,
+                body: work.body,
+                prevalidated: result.result.unwrap(),
+                serialized_data: result.serialized_data,
+            };
+            pending_blocks.insert(work.block_id, pending);
         }
 
         assert_eq!(pending_blocks.len(), 1);
@@ -900,6 +897,7 @@ mod tests {
 
     /// Integration test demonstrating Phase 1, 2, and 3 optimization compatibility
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn test_phase_integration() {
         // This test validates that Phase 3 parallel processing integrates
         // correctly with Phase 1 (sorted operations) and Phase 2 (memory pools)
@@ -916,7 +914,7 @@ mod tests {
         assert_eq!(memory_pool.capacity(), 100);
 
         // Phase 3: Parallel processing maintains data integrity
-        let block_ids = vec![0, 1, 2, 3, 4];
+        let block_ids = [0, 1, 2, 3, 4];
         let processed_in_parallel =
             block_ids.iter().map(|&id| id * 2).collect::<Vec<_>>();
         assert_eq!(processed_in_parallel, vec![0, 2, 4, 6, 8]);

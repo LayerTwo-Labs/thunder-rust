@@ -9,7 +9,6 @@ use ed25519_dalek_bip32::{ChildIndex, DerivationPath, ExtendedSigningKey};
 use fallible_iterator::FallibleIterator as _;
 use futures::{Stream, StreamExt};
 
-use crate::types::get_address;
 use heed::types::{Bytes, SerdeBincode, U8};
 #[cfg(feature = "utreexo")]
 use rustreexo::accumulator::node_hash::BitcoinNodeHash;
@@ -21,10 +20,10 @@ use sneed::{
 use tokio_stream::{StreamMap, wrappers::WatchStream};
 
 #[cfg(feature = "utreexo")]
-use crate::types::{Accumulator, UtreexoError, get_address};
+use crate::types::{Accumulator, UtreexoError};
 pub use crate::types::{
     Address, Authorization, AuthorizedTransaction, GetValue, InPoint, OutPoint,
-    OutPointKey, Output, OutputContent, SpentOutput, Transaction,
+    OutPointKey, Output, OutputContent, SpentOutput, Transaction, get_address,
 };
 use crate::{
     types::{

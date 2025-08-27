@@ -12,10 +12,11 @@ use sneed::{Env, EnvError};
 #[cfg(feature = "utreexo")]
 use crate::types::{Accumulator, AccumulatorDiff};
 use crate::{
+    authorization::Authorization,
     state::State,
     types::{
-        Address, Authorization, Block, Body, FilledTransaction, GetValue as _,
-        Header, MerkleRoot, OutPoint, Output, OutputContent, PointedOutputRef,
+        Address, Block, Body, FilledTransaction, GetValue as _, Header,
+        MerkleRoot, OutPoint, Output, OutputContent, PointedOutputRef,
         Transaction, hash,
         proto::mainchain::{self, TwoWayPegData},
     },

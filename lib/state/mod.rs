@@ -71,12 +71,12 @@ impl MemoryPools {
 
     /// Get a pre-allocated vector or create a new one
     fn get_outpoint_key_vec(&self, capacity: usize) -> Vec<OutPointKey> {
-        if let Ok(mut pool) = self.outpoint_key_pool.lock() {
-            if let Some(mut vec) = pool.pop() {
-                vec.clear();
-                vec.reserve(capacity);
-                return vec;
-            }
+        if let Ok(mut pool) = self.outpoint_key_pool.lock()
+            && let Some(mut vec) = pool.pop()
+        {
+            vec.clear();
+            vec.reserve(capacity);
+            return vec;
         }
         Vec::with_capacity(capacity)
     }
@@ -87,11 +87,11 @@ impl MemoryPools {
             // Prevent excessive memory usage
             vec.shrink_to(1024);
         }
-        if let Ok(mut pool) = self.outpoint_key_pool.lock() {
-            if pool.len() < 8 {
-                // Limit pool size
-                pool.push(vec);
-            }
+        if let Ok(mut pool) = self.outpoint_key_pool.lock()
+            && pool.len() < 8
+        {
+            // Limit pool size
+            pool.push(vec);
         }
     }
 }
@@ -697,7 +697,7 @@ impl State {
         let results = Arc::new(Mutex::new(vec![None; blocks.len()]));
         let error_occurred = Arc::new(Mutex::new(None));
 
-        let chunk_size = (blocks.len() + num_workers - 1) / num_workers;
+        let chunk_size = blocks.len().div_ceil(num_workers);
         let mut handles = Vec::new();
 
         for worker_id in 0..num_workers {
@@ -768,8 +768,7 @@ impl State {
         let results = Arc::try_unwrap(results).unwrap().into_inner().unwrap();
         let results: Result<Vec<_>, _> = results
             .into_iter()
-            .enumerate()
-            .map(|(_i, opt)| opt.ok_or(Error::Authorization))
+            .map(|opt| opt.ok_or(Error::Authorization))
             .collect();
 
         results

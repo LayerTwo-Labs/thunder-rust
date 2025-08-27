@@ -434,6 +434,7 @@ pub fn connect_prevalidated(
     }
 
     // Parallel collection of transaction operations
+    #[allow(clippy::type_complexity)]
     let tx_results: Vec<(
         Vec<OutPoint>,
         Vec<(OutPoint, SpentOutput)>,
@@ -484,6 +485,7 @@ pub fn connect_prevalidated(
         .collect();
 
     // Separate the three vectors
+    #[allow(clippy::type_complexity)]
     let (tx_deletes, tx_stxo_puts, tx_utxo_puts): (
         Vec<Vec<OutPoint>>,
         Vec<Vec<(OutPoint, SpentOutput)>>,
