@@ -2,7 +2,7 @@ use std::{collections::HashMap, env, path::Path};
 
 use bitcoin::Amount;
 use criterion::Criterion;
-use ed25519_dalek::SigningKey;
+use ed25519_dalek::{SecretKey, SigningKey};
 use hashlink::{LinkedHashMap, LinkedHashSet};
 use rand_chacha::ChaCha20Rng;
 #[cfg(feature = "utreexo")]
@@ -70,13 +70,13 @@ where
 }
 
 /// Generate a signer
-fn gen_signer<Rng>(rng: &mut Rng) -> (Address, SigningKey)
+fn gen_signer<Rng>(rng: &mut Rng) -> (Address, SecretKey)
 where
     Rng: rand::CryptoRng + rand::Rng,
 {
     let sk = SigningKey::generate(rng);
     let addr = crate::authorization::get_address(&sk.verifying_key());
-    (addr, sk)
+    (addr, sk.to_bytes())
 }
 
 /// Signer pool that pre-generates a fixed number of signers, and generates
@@ -84,8 +84,8 @@ where
 struct SignerPool {
     rng: ChaCha20Rng,
     batch_size: u32,
-    signers: LinkedHashMap<Address, SigningKey>,
-    pre_generated: Vec<(Address, SigningKey)>,
+    signers: HashMap<Address, SecretKey>,
+    pre_generated: Vec<(Address, SecretKey)>,
 }
 
 impl SignerPool {
@@ -94,7 +94,7 @@ impl SignerPool {
     fn generate_batch(
         rng: &mut ChaCha20Rng,
         batch_size: u32,
-        output: &mut Vec<(Address, SigningKey)>,
+        output: &mut Vec<(Address, SecretKey)>,
     ) {
         use rayon::iter::{
             IndexedParallelIterator as _, IntoParallelIterator as _,
@@ -111,20 +111,29 @@ impl SignerPool {
         *rng = <ChaCha20Rng as rand::SeedableRng>::from_rng(&mut *rng).unwrap();
     }
 
-    fn new(rng: &mut ChaCha20Rng, batch_size: u32) -> anyhow::Result<Self> {
+    fn new(
+        rng: &mut ChaCha20Rng,
+        capacity: Option<usize>,
+        batch_size: u32,
+    ) -> anyhow::Result<Self> {
         let mut rng = <ChaCha20Rng as rand::SeedableRng>::from_rng(rng)?;
         let mut pre_generated = Vec::with_capacity(batch_size as usize);
         Self::generate_batch(&mut rng, batch_size, &mut pre_generated);
+        let signers = if let Some(capacity) = capacity {
+            HashMap::with_capacity(capacity)
+        } else {
+            HashMap::new()
+        };
         Ok(Self {
             rng,
             batch_size,
-            signers: LinkedHashMap::new(),
+            signers,
             pre_generated,
         })
     }
 
     /// Adds a new signer to the pool, and returns a reference to it
-    fn new_signer(&mut self) -> (Address, &SigningKey) {
+    fn new_signer(&mut self) -> (Address, &SecretKey) {
         let (addr, sk) = if let Some(signer) = self.pre_generated.pop() {
             signer
         } else {
@@ -140,7 +149,7 @@ impl SignerPool {
     }
 
     /// Removes a signer from the pool
-    fn remove(&mut self, addr: &Address) -> Option<SigningKey> {
+    fn remove(&mut self, addr: &Address) -> Option<SecretKey> {
         self.signers.remove(addr)
     }
 }
@@ -150,7 +159,7 @@ fn gen_initial_signers(
     rng: &mut ChaCha20Rng,
     n: u32,
 ) -> anyhow::Result<SignerPool> {
-    let mut res = SignerPool::new(rng, n)?;
+    let mut res = SignerPool::new(rng, Some(n as usize), n.min(1 << 10))?;
     for _ in 0..n {
         let _ = res.new_signer();
     }
@@ -286,12 +295,15 @@ where
         T: IntoIterator<Item = (OutPoint, Output)>,
     {
         use rand::prelude::SliceRandom as _;
-        let orig_len = self.outpoints.len();
-        for (outpoint, output) in iter.into_iter() {
+        let new_utxos: Vec<_> = iter.into_iter().collect();
+        let new_utxos_len = new_utxos.len();
+        self.outpoints.reserve_exact(new_utxos_len);
+        self.utxos.reserve(new_utxos_len);
+        for (outpoint, output) in new_utxos {
             self.utxos.insert(outpoint, output);
             self.outpoints.push(outpoint);
         }
-        if self.outpoints.len() != orig_len {
+        if new_utxos_len > 0 {
             self.outpoints.shuffle(&mut self.rng);
         }
     }
@@ -311,7 +323,7 @@ fn gen_tx<Rng>(
     signers: &mut SignerPool,
     utxo_set: &mut UtxoSet<Rng>,
     #[cfg(feature = "utreexo")] accumulator: &Accumulator,
-    used_signers: &mut Vec<SigningKey>,
+    used_signers: &mut Vec<SecretKey>,
 ) -> anyhow::Result<Option<(FilledTransaction, bitcoin::Amount)>>
 where
     Rng: rand::CryptoRng + rand::Rng,
@@ -361,13 +373,13 @@ where
 /// There must exist as many signers as tx inputs.
 fn batch_sign_txs(
     txs: &[Transaction],
-    signers: Vec<SigningKey>,
+    signers: Vec<SecretKey>,
 ) -> anyhow::Result<Vec<Authorization>> {
     use rayon::iter::{
         IndexedParallelIterator as _, IntoParallelIterator as _,
         ParallelIterator as _,
     };
-    let to_sign: Vec<(&Transaction, SigningKey)> = {
+    let to_sign: Vec<(&Transaction, SecretKey)> = {
         let mut to_sign = Vec::with_capacity(signers.len());
         let mut signers_iter = signers.into_iter();
         for tx in txs {
@@ -383,9 +395,12 @@ fn batch_sign_txs(
     let mut res = Vec::with_capacity(to_sign.len());
     to_sign
         .into_par_iter()
-        .map(|(tx, sk)| Authorization {
-            verifying_key: sk.verifying_key(),
-            signature: crate::authorization::sign(&sk, tx).unwrap(),
+        .map(|(tx, sk)| {
+            let sk = SigningKey::from(sk);
+            Authorization {
+                verifying_key: sk.verifying_key(),
+                signature: crate::authorization::sign(&sk, tx).unwrap(),
+            }
         })
         .collect_into_vec(&mut res);
     Ok(res)
