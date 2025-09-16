@@ -9,7 +9,7 @@ use std::{
 use bitcoin::amount::CheckedSum;
 use fallible_iterator::FallibleIterator;
 use futures::{Stream, future::BoxFuture};
-use sneed::{Env, EnvError, RwTxnError, db::error::Error as DbError};
+use sneed::{DbError, Env, EnvError, RwTxnError, env};
 use tokio::sync::Mutex;
 use tonic::transport::Channel;
 
@@ -35,7 +35,8 @@ use mainchain_task::MainchainTaskHandle;
 
 use self::net_task::NetTaskHandle;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, transitive::Transitive)]
+#[transitive(from(env::error::ReadTxn, EnvError))]
 pub enum Error {
     #[error("address parse error")]
     AddrParse(#[from] std::net::AddrParseError),
@@ -183,6 +184,14 @@ where
             net_task,
             state,
         })
+    }
+
+    pub fn env(&self) -> &Env {
+        &self.env
+    }
+
+    pub fn archive(&self) -> &Archive {
+        &self.archive
     }
 
     /// Borrow the CUSF mainchain client, and execute the provided future.
@@ -482,6 +491,21 @@ where
 
     pub fn get_active_peers(&self) -> Vec<Peer> {
         self.net.get_active_peers()
+    }
+
+    pub async fn request_mainchain_ancestor_infos(
+        &self,
+        block_hash: bitcoin::BlockHash,
+    ) -> Result<bool, Error> {
+        let mainchain_task::Response::AncestorInfos(_, res): mainchain_task::Response = self
+            .mainchain_task
+            .request_oneshot(mainchain_task::Request::AncestorInfos(
+                block_hash,
+            ))
+            .map_err(|_| Error::SendMainchainTaskRequest)?
+            .await
+            .map_err(|_| Error::ReceiveMainchainTaskResponse)?;
+        res.map_err(Error::MainchainAncestors)
     }
 
     /// Attempt to submit a block.

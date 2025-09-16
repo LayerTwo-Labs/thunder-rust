@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
+use fallible_iterator::FallibleIterator as _;
 use futures::{StreamExt, TryFutureExt};
 use parking_lot::RwLock;
 use rustreexo::accumulator::proof::Proof;
@@ -36,6 +37,8 @@ pub enum Error {
     Node(#[source] Box<node::Error>),
     #[error("No CUSF mainchain wallet client")]
     NoCusfMainchainWalletClient,
+    #[error("Failed to request mainchain ancestor info for {block_hash}")]
+    RequestMainchainAncestorInfos { block_hash: bitcoin::BlockHash },
     #[error("Utreexo error: {0}")]
     Utreexo(String),
     #[error("Unable to verify existence of CUSF mainchain service(s) at {url}")]
@@ -319,17 +322,6 @@ impl App {
         let Some(miner) = self.miner.as_ref() else {
             return Err(Error::NoCusfMainchainWalletClient);
         };
-        const NUM_TRANSACTIONS: usize = 1000;
-        let (txs, tx_fees) = self.node.get_transactions(NUM_TRANSACTIONS)?;
-        let coinbase = match tx_fees {
-            bitcoin::Amount::ZERO => vec![],
-            _ => vec![types::Output {
-                address: self.wallet.get_new_address()?,
-                content: types::OutputContent::Value(tx_fees),
-            }],
-        };
-        let body = types::Body::new(txs, coinbase);
-        let prev_side_hash = self.node.try_get_best_hash()?;
         let prev_main_hash = {
             let mut miner_write = miner.write().await;
             let prev_main_hash =
@@ -337,31 +329,149 @@ impl App {
             drop(miner_write);
             prev_main_hash
         };
-        let roots = {
-            let mut accumulator = self.node.get_tip_accumulator()?;
-            body.modify_memforest(&mut accumulator.0)
-                .map_err(Error::Utreexo)?;
-            accumulator
-                .0
-                .get_roots()
-                .iter()
-                .map(|root| root.get_data())
-                .collect()
-        };
-        let header = types::Header {
-            merkle_root: body.compute_merkle_root(),
-            roots,
-            prev_side_hash,
-            prev_main_hash,
-        };
-        let bribe = fee.unwrap_or_else(|| {
-            if tx_fees > bitcoin::Amount::ZERO {
-                tx_fees
-            } else {
-                Self::EMPTY_BLOCK_BMM_BRIBE
+        let tip_hash = self.node.try_get_best_hash()?;
+        // If `prev_side_hash` is not the best tip to mine on, then mine an
+        // empty block.
+        // This is a temporary fix, ideally we always choose the best tip to
+        // mine on
+        let prev_side_hash = if let Some(tip_hash) = tip_hash {
+            let tip_header = self.node.get_header(tip_hash)?;
+            let archive = self.node.archive();
+            let prev_main_hash_header_in_archive = {
+                let rotxn =
+                    self.node.env().read_txn().map_err(node::Error::from)?;
+                archive
+                    .try_get_main_header_info(&rotxn, &prev_main_hash)
+                    .map_err(node::Error::from)?
+                    .is_some()
+            };
+            if !prev_main_hash_header_in_archive {
+                // Request mainchain header info
+                if !self
+                    .node
+                    .request_mainchain_ancestor_infos(prev_main_hash)
+                    .await?
+                {
+                    return Err(Error::RequestMainchainAncestorInfos {
+                        block_hash: prev_main_hash,
+                    });
+                }
             }
-        });
-
+            let rotxn =
+                self.node.env().read_txn().map_err(node::Error::from)?;
+            let last_common_main_ancestor = archive
+                .last_common_main_ancestor(
+                    &rotxn,
+                    prev_main_hash,
+                    tip_header.prev_main_hash,
+                )
+                .map_err(node::Error::from)?;
+            if last_common_main_ancestor == tip_header.prev_main_hash {
+                Some(tip_hash)
+            } else {
+                // Find a tip to mine on
+                archive
+                    .ancestor_headers(&rotxn, tip_hash)
+                    .find_map(|(block_hash, header)| {
+                        if header.prev_main_hash == last_common_main_ancestor {
+                            Ok(None)
+                        } else if archive.is_main_descendant(
+                            &rotxn,
+                            header.prev_main_hash,
+                            last_common_main_ancestor,
+                        )? {
+                            Ok(Some(block_hash))
+                        } else {
+                            Ok(None)
+                        }
+                    })
+                    .map_err(node::Error::from)?
+            }
+        } else {
+            None
+        };
+        let (bribe, header, body) = if prev_side_hash == tip_hash {
+            const NUM_TRANSACTIONS: usize = 1000;
+            let (txs, tx_fees) =
+                self.node.get_transactions(NUM_TRANSACTIONS)?;
+            let coinbase = match tx_fees {
+                bitcoin::Amount::ZERO => Vec::new(),
+                _ => vec![types::Output {
+                    address: self.wallet.get_new_address()?,
+                    content: types::OutputContent::Value(tx_fees),
+                }],
+            };
+            let body = types::Body::new(txs, coinbase);
+            let roots = {
+                let mut accumulator = if let Some(tip_hash) = tip_hash {
+                    let rotxn = self
+                        .node
+                        .env()
+                        .read_txn()
+                        .map_err(node::Error::from)?;
+                    self.node
+                        .archive()
+                        .get_accumulator(&rotxn, tip_hash)
+                        .map_err(node::Error::from)?
+                } else {
+                    types::Accumulator::default()
+                };
+                body.modify_memforest(&mut accumulator.0)
+                    .map_err(Error::Utreexo)?;
+                accumulator
+                    .0
+                    .get_roots()
+                    .iter()
+                    .map(|root| root.get_data())
+                    .collect()
+            };
+            let header = types::Header {
+                merkle_root: body.compute_merkle_root(),
+                roots,
+                prev_side_hash,
+                prev_main_hash,
+            };
+            let bribe = fee.unwrap_or_else(|| {
+                if tx_fees > bitcoin::Amount::ZERO {
+                    tx_fees
+                } else {
+                    Self::EMPTY_BLOCK_BMM_BRIBE
+                }
+            });
+            (bribe, header, body)
+        } else {
+            let coinbase = Vec::new();
+            let body = types::Body::new(Vec::new(), coinbase);
+            let roots = {
+                let accumulator = if let Some(prev_side_hash) = prev_side_hash {
+                    let rotxn = self
+                        .node
+                        .env()
+                        .read_txn()
+                        .map_err(node::Error::from)?;
+                    self.node
+                        .archive()
+                        .get_accumulator(&rotxn, prev_side_hash)
+                        .map_err(node::Error::from)?
+                } else {
+                    types::Accumulator::default()
+                };
+                accumulator
+                    .0
+                    .get_roots()
+                    .iter()
+                    .map(|root| root.get_data())
+                    .collect()
+            };
+            let header = types::Header {
+                merkle_root: body.compute_merkle_root(),
+                roots,
+                prev_side_hash,
+                prev_main_hash,
+            };
+            let bribe = Self::EMPTY_BLOCK_BMM_BRIBE;
+            (bribe, header, body)
+        };
         let mut miner_write = miner.write().await;
         let bmm_txid = miner_write
             .attempt_bmm(bribe.to_sat(), 0, header, body)
