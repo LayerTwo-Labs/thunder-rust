@@ -613,7 +613,7 @@ impl Archive {
     }
 
     /// Returns true if the second specified block is a descendant of the first
-    /// specified block
+    /// specified block.
     /// Returns an error if either of the specified block headers do not exist
     /// in the archive.
     pub fn is_descendant(

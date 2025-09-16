@@ -6,6 +6,7 @@ use rustreexo::accumulator::{
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::{
+    borrow::Borrow,
     cmp::Ordering,
     collections::{BTreeMap, HashMap},
     sync::LazyLock,
@@ -635,10 +636,13 @@ impl Body {
             .collect()
     }
 
-    pub fn compute_merkle_root(
+    pub fn compute_merkle_root<FilledTx>(
         coinbase: &[Output],
-        txs: &[FilledTransaction],
-    ) -> Result<MerkleRoot, ComputeMerkleRootError> {
+        txs: &[FilledTx],
+    ) -> Result<MerkleRoot, ComputeMerkleRootError>
+    where
+        FilledTx: Borrow<FilledTransaction>,
+    {
         let CbmtNode {
             commitment: txs_root,
             ..
@@ -648,6 +652,7 @@ impl Body {
                 .iter()
                 .enumerate()
                 .map(|(idx, tx)| {
+                    let tx = tx.borrow();
                     let fees = tx.get_fee().map_err(|err| {
                         ComputeMerkleRootErrorInner {
                             txid: tx.transaction.txid(),
@@ -679,11 +684,14 @@ impl Body {
     }
 
     // Modifies the memforest, without checking tx proofs
-    pub fn modify_memforest(
+    pub fn modify_memforest<FilledTx>(
         coinbase: &[Output],
-        txs: &[FilledTransaction],
+        txs: &[FilledTx],
         memforest: &mut MemForest<BitcoinNodeHash>,
-    ) -> Result<MerkleRoot, ModifyMemForestError> {
+    ) -> Result<MerkleRoot, ModifyMemForestError>
+    where
+        FilledTx: Borrow<FilledTransaction>,
+    {
         // New leaves for the accumulator
         let mut accumulator_add = Vec::<BitcoinNodeHash>::new();
         // Accumulator leaves to delete
@@ -701,6 +709,7 @@ impl Body {
             accumulator_add.push((&pointed_output).into());
         }
         for tx in txs {
+            let tx = tx.borrow();
             let txid = tx.transaction.txid();
             for (_, utxo_hash) in tx.transaction.inputs.iter() {
                 accumulator_del.push(utxo_hash.into());

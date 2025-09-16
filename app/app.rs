@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
+use fallible_iterator::FallibleIterator as _;
 use futures::{StreamExt, TryFutureExt};
 use parking_lot::RwLock;
 use rustreexo::accumulator::proof::Proof;
@@ -7,7 +8,7 @@ use thunder::{
     miner::{self, Miner},
     node::{self, Node},
     types::{
-        self, Address, OutPoint, Output, Transaction,
+        self, Address, FilledTransaction, OutPoint, Output, Transaction,
         proto::mainchain::{
             self,
             generated::{validator_service_server, wallet_service_server},
@@ -38,6 +39,8 @@ pub enum Error {
     Node(#[source] Box<node::Error>),
     #[error("No CUSF mainchain wallet client")]
     NoCusfMainchainWalletClient,
+    #[error("Failed to request mainchain ancestor info for {block_hash}")]
+    RequestMainchainAncestorInfos { block_hash: bitcoin::BlockHash },
     #[error("Unable to verify existence of CUSF mainchain service(s) at {url}")]
     VerifyMainchainServices {
         url: Box<url::Url>,
@@ -320,39 +323,6 @@ impl App {
         let Some(miner) = self.miner.as_ref() else {
             return Err(Error::NoCusfMainchainWalletClient);
         };
-        const NUM_TRANSACTIONS: usize = 1000;
-        let (txs, tx_fees) = self.node.get_transactions(NUM_TRANSACTIONS)?;
-        let coinbase = match tx_fees {
-            bitcoin::Amount::ZERO => vec![],
-            _ => vec![types::Output {
-                address: self.wallet.get_new_address()?,
-                content: types::OutputContent::Value(tx_fees),
-            }],
-        };
-        let (merkle_root, roots) = {
-            let mut accumulator = self.node.get_tip_accumulator()?;
-            let txs = txs
-                .iter()
-                .map(|authorized_tx| authorized_tx.transaction.clone())
-                .collect::<Vec<_>>();
-            let merkle_root = thunder::types::Body::modify_memforest(
-                &coinbase,
-                &txs,
-                &mut accumulator.0,
-            )?;
-            let roots = accumulator
-                .0
-                .get_roots()
-                .iter()
-                .map(|root| root.get_data())
-                .collect();
-            (merkle_root, roots)
-        };
-        let body = {
-            let txs = txs.into_iter().map(|tx| tx.into()).collect();
-            types::Body::new(txs, coinbase)
-        };
-        let prev_side_hash = self.node.try_get_best_hash()?;
         let prev_main_hash = {
             let mut miner_write = miner.write().await;
             let prev_main_hash =
@@ -360,20 +330,162 @@ impl App {
             drop(miner_write);
             prev_main_hash
         };
-        let header = types::Header {
-            merkle_root,
-            roots,
-            prev_side_hash,
-            prev_main_hash,
-        };
-        let bribe = fee.unwrap_or_else(|| {
-            if tx_fees > bitcoin::Amount::ZERO {
-                tx_fees
-            } else {
-                Self::EMPTY_BLOCK_BMM_BRIBE
+        let tip_hash = self.node.try_get_best_hash()?;
+        // If `prev_side_hash` is not the best tip to mine on, then mine an
+        // empty block.
+        // This is a temporary fix, ideally we always choose the best tip to
+        // mine on
+        let prev_side_hash = if let Some(tip_hash) = tip_hash {
+            let tip_header = self.node.get_header(tip_hash)?;
+            let archive = self.node.archive();
+            let prev_main_hash_header_in_archive = {
+                let rotxn =
+                    self.node.env().read_txn().map_err(node::Error::from)?;
+                archive
+                    .try_get_main_header_info(&rotxn, &prev_main_hash)
+                    .map_err(node::Error::from)?
+                    .is_some()
+            };
+            if !prev_main_hash_header_in_archive {
+                // Request mainchain header info
+                if !self
+                    .node
+                    .request_mainchain_ancestor_infos(prev_main_hash)
+                    .await?
+                {
+                    return Err(Error::RequestMainchainAncestorInfos {
+                        block_hash: prev_main_hash,
+                    });
+                }
             }
-        });
-
+            let rotxn =
+                self.node.env().read_txn().map_err(node::Error::from)?;
+            let last_common_main_ancestor = archive
+                .last_common_main_ancestor(
+                    &rotxn,
+                    prev_main_hash,
+                    tip_header.prev_main_hash,
+                )
+                .map_err(node::Error::from)?;
+            if last_common_main_ancestor == tip_header.prev_main_hash {
+                Some(tip_hash)
+            } else {
+                // Find a tip to mine on
+                archive
+                    .ancestor_headers(&rotxn, tip_hash)
+                    .find_map(|(block_hash, header)| {
+                        if header.prev_main_hash == last_common_main_ancestor {
+                            Ok(None)
+                        } else if archive.is_main_descendant(
+                            &rotxn,
+                            header.prev_main_hash,
+                            last_common_main_ancestor,
+                        )? {
+                            Ok(Some(block_hash))
+                        } else {
+                            Ok(None)
+                        }
+                    })
+                    .map_err(node::Error::from)?
+            }
+        } else {
+            None
+        };
+        let (bribe, header, body) = if prev_side_hash == tip_hash {
+            const NUM_TRANSACTIONS: usize = 1000;
+            let (txs, tx_fees) =
+                self.node.get_transactions(NUM_TRANSACTIONS)?;
+            let coinbase = match tx_fees {
+                bitcoin::Amount::ZERO => Vec::new(),
+                _ => vec![types::Output {
+                    address: self.wallet.get_new_address()?,
+                    content: types::OutputContent::Value(tx_fees),
+                }],
+            };
+            let (merkle_root, roots) = {
+                let mut accumulator = if let Some(tip_hash) = tip_hash {
+                    let rotxn = self
+                        .node
+                        .env()
+                        .read_txn()
+                        .map_err(node::Error::from)?;
+                    self.node
+                        .archive()
+                        .get_accumulator(&rotxn, tip_hash)
+                        .map_err(node::Error::from)?
+                } else {
+                    types::Accumulator::default()
+                };
+                let merkle_root = thunder::types::Body::modify_memforest(
+                    &coinbase,
+                    &txs,
+                    &mut accumulator.0,
+                )?;
+                let roots = accumulator
+                    .0
+                    .get_roots()
+                    .iter()
+                    .map(|root| root.get_data())
+                    .collect();
+                (merkle_root, roots)
+            };
+            let body = types::Body::new(
+                txs.into_iter().map(|tx| tx.into()).collect(),
+                coinbase,
+            );
+            let header = types::Header {
+                merkle_root,
+                roots,
+                prev_side_hash,
+                prev_main_hash,
+            };
+            let bribe = fee.unwrap_or_else(|| {
+                if tx_fees > bitcoin::Amount::ZERO {
+                    tx_fees
+                } else {
+                    Self::EMPTY_BLOCK_BMM_BRIBE
+                }
+            });
+            (bribe, header, body)
+        } else {
+            let coinbase = Vec::new();
+            let (merkle_root, roots) = {
+                let mut accumulator = if let Some(tip_hash) = tip_hash {
+                    let rotxn = self
+                        .node
+                        .env()
+                        .read_txn()
+                        .map_err(node::Error::from)?;
+                    self.node
+                        .archive()
+                        .get_accumulator(&rotxn, tip_hash)
+                        .map_err(node::Error::from)?
+                } else {
+                    types::Accumulator::default()
+                };
+                let merkle_root = thunder::types::Body::modify_memforest::<
+                    FilledTransaction,
+                >(
+                    &coinbase, &[], &mut accumulator.0
+                )?;
+                let roots = accumulator
+                    .0
+                    .get_roots()
+                    .iter()
+                    .map(|root| root.get_data())
+                    .collect();
+                (merkle_root, roots)
+            };
+            let body = types::Body::new(Vec::new(), coinbase);
+            let header = types::Header {
+                merkle_root,
+                roots,
+                prev_side_hash,
+                prev_main_hash,
+            };
+            let bribe = Self::EMPTY_BLOCK_BMM_BRIBE;
+            (bribe, header, body)
+        };
         let mut miner_write = miner.write().await;
         let bmm_txid = miner_write
             .attempt_bmm(bribe.to_sat(), 0, header, body)
