@@ -13,6 +13,7 @@ bitcoin = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["derive"] }
 dirs = "5.0.1"
 eframe = "0.30.0"
+fallible-iterator = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 human-size = "0.4.3"
