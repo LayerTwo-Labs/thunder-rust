@@ -23,8 +23,8 @@ pub use address::Address;
 pub use hashes::{BlockHash, Hash, M6id, MerkleRoot, Txid, hash};
 pub use transaction::{
     AuthorizedTransaction, Body, Content as OutputContent, FilledTransaction,
-    GetAddress, GetValue, InPoint, OutPoint, Output, PointedOutput,
-    SpentOutput, Transaction, Verify,
+    GetAddress, GetValue, InPoint, OutPoint, OutPointKey, Output,
+    PointedOutput, SpentOutput, Transaction, Verify,
 };
 
 pub const THIS_SIDECHAIN: u8 = 9;
@@ -311,7 +311,7 @@ impl PartialOrd for AggregatedWithdrawal {
 /// Removing twice will cause one deletion.
 /// Inserting and then removing will have no overall effect,
 /// but a second removal will still cause a deletion.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 #[repr(transparent)]
 pub struct AccumulatorDiff(
     /// `true` indicates insertion, `false` indicates removal.
@@ -360,7 +360,11 @@ impl Accumulator {
         &mut self,
         diff: AccumulatorDiff,
     ) -> Result<(), UtreexoError> {
-        let (mut insertions, mut deletions) = (Vec::new(), Vec::new());
+        let capacity = diff.0.len();
+        let (mut insertions, mut deletions) = (
+            Vec::with_capacity(capacity / 2 + 1),
+            Vec::with_capacity(capacity / 2 + 1),
+        );
         for (utxo_hash, insert) in diff.0 {
             if insert {
                 insertions.push(utxo_hash);

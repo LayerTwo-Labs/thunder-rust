@@ -1,7 +1,6 @@
-use std::path::Path;
-
 use clap::Parser as _;
-
+use mimalloc::MiMalloc;
+use std::path::Path;
 use tokio::{signal::ctrl_c, sync::oneshot};
 use tracing_subscriber::{
     Layer, filter as tracing_filter, fmt::format, layer::SubscriberExt,
@@ -13,6 +12,26 @@ mod gui;
 mod line_buffer;
 mod rpc_server;
 mod util;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
+fn configure_mimalloc() {
+    // Tune mimalloc via environment variables
+    unsafe {
+        std::env::set_var("MIMALLOC_ABANDONED_PAGE_LIMIT", "4");
+        std::env::set_var("MIMALLOC_ABANDONED_PAGE_RESET", "1");
+        std::env::set_var("MIMALLOC_ARENA_LIMIT", "4");
+        std::env::set_var("MIMALLOC_USE_NUMA_NODES", "all");
+        std::env::set_var("MIMALLOC_EAGER_COMMIT", "1");
+        std::env::set_var("MIMALLOC_EAGER_REGION_COMMIT", "1");
+        std::env::set_var("MIMALLOC_SEGMENT_CACHE", "32");
+        std::env::set_var("MIMALLOC_LARGE_OS_PAGES", "1");
+        std::env::set_var("MIMALLOC_RESERVE_HUGE_OS_PAGES", "4");
+        std::env::set_var("MIMALLOC_PAGE_RESET", "0");
+        std::env::set_var("MIMALLOC_SEGMENT_RESET", "0");
+    }
+}
 
 use line_buffer::{LineBuffer, LineBufferWriter};
 use util::saturating_pred_level;
@@ -164,6 +183,7 @@ fn run_egui_app(
 }
 
 fn main() -> anyhow::Result<()> {
+    configure_mimalloc();
     let cli = cli::Cli::parse();
     let config = cli.get_config()?;
     let (line_buffer, _rolling_log_guard) = set_tracing_subscriber(

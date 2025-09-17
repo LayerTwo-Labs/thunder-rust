@@ -39,6 +39,7 @@ rayon = "1.7.0"
 rcgen = "0.13.2"
 rustls = { version = "0.23.21", default-features = false, features = ["ring"] }
 rustreexo = { workspace = true, features = ["with-serde"] }
+smallvec = "1.11.0"
 semver = { version = "1.0.25", features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

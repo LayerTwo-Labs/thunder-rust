@@ -231,3 +231,24 @@ where
         .expect("failed to serialize with borsh to compute a hash");
     blake3::hash(&data_serialized).into()
 }
+
+/// Optimized hash function that reuses a thread-local scratch buffer
+/// to avoid heap allocations for each hash operation. Useful for hashing many
+/// small objects in tight loops.
+pub fn hash_with_scratch_buffer<T>(data: &T) -> Hash
+where
+    T: BorshSerialize + ?Sized,
+{
+    thread_local! {
+        static SCRATCH_BUFFER: std::cell::RefCell<Vec<u8>> =
+            std::cell::RefCell::new(Vec::with_capacity(256));
+    }
+
+    SCRATCH_BUFFER.with(|buffer| {
+        let mut buffer = buffer.borrow_mut();
+        buffer.clear();
+        borsh::to_writer(&mut *buffer, data)
+            .expect("failed to serialize with borsh to compute a hash");
+        blake3::hash(&buffer).into()
+    })
+}

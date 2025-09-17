@@ -20,8 +20,8 @@ use tokio_stream::{StreamMap, wrappers::WatchStream};
 pub use crate::{
     authorization::{Authorization, get_address},
     types::{
-        Address, AuthorizedTransaction, GetValue, InPoint, OutPoint, Output,
-        OutputContent, SpentOutput, Transaction,
+        Address, AuthorizedTransaction, GetValue, InPoint, OutPoint,
+        OutPointKey, Output, OutputContent, SpentOutput, Transaction,
     },
 };
 use crate::{
@@ -96,8 +96,8 @@ pub struct Wallet {
     /// Map each address index to an address
     index_to_address:
         DatabaseUnique<SerdeBincode<[u8; 4]>, SerdeBincode<Address>>,
-    utxos: DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<Output>>,
-    stxos: DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<SpentOutput>>,
+    utxos: DatabaseUnique<OutPointKey, SerdeBincode<Output>>,
+    stxos: DatabaseUnique<OutPointKey, SerdeBincode<SpentOutput>>,
     _version: DatabaseUnique<UnitKey, SerdeBincode<Version>>,
 }
 
@@ -107,10 +107,18 @@ impl Wallet {
     pub fn new(path: &Path) -> Result<Self, Error> {
         std::fs::create_dir_all(path)?;
         let env = {
+            use heed::EnvFlags;
             let mut env_open_options = heed::EnvOpenOptions::new();
             env_open_options
                 .map_size(10 * 1024 * 1024) // 10MB
                 .max_dbs(Self::NUM_DBS);
+            let fast_flags = EnvFlags::WRITE_MAP
+                | EnvFlags::MAP_ASYNC
+                | EnvFlags::NO_SYNC
+                | EnvFlags::NO_META_SYNC
+                | EnvFlags::NO_READ_AHEAD
+                | EnvFlags::NO_TLS;
+            unsafe { env_open_options.flags(fast_flags) };
             unsafe { Env::open(&env_open_options, path) }
                 .map_err(EnvError::from)?
         };
@@ -301,6 +309,7 @@ impl Wallet {
         &self,
         value: bitcoin::Amount,
     ) -> Result<(bitcoin::Amount, HashMap<OutPoint, Output>), Error> {
+        use rayon::prelude::ParallelSliceMut;
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         let mut utxos: Vec<_> = self
             .utxos
@@ -308,11 +317,11 @@ impl Wallet {
             .map_err(DbError::from)?
             .collect()
             .map_err(DbError::from)?;
-        utxos.sort_unstable_by_key(|(_, output)| output.get_value());
+        utxos.par_sort_unstable_by_key(|(_, output)| output.get_value());
 
         let mut selected = HashMap::new();
         let mut total = bitcoin::Amount::ZERO;
-        for (outpoint, output) in &utxos {
+        for (outpoint_key, output) in &utxos {
             if output.content.is_withdrawal() {
                 continue;
             }
@@ -322,7 +331,8 @@ impl Wallet {
             total = total
                 .checked_add(output.get_value())
                 .ok_or(AmountOverflowError)?;
-            selected.insert(*outpoint, output.clone());
+            let outpoint: OutPoint = outpoint_key.into();
+            selected.insert(outpoint, output.clone());
         }
         if total < value {
             return Err(Error::NotEnoughFunds);
@@ -333,9 +343,8 @@ impl Wallet {
     pub fn delete_utxos(&self, outpoints: &[OutPoint]) -> Result<(), Error> {
         let mut txn = self.env.write_txn().map_err(EnvError::from)?;
         for outpoint in outpoints {
-            self.utxos
-                .delete(&mut txn, outpoint)
-                .map_err(DbError::from)?;
+            let key = OutPointKey::from(outpoint);
+            self.utxos.delete(&mut txn, &key).map_err(DbError::from)?;
         }
         txn.commit().map_err(RwTxnError::from)?;
         Ok(())
@@ -347,18 +356,17 @@ impl Wallet {
     ) -> Result<(), Error> {
         let mut txn = self.env.write_txn().map_err(EnvError::from)?;
         for (outpoint, inpoint) in spent {
+            let key = OutPointKey::from(outpoint);
             let output =
-                self.utxos.try_get(&txn, outpoint).map_err(DbError::from)?;
+                self.utxos.try_get(&txn, &key).map_err(DbError::from)?;
             if let Some(output) = output {
-                self.utxos
-                    .delete(&mut txn, outpoint)
-                    .map_err(DbError::from)?;
+                self.utxos.delete(&mut txn, &key).map_err(DbError::from)?;
                 let spent_output = SpentOutput {
                     output,
                     inpoint: *inpoint,
                 };
                 self.stxos
-                    .put(&mut txn, outpoint, &spent_output)
+                    .put(&mut txn, &key, &spent_output)
                     .map_err(DbError::from)?;
             }
         }
@@ -372,8 +380,9 @@ impl Wallet {
     ) -> Result<(), Error> {
         let mut txn = self.env.write_txn().map_err(EnvError::from)?;
         for (outpoint, output) in utxos {
+            let key = OutPointKey::from(outpoint);
             self.utxos
-                .put(&mut txn, outpoint, output)
+                .put(&mut txn, &key, output)
                 .map_err(DbError::from)?;
         }
         txn.commit().map_err(RwTxnError::from)?;
@@ -407,10 +416,11 @@ impl Wallet {
 
     pub fn get_utxos(&self) -> Result<HashMap<OutPoint, Output>, Error> {
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
-        let utxos: HashMap<_, _> = self
+        let utxos: HashMap<OutPoint, Output> = self
             .utxos
             .iter(&rotxn)
             .map_err(DbError::from)?
+            .map(|(key, output)| Ok((key.into(), output)))
             .collect()
             .map_err(DbError::from)?;
         Ok(utxos)
@@ -433,11 +443,12 @@ impl Wallet {
         transaction: Transaction,
     ) -> Result<AuthorizedTransaction, Error> {
         let txn = self.env.read_txn().map_err(EnvError::from)?;
-        let mut authorizations = vec![];
+        let mut authorizations = Vec::with_capacity(transaction.inputs.len());
         for (outpoint, _) in &transaction.inputs {
+            let key = OutPointKey::from(outpoint);
             let spent_utxo = self
                 .utxos
-                .try_get(&txn, outpoint)
+                .try_get(&txn, &key)
                 .map_err(DbError::from)?
                 .ok_or(Error::NoUtxo)?;
             let index = self
