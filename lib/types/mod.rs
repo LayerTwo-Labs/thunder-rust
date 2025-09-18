@@ -20,7 +20,9 @@ pub mod schema;
 mod transaction;
 
 pub use address::Address;
-pub use hashes::{BlockHash, Hash, M6id, MerkleRoot, Txid, hash};
+pub use hashes::{
+    BlockHash, Hash, M6id, MerkleRoot, Txid, hash, hash_with_scratch_buffer,
+};
 pub use transaction::{
     AuthorizedTransaction, Body, Content as OutputContent, FilledTransaction,
     GetAddress, GetValue, InPoint, OutPoint, OutPointKey, Output,
@@ -311,38 +313,71 @@ impl PartialOrd for AggregatedWithdrawal {
 /// Removing twice will cause one deletion.
 /// Inserting and then removing will have no overall effect,
 /// but a second removal will still cause a deletion.
-#[derive(Clone, Debug, Default)]
-#[repr(transparent)]
-pub struct AccumulatorDiff(
+#[derive(Clone, Debug)]
+pub struct AccumulatorDiff {
     /// `true` indicates insertion, `false` indicates removal.
-    LinkedHashMap<BitcoinNodeHash, bool>,
-);
+    diff: LinkedHashMap<BitcoinNodeHash, bool>,
+    /// Total number of insertions still represented in `diff`.
+    insertions: usize,
+    /// Total number of deletions still represented in `diff`.
+    deletions: usize,
+}
+
+impl Default for AccumulatorDiff {
+    fn default() -> Self {
+        Self {
+            diff: LinkedHashMap::new(),
+            insertions: 0,
+            deletions: 0,
+        }
+    }
+}
 
 impl AccumulatorDiff {
     pub fn insert(&mut self, utxo_hash: BitcoinNodeHash) {
-        match self.0.entry(utxo_hash) {
+        match self.diff.entry(utxo_hash) {
             linked_hash_map::Entry::Occupied(entry) => {
                 if !entry.get() {
                     entry.remove();
+                    debug_assert!(self.deletions > 0);
+                    self.deletions -= 1;
                 }
             }
             linked_hash_map::Entry::Vacant(entry) => {
                 entry.insert(true);
+                self.insertions += 1;
             }
         }
     }
 
     pub fn remove(&mut self, utxo_hash: BitcoinNodeHash) {
-        match self.0.entry(utxo_hash) {
+        match self.diff.entry(utxo_hash) {
             linked_hash_map::Entry::Occupied(entry) => {
                 if *entry.get() {
                     entry.remove();
+                    debug_assert!(self.insertions > 0);
+                    self.insertions -= 1;
                 }
             }
             linked_hash_map::Entry::Vacant(entry) => {
                 entry.insert(false);
+                self.deletions += 1;
             }
         }
+    }
+
+    pub fn counts(&self) -> (usize, usize) {
+        (self.insertions, self.deletions)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.diff.is_empty()
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (LinkedHashMap<BitcoinNodeHash, bool>, usize, usize) {
+        (self.diff, self.insertions, self.deletions)
     }
 }
 
@@ -360,12 +395,12 @@ impl Accumulator {
         &mut self,
         diff: AccumulatorDiff,
     ) -> Result<(), UtreexoError> {
-        let capacity = diff.0.len();
+        let (diff, insertions_len, deletions_len) = diff.into_parts();
         let (mut insertions, mut deletions) = (
-            Vec::with_capacity(capacity / 2 + 1),
-            Vec::with_capacity(capacity / 2 + 1),
+            Vec::with_capacity(insertions_len),
+            Vec::with_capacity(deletions_len),
         );
-        for (utxo_hash, insert) in diff.0 {
+        for (utxo_hash, insert) in diff {
             if insert {
                 insertions.push(utxo_hash);
             } else {
