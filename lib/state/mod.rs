@@ -17,9 +17,10 @@ use crate::{
     types::{
         Accumulator, Address, AmountOverflowError, AmountUnderflowError,
         AuthorizedTransaction, BlockHash, Body, FilledTransaction, GetAddress,
-        GetValue, Header, InPoint, M6id, OutPoint, Output, PointedOutput,
-        SpentOutput, Transaction, VERSION, Verify, Version, WithdrawalBundle,
-        WithdrawalBundleStatus, proto::mainchain::TwoWayPegData,
+        GetValue, Header, InPoint, M6id, MerkleRoot, OutPoint, OutPointKey,
+        Output, PointedOutput, SpentOutput, Transaction, VERSION, Verify,
+        Version, WithdrawalBundle, WithdrawalBundleStatus,
+        proto::mainchain::TwoWayPegData,
     },
     util::Watchable,
 };
@@ -33,6 +34,18 @@ pub use error::Error;
 use rollback::RollBack;
 
 pub const WITHDRAWAL_BUNDLE_FAILURE_GAP: u32 = 4;
+
+/// Prevalidated block data containing computed values from validation
+/// to avoid redundant computation during connection
+#[derive(Clone, Debug)]
+pub struct PrevalidatedBlock {
+    pub filled_transactions: Vec<FilledTransaction>,
+    pub computed_merkle_root: MerkleRoot,
+    pub total_fees: bitcoin::Amount,
+    pub coinbase_value: bitcoin::Amount,
+    pub next_height: u32,
+    pub accumulator_diff: crate::types::AccumulatorDiff,
+}
 
 /// Information we have regarding a withdrawal bundle
 #[derive(Debug, Deserialize, Serialize)]
@@ -63,9 +76,8 @@ pub struct State {
     tip: DatabaseUnique<UnitKey, SerdeBincode<BlockHash>>,
     /// Current height
     height: DatabaseUnique<UnitKey, SerdeBincode<u32>>,
-    pub utxos: DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<Output>>,
-    pub stxos:
-        DatabaseUnique<SerdeBincode<OutPoint>, SerdeBincode<SpentOutput>>,
+    pub utxos: DatabaseUnique<OutPointKey, SerdeBincode<Output>>,
+    pub stxos: DatabaseUnique<OutPointKey, SerdeBincode<SpentOutput>>,
     /// Pending withdrawal bundle and block height
     pub pending_withdrawal_bundle:
         DatabaseUnique<UnitKey, SerdeBincode<(WithdrawalBundle, u32)>>,
@@ -177,7 +189,11 @@ impl State {
         &self,
         rotxn: &RoTxn,
     ) -> Result<HashMap<OutPoint, Output>, db_error::Iter> {
-        let utxos = self.utxos.iter(rotxn)?.collect()?;
+        let utxos: HashMap<OutPoint, Output> = self
+            .utxos
+            .iter(rotxn)?
+            .map(|(key, output)| Ok((key.into(), output)))
+            .collect()?;
         Ok(utxos)
     }
 
@@ -186,10 +202,11 @@ impl State {
         rotxn: &RoTxn,
         addresses: &HashSet<Address>,
     ) -> Result<HashMap<OutPoint, Output>, db_error::Iter> {
-        let utxos = self
+        let utxos: HashMap<OutPoint, Output> = self
             .utxos
             .iter(rotxn)?
             .filter(|(_, output)| Ok(addresses.contains(&output.address)))
+            .map(|(key, output)| Ok((key.into(), output)))
             .collect()?;
         Ok(utxos)
     }
@@ -259,11 +276,12 @@ impl State {
         txn: &RoTxn,
         transaction: &Transaction,
     ) -> Result<FilledTransaction, Error> {
-        let mut spent_utxos = vec![];
+        let mut spent_utxos = Vec::with_capacity(transaction.inputs.len());
         for (outpoint, _) in &transaction.inputs {
+            let key = OutPointKey::from(outpoint);
             let utxo = self
                 .utxos
-                .try_get(txn, outpoint)
+                .try_get(txn, &key)
                 .map_err(DbError::from)?
                 .ok_or(Error::NoUtxo {
                     outpoint: *outpoint,
@@ -401,7 +419,8 @@ impl State {
             .iter(rotxn)
             .map_err(DbError::from)?
             .map_err(|err| DbError::from(err).into())
-            .for_each(|(outpoint, output)| {
+            .for_each(|(outpoint_key, output)| {
+                let outpoint: OutPoint = outpoint_key.into();
                 if let OutPoint::Deposit(_) = outpoint {
                     total_deposit_utxo_value = total_deposit_utxo_value
                         .checked_add(output.get_value())
@@ -415,7 +434,8 @@ impl State {
             .iter(rotxn)
             .map_err(DbError::from)?
             .map_err(|err| DbError::from(err).into())
-            .for_each(|(outpoint, spent_output)| {
+            .for_each(|(outpoint_key, spent_output)| {
+                let outpoint: OutPoint = outpoint_key.into();
                 if let OutPoint::Deposit(_) = outpoint {
                     total_deposit_stxo_value = total_deposit_stxo_value
                         .checked_add(spent_output.output.get_value())
@@ -453,6 +473,39 @@ impl State {
         body: &Body,
     ) -> Result<(), Error> {
         block::connect(self, rwtxn, header, body)
+    }
+
+    /// Prevalidate a block under a read transaction, computing values reused on connect.
+    pub fn prevalidate_block(
+        &self,
+        rotxn: &RoTxn,
+        header: &Header,
+        body: &Body,
+    ) -> Result<PrevalidatedBlock, Error> {
+        block::prevalidate(self, rotxn, header, body)
+    }
+
+    /// Connect a block using prevalidated data to avoid recomputation.
+    pub fn connect_prevalidated_block(
+        &self,
+        rwtxn: &mut RwTxn,
+        header: &Header,
+        body: &Body,
+        prevalidated: PrevalidatedBlock,
+    ) -> Result<MerkleRoot, Error> {
+        block::connect_prevalidated(self, rwtxn, header, body, prevalidated)
+    }
+
+    /// Convenience: prevalidate then connect using the same write transaction.
+    pub fn apply_block(
+        &self,
+        rwtxn: &mut RwTxn,
+        header: &Header,
+        body: &Body,
+    ) -> Result<(), Error> {
+        let pre = self.prevalidate_block(rwtxn, header, body)?;
+        let _ = self.connect_prevalidated_block(rwtxn, header, body, pre)?;
+        Ok(())
     }
 
     pub fn disconnect_tip(
