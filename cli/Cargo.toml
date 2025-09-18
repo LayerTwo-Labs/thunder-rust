@@ -12,7 +12,6 @@ bitcoin = { workspace = true, features = ["serde"] }
 clap = { version = "4.5.4", features = ["derive"] }
 http = { workspace = true }
 jsonrpsee = { workspace = true, features = ["http-client"] }
-mimalloc = { version = "0.1.48", features = ["v3"] }
 serde_json = { workspace = true }
 thunder = { path = "../lib" }
 thunder_app_rpc_api = { path = "../rpc-api" }
