@@ -239,16 +239,22 @@ pub fn hash_with_scratch_buffer<T>(data: &T) -> Hash
 where
     T: BorshSerialize + ?Sized,
 {
+    use smallvec::SmallVec;
+
     thread_local! {
-        static SCRATCH_BUFFER: std::cell::RefCell<Vec<u8>> =
-            std::cell::RefCell::new(Vec::with_capacity(256));
+        // Thread-local scratch buffer that starts with 256 bytes on the stack
+        // and grows as needed. This avoids heap allocations for most hashes.
+        static SCRATCH_BUFFER: std::cell::RefCell<SmallVec<[u8; 256]>> =
+            std::cell::RefCell::new(SmallVec::new());
     }
 
     SCRATCH_BUFFER.with(|buffer| {
         let mut buffer = buffer.borrow_mut();
         buffer.clear();
+
         borsh::to_writer(&mut *buffer, data)
             .expect("failed to serialize with borsh to compute a hash");
+
         blake3::hash(&buffer).into()
     })
 }
