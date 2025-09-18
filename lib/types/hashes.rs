@@ -86,6 +86,7 @@ impl utoipa::ToSchema for BlockHash {
 
 #[derive(
     BorshSerialize,
+    BorshDeserialize,
     Clone,
     Copy,
     Default,
@@ -139,6 +140,7 @@ impl utoipa::ToSchema for MerkleRoot {
 
 #[derive(
     BorshSerialize,
+    BorshDeserialize,
     Clone,
     Copy,
     Default,
