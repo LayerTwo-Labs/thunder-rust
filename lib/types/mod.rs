@@ -366,18 +366,13 @@ impl AccumulatorDiff {
         }
     }
 
+    /// Returns the number of tracked insertions and deletions, in that order.
     pub fn counts(&self) -> (usize, usize) {
         (self.insertions, self.deletions)
     }
 
     pub fn is_empty(&self) -> bool {
         self.diff.is_empty()
-    }
-
-    pub fn into_parts(
-        self,
-    ) -> (LinkedHashMap<BitcoinNodeHash, bool>, usize, usize) {
-        (self.diff, self.insertions, self.deletions)
     }
 }
 
@@ -395,10 +390,14 @@ impl Accumulator {
         &mut self,
         diff: AccumulatorDiff,
     ) -> Result<(), UtreexoError> {
-        let (diff, insertions_len, deletions_len) = diff.into_parts();
+        let AccumulatorDiff {
+            diff,
+            insertions: n_insertions,
+            deletions: n_deletions,
+        } = diff;
         let (mut insertions, mut deletions) = (
-            Vec::with_capacity(insertions_len),
-            Vec::with_capacity(deletions_len),
+            Vec::with_capacity(n_insertions),
+            Vec::with_capacity(n_deletions),
         );
         for (utxo_hash, insert) in diff {
             if insert {
