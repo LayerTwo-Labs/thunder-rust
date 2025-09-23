@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use clap::Parser as _;
-
+use mimalloc::MiMalloc;
 use tokio::{signal::ctrl_c, sync::oneshot};
 use tracing_subscriber::{
     Layer, filter as tracing_filter, fmt::format, layer::SubscriberExt,
@@ -16,6 +16,39 @@ mod util;
 
 use line_buffer::{LineBuffer, LineBufferWriter};
 use util::saturating_pred_level;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
+fn configure_mimalloc() {
+    // Tune mimalloc via environment variables
+    // SAFETY: called before any threads are started, so no other thread can
+    // concurrently read or write the process environment.
+    unsafe {
+        // Limit how many abandoned pages stay cached before returning them to the OS.
+        std::env::set_var("MIMALLOC_ABANDONED_PAGE_LIMIT", "4");
+        // Reset abandoned pages so their physical memory is released quickly.
+        std::env::set_var("MIMALLOC_ABANDONED_PAGE_RESET", "1");
+        // Cap the number of huge arenas we keep around to bound reserved memory.
+        std::env::set_var("MIMALLOC_ARENA_LIMIT", "4");
+        // Allow mimalloc to allocate from any NUMA node for better balance.
+        std::env::set_var("MIMALLOC_USE_NUMA_NODES", "all");
+        // Commit new pages immediately to avoid first-use page fault latency.
+        std::env::set_var("MIMALLOC_EAGER_COMMIT", "1");
+        // Commit entire regions up front rather than piecemeal to reduce faults.
+        std::env::set_var("MIMALLOC_EAGER_REGION_COMMIT", "1");
+        // Keep up to 32 segments cached for quick reuse before releasing to the OS.
+        std::env::set_var("MIMALLOC_SEGMENT_CACHE", "32");
+        // Prefer allocating from large OS pages (2MB) when the system supports it.
+        std::env::set_var("MIMALLOC_LARGE_OS_PAGES", "1");
+        // Reserve a handful of huge OS pages at startup to back large heaps.
+        std::env::set_var("MIMALLOC_RESERVE_HUGE_OS_PAGES", "4");
+        // Keep freed pages committed instead of resetting to avoid extra madvise calls.
+        std::env::set_var("MIMALLOC_PAGE_RESET", "0");
+        // Likewise, keep whole segments committed to reduce release/reacquire churn.
+        std::env::set_var("MIMALLOC_SEGMENT_RESET", "0");
+    }
+}
 
 /// The empty string target `""` can be used to set a default level.
 fn targets_directive_str<'a, Targets>(targets: Targets) -> String
@@ -164,6 +197,8 @@ fn run_egui_app(
 }
 
 fn main() -> anyhow::Result<()> {
+    // Configure the allocator before Tokio spins up worker threads.
+    configure_mimalloc();
     let cli = cli::Cli::parse();
     let config = cli.get_config()?;
     let (line_buffer, _rolling_log_guard) = set_tracing_subscriber(

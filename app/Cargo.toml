@@ -19,6 +19,7 @@ http = { workspace = true }
 human-size = "0.4.3"
 include_path = "0.1.1"
 jsonrpsee = { workspace = true, features = ["server"] }
+mimalloc = { version = "0.1.48", features = ["v3"] }
 parking_lot = { workspace = true }
 poll-promise = { version = "0.3.0", features = ["tokio"] }
 rustreexo = { workspace = true }
