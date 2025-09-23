@@ -93,15 +93,23 @@ fn connect_tip_(
     two_way_peg_data: &mainchain::TwoWayPegData,
 ) -> Result<(), Error> {
     let block_hash = header.hash();
-    let (_fees, merkle_root): (bitcoin::Amount, MerkleRoot) =
-        state.validate_block(rwtxn, header, body)?;
+    let prevalidated = state.prevalidate_block(rwtxn, header, body)?;
     if tracing::enabled!(tracing::Level::DEBUG) {
         let height = state.try_get_height(rwtxn)?;
-        let _: MerkleRoot = state.connect_block(rwtxn, header, body)?;
-        tracing::debug!(?height, %merkle_root, %block_hash,
-                            "connected body")
+        let merkle_root = state.connect_prevalidated_block(
+            rwtxn,
+            header,
+            body,
+            prevalidated,
+        )?;
+        tracing::debug!(?height, %merkle_root, %block_hash, "connected body")
     } else {
-        let _: MerkleRoot = state.connect_block(rwtxn, header, body)?;
+        let _: MerkleRoot = state.connect_prevalidated_block(
+            rwtxn,
+            header,
+            body,
+            prevalidated,
+        )?;
     }
     let () = state.connect_two_way_peg_data(rwtxn, two_way_peg_data)?;
     let accumulator = state.get_accumulator(rwtxn)?;

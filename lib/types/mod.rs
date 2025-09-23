@@ -25,7 +25,9 @@ pub mod schema;
 mod transaction;
 
 pub use address::Address;
-pub use hashes::{BlockHash, Hash, M6id, MerkleRoot, Txid, hash};
+pub use hashes::{
+    BlockHash, Hash, M6id, MerkleRoot, Txid, hash, hash_with_scratch_buffer,
+};
 pub use transaction::{
     Authorized, AuthorizedTransaction, Content as OutputContent,
     FilledTransaction, GetAddress, GetValue, InPoint, OutPoint, OutPointKey,
@@ -139,7 +141,7 @@ pub struct Header {
 
 impl Header {
     pub fn hash(&self) -> BlockHash {
-        hash(self).into()
+        hash_with_scratch_buffer(self).into()
     }
 }
 
@@ -316,42 +318,74 @@ impl PartialOrd for AggregatedWithdrawal {
 /// Removing twice will cause one deletion.
 /// Inserting and then removing will have no overall effect,
 /// but a second removal will still cause a deletion.
-#[derive(Clone, Debug, Default)]
-#[repr(transparent)]
-pub struct AccumulatorDiff(
+#[derive(Clone, Debug)]
+pub struct AccumulatorDiff {
     /// `true` indicates insertion, `false` indicates removal.
-    LinkedHashMap<BitcoinNodeHash, bool>,
-);
+    diff: LinkedHashMap<BitcoinNodeHash, bool>,
+    /// Total number of insertions still represented in `diff`.
+    insertions: usize,
+    /// Total number of deletions still represented in `diff`.
+    deletions: usize,
+}
+
+impl Default for AccumulatorDiff {
+    fn default() -> Self {
+        Self {
+            diff: LinkedHashMap::new(),
+            insertions: 0,
+            deletions: 0,
+        }
+    }
+}
 
 impl AccumulatorDiff {
     pub fn with_capacity(capacity: usize) -> Self {
-        Self(LinkedHashMap::with_capacity(capacity))
+        Self {
+            diff: LinkedHashMap::with_capacity(capacity),
+            insertions: 0,
+            deletions: 0,
+        }
     }
 
     pub fn insert(&mut self, utxo_hash: BitcoinNodeHash) {
-        match self.0.entry(utxo_hash) {
+        match self.diff.entry(utxo_hash) {
             linked_hash_map::Entry::Occupied(entry) => {
                 if !entry.get() {
                     entry.remove();
+                    debug_assert!(self.deletions > 0);
+                    self.deletions -= 1;
                 }
             }
             linked_hash_map::Entry::Vacant(entry) => {
                 entry.insert(true);
+                self.insertions += 1;
             }
         }
     }
 
     pub fn remove(&mut self, utxo_hash: BitcoinNodeHash) {
-        match self.0.entry(utxo_hash) {
+        match self.diff.entry(utxo_hash) {
             linked_hash_map::Entry::Occupied(entry) => {
                 if *entry.get() {
                     entry.remove();
+                    debug_assert!(self.insertions > 0);
+                    self.insertions -= 1;
                 }
             }
             linked_hash_map::Entry::Vacant(entry) => {
                 entry.insert(false);
+                self.deletions += 1;
             }
         }
+    }
+
+    /// Returns the number of tracked insertions and deletions, in that order.
+    pub fn counts(&self) -> (usize, usize) {
+        (self.insertions, self.deletions)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.diff.is_empty()
     }
 }
 
@@ -369,12 +403,16 @@ impl Accumulator {
         &mut self,
         diff: AccumulatorDiff,
     ) -> Result<(), UtreexoError> {
-        let capacity = diff.0.len();
+        let AccumulatorDiff {
+            diff,
+            insertions: n_insertions,
+            deletions: n_deletions,
+        } = diff;
         let (mut insertions, mut deletions) = (
-            Vec::with_capacity(capacity / 2 + 1),
-            Vec::with_capacity(capacity / 2 + 1),
+            Vec::with_capacity(n_insertions),
+            Vec::with_capacity(n_deletions),
         );
-        for (utxo_hash, insert) in diff.0 {
+        for (utxo_hash, insert) in diff {
             if insert {
                 insertions.push(utxo_hash);
             } else {
@@ -457,7 +495,7 @@ impl Serialize for Accumulator {
 #[derive(Debug)]
 struct CbmtLeafPreCommitment<'a> {
     fee: bitcoin::Amount,
-    /// Canonical size of the tx
+    /// Sum of canonical tx sizes for child txs
     canonical_size: u64,
     tx: &'a Transaction,
 }
@@ -487,7 +525,7 @@ struct CbmtNodePreCommitment {
     fees: bitcoin::Amount,
     /// Sum of canonical sizes of child txs
     canonical_size: u64,
-    /// left child inner commitment
+    /// right child inner commitment
     right_commitment: Hash,
 }
 
@@ -553,7 +591,7 @@ impl merkle_cbt::merkle_tree::Merge for MergeFeeSizeTotal {
             left_commitment: lnode.commitment,
             fees,
             canonical_size,
-            right_commitment: lnode.commitment,
+            right_commitment: rnode.commitment,
         });
         Self::Item {
             commitment,
@@ -679,7 +717,7 @@ impl Body {
         // FIXME: Compute actual merkle root instead of just a hash.
         let coinbase_root = hashes::hash(&coinbase);
         // TODO: Should this include `total_fees`?
-        let root = hashes::hash(&(coinbase_root, txs_root)).into();
+        let root = hash_with_scratch_buffer(&(coinbase_root, txs_root)).into();
         Ok(root)
     }
 
