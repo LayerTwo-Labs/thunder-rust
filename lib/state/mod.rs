@@ -43,7 +43,8 @@ pub struct PrevalidatedBlock {
     pub computed_merkle_root: MerkleRoot,
     pub total_fees: bitcoin::Amount,
     pub coinbase_value: bitcoin::Amount,
-    pub next_height: u32, // Precomputed next height to avoid DB read in write txn
+    /// Precomputed next height to avoid DB read in write txn
+    pub next_height: u32,
     pub accumulator_diff: crate::types::AccumulatorDiff,
 }
 

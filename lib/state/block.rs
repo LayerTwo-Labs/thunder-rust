@@ -563,14 +563,13 @@ pub fn disconnect_tip(
             .try_for_each(|(outpoint, utxo_hash)| {
                 let key = OutPointKey::from(outpoint);
                 if let Some(spent_output) =
-                    state.stxos.try_get(rwtxn, &key).map_err(DbError::from)?
+                    state.stxos.try_get(rwtxn, &key)?
                 {
                     accumulator_diff.insert(utxo_hash.into());
-                    state.stxos.delete(rwtxn, &key).map_err(DbError::from)?;
+                    state.stxos.delete(rwtxn, &key)?;
                     state
                         .utxos
-                        .put(rwtxn, &key, &spent_output.output)
-                        .map_err(DbError::from)?;
+                        .put(rwtxn, &key, &spent_output.output)?;
                     Ok(())
                 } else {
                     Err(Error::NoStxo {
