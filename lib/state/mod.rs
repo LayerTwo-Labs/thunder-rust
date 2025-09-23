@@ -37,12 +37,14 @@ pub const WITHDRAWAL_BUNDLE_FAILURE_GAP: u32 = 4;
 
 /// Prevalidated block data containing computed values from validation
 /// to avoid redundant computation during connection
+#[derive(Clone, Debug)]
 pub struct PrevalidatedBlock {
     pub filled_transactions: Vec<FilledTransaction>,
     pub computed_merkle_root: MerkleRoot,
     pub total_fees: bitcoin::Amount,
     pub coinbase_value: bitcoin::Amount,
-    pub next_height: u32, // Precomputed next height to avoid DB read in write txn
+    /// Precomputed next height to avoid DB read in write txn
+    pub next_height: u32,
     pub accumulator_diff: crate::types::AccumulatorDiff,
 }
 
@@ -430,7 +432,7 @@ impl State {
             .map_err(DbError::from)?
             .map_err(|err| DbError::from(err).into())
             .for_each(|(outpoint_key, output)| {
-                let outpoint = outpoint_key.into();
+                let outpoint: OutPoint = outpoint_key.into();
                 if let OutPoint::Deposit(_) = outpoint {
                     total_deposit_utxo_value = total_deposit_utxo_value
                         .checked_add(output.get_value())
@@ -445,7 +447,7 @@ impl State {
             .map_err(DbError::from)?
             .map_err(|err| DbError::from(err).into())
             .for_each(|(outpoint_key, spent_output)| {
-                let outpoint = outpoint_key.into();
+                let outpoint: OutPoint = outpoint_key.into();
                 if let OutPoint::Deposit(_) = outpoint {
                     total_deposit_stxo_value = total_deposit_stxo_value
                         .checked_add(spent_output.output.get_value())
@@ -485,6 +487,7 @@ impl State {
         block::connect(self, rwtxn, header, body)
     }
 
+    /// Prevalidate a block under a read transaction, computing values reused on connect.
     pub fn prevalidate_block(
         &self,
         rotxn: &RoTxn,
@@ -494,6 +497,7 @@ impl State {
         block::prevalidate(self, rotxn, header, body)
     }
 
+    /// Connect a block using prevalidated data to avoid recomputation.
     pub fn connect_prevalidated_block(
         &self,
         rwtxn: &mut RwTxn,
@@ -504,14 +508,16 @@ impl State {
         block::connect_prevalidated(self, rwtxn, header, body, prevalidated)
     }
 
+    /// Convenience: prevalidate then connect using the same write transaction.
     pub fn apply_block(
         &self,
         rwtxn: &mut RwTxn,
         header: &Header,
         body: &Body,
     ) -> Result<(), Error> {
-        let prevalidated = self.prevalidate_block(rwtxn, header, body)?;
-        self.connect_prevalidated_block(rwtxn, header, body, prevalidated)?;
+        let pre = self.prevalidate_block(rwtxn, header, body)?;
+        let _: MerkleRoot =
+            self.connect_prevalidated_block(rwtxn, header, body, pre)?;
         Ok(())
     }
 

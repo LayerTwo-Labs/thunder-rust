@@ -44,7 +44,8 @@ fn collect_withdrawal_bundle(
         .iter(rotxn)
         .map_err(DbError::from)?
         .map_err(|err| DbError::from(err).into())
-        .for_each(|(outpoint, output)| {
+        .for_each(|(outpoint_key, output)| {
+            let outpoint: OutPoint = outpoint_key.into();
             if let OutputContent::Withdrawal {
                 value,
                 ref main_address,
@@ -68,7 +69,7 @@ fn collect_withdrawal_bundle(
                     .main_fee
                     .checked_add(main_fee)
                     .ok_or(AmountOverflowError)?;
-                aggregated.spend_utxos.insert(outpoint.into(), output);
+                aggregated.spend_utxos.insert(outpoint, output);
             }
             Ok::<_, Error>(())
         })?;
@@ -223,10 +224,11 @@ fn connect_withdrawal_bundle_confirmed(
                 %m6id,
                 "Unknown withdrawal bundle confirmed, marking all UTXOs as spent"
             );
-            let utxos: BTreeMap<_, _> = state
+            let utxos: BTreeMap<OutPoint, Output> = state
                 .utxos
                 .iter(rwtxn)
                 .map_err(DbError::from)?
+                .map(|(key, output)| Ok((key.into(), output)))
                 .collect()
                 .map_err(DbError::from)?;
             for (outpoint, output) in &utxos {
@@ -236,20 +238,17 @@ fn connect_withdrawal_bundle_confirmed(
                 };
                 state
                     .stxos
-                    .put(rwtxn, outpoint, &spent_output)
+                    .put(rwtxn, &OutPointKey::from(outpoint), &spent_output)
                     .map_err(DbError::from)?;
                 let utxo_hash = hash(&PointedOutputRef {
-                    outpoint: outpoint.into(),
+                    outpoint: *outpoint,
                     output: &spent_output.output,
                 });
                 accumulator_diff.remove(utxo_hash.into());
             }
             state.utxos.clear(rwtxn).map_err(DbError::from)?;
-            let spend_utxos: BTreeMap<OutPoint, Output> = utxos
-                .into_iter()
-                .map(|(key, output)| (key.into(), output))
-                .collect();
-            bundle = WithdrawalBundleInfo::UnknownConfirmed { spend_utxos };
+            bundle =
+                WithdrawalBundleInfo::UnknownConfirmed { spend_utxos: utxos };
         } else {
             return Err(Error::UnknownWithdrawalBundleConfirmed {
                 event_block_hash: *event_block_hash,

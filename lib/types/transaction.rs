@@ -1,14 +1,17 @@
-use std::borrow::Borrow;
+use std::{borrow::Borrow, io::Cursor};
 
 use bitcoin::amount::CheckedSum;
-use borsh::BorshSerialize;
+use borsh::{self, BorshDeserialize, BorshSerialize};
 use heed::{BoxedError, BytesDecode, BytesEncode};
 use rustreexo::accumulator::{node_hash::BitcoinNodeHash, proof::Proof};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use utoipa::ToSchema;
 
-use super::{Address, AmountOverflowError, Hash, M6id, MerkleRoot, Txid, hash};
+use super::{
+    Address, AmountOverflowError, Hash, M6id, MerkleRoot, Txid, hash,
+    hash_with_scratch_buffer,
+};
 use crate::authorization::Authorization;
 
 pub trait GetAddress {
@@ -25,6 +28,21 @@ impl GetValue for () {
     }
 }
 
+fn borsh_deserialize_bitcoin_outpoint<R>(
+    reader: &mut R,
+) -> borsh::io::Result<bitcoin::OutPoint>
+where
+    R: borsh::io::Read,
+{
+    use bitcoin::hashes::Hash as _;
+    let (txid_bytes, vout): ([u8; 32], u32) =
+        <([u8; 32], u32) as BorshDeserialize>::deserialize_reader(reader)?;
+    Ok(bitcoin::OutPoint {
+        txid: bitcoin::Txid::from_byte_array(txid_bytes),
+        vout,
+    })
+}
+
 fn borsh_serialize_bitcoin_outpoint<W>(
     block_hash: &bitcoin::OutPoint,
     writer: &mut W,
@@ -39,6 +57,7 @@ where
 
 #[derive(
     BorshSerialize,
+    BorshDeserialize,
     Clone,
     Copy,
     Debug,
@@ -65,7 +84,10 @@ pub enum OutPoint {
     // Created by mainchain deposits.
     #[schema(value_type = crate::types::schema::BitcoinOutPoint)]
     Deposit(
-        #[borsh(serialize_with = "borsh_serialize_bitcoin_outpoint")]
+        #[borsh(
+            deserialize_with = "borsh_deserialize_bitcoin_outpoint",
+            serialize_with = "borsh_serialize_bitcoin_outpoint"
+        )]
         bitcoin::OutPoint,
     ),
 }
@@ -84,18 +106,16 @@ impl std::fmt::Display for OutPoint {
     }
 }
 
-/// Fixed-width lexicographically sortable key for OutPoint
-/// Layout: [tag: u8][id: 32][vout: u32 BE]
-/// - tag: 0 = Regular, 1 = Coinbase, 2 = Deposit
-/// - id: txid/merkle_root/bitcoin::txid
-/// - vout: big-endian for numeric order = lexicographic order
+const OUTPOINT_KEY_SIZE: usize = 37;
+
+/// Fixed-width key for OutPoint based on its canonical Borsh encoding.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct OutPointKey([u8; 37]);
+pub struct OutPointKey([u8; OUTPOINT_KEY_SIZE]);
 
 impl OutPointKey {
     /// Get the raw key bytes
     #[inline]
-    pub fn as_bytes(&self) -> &[u8; 37] {
+    pub fn as_bytes(&self) -> &[u8; OUTPOINT_KEY_SIZE] {
         &self.0
     }
 }
@@ -103,71 +123,35 @@ impl OutPointKey {
 impl From<OutPoint> for OutPointKey {
     #[inline]
     fn from(op: OutPoint) -> Self {
-        let mut k = [0u8; 37];
-        match op {
-            OutPoint::Regular {
-                txid: Txid(id),
-                vout,
-            } => {
-                k[0] = 0;
-                k[1..33].copy_from_slice(&id);
-                k[33..37].copy_from_slice(&vout.to_be_bytes());
-            }
-            OutPoint::Coinbase { merkle_root, vout } => {
-                k[0] = 1;
-                let id: Hash = merkle_root.into();
-                k[1..33].copy_from_slice(&id);
-                k[33..37].copy_from_slice(&vout.to_be_bytes());
-            }
-            OutPoint::Deposit(ref bop) => {
-                k[0] = 2;
-                k[1..33].copy_from_slice(bop.txid.as_ref());
-                k[33..37].copy_from_slice(&bop.vout.to_be_bytes());
-            }
-        }
-        Self(k)
+        let mut key = [0u8; OUTPOINT_KEY_SIZE];
+        let mut cursor = Cursor::new(&mut key[..]);
+        BorshSerialize::serialize(&op, &mut cursor)
+            .expect("serializing OutPoint into key buffer should never fail");
+        debug_assert_eq!(cursor.position() as usize, OUTPOINT_KEY_SIZE);
+        Self(key)
     }
 }
 
 impl From<&OutPoint> for OutPointKey {
     #[inline]
     fn from(op: &OutPoint) -> Self {
-        Self::from(*op)
+        <Self as From<OutPoint>>::from(*op)
     }
 }
 
 impl From<OutPointKey> for OutPoint {
     #[inline]
     fn from(key: OutPointKey) -> Self {
-        let tag = key.0[0];
-        let mut id = [0u8; 32];
-        id.copy_from_slice(&key.0[1..33]);
-        let vout =
-            u32::from_be_bytes([key.0[33], key.0[34], key.0[35], key.0[36]]);
-
-        match tag {
-            0 => OutPoint::Regular {
-                txid: Txid(id),
-                vout,
-            },
-            1 => OutPoint::Coinbase {
-                merkle_root: MerkleRoot::from(Hash::from(id)),
-                vout,
-            },
-            2 => {
-                use bitcoin::hashes::Hash as BitcoinHash;
-                let txid = bitcoin::Txid::from_byte_array(id);
-                OutPoint::Deposit(bitcoin::OutPoint { txid, vout })
-            }
-            _ => unreachable!("Invalid OutPointKey tag"),
-        }
+        let mut cursor = Cursor::new(&key.0[..]);
+        OutPoint::deserialize_reader(&mut cursor)
+            .expect("deserializing OutPointKey should never fail")
     }
 }
 
 impl From<&OutPointKey> for OutPoint {
     #[inline]
     fn from(key: &OutPointKey) -> Self {
-        Self::from(*key)
+        <Self as From<OutPointKey>>::from(*key)
     }
 }
 
@@ -209,12 +193,53 @@ impl<'a> BytesDecode<'a> for OutPointKey {
 
     #[inline]
     fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem, BoxedError> {
-        if bytes.len() != 37 {
+        if bytes.len() != OUTPOINT_KEY_SIZE {
             return Err("OutPointKey must be exactly 37 bytes".into());
         }
-        let mut key = [0u8; 37];
+        let mut key = [0u8; OUTPOINT_KEY_SIZE];
         key.copy_from_slice(bytes);
+        let mut cursor = Cursor::new(&key[..]);
+        let _ = OutPoint::deserialize_reader(&mut cursor)
+            .map_err(|err| -> BoxedError { Box::new(err) })?;
         Ok(OutPointKey(key))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{OUTPOINT_KEY_SIZE, OutPoint, OutPointKey};
+    use bitcoin::hashes::Hash as BitcoinHash;
+
+    #[test]
+    fn check_outpoint_key_size() -> anyhow::Result<()> {
+        let variants = [
+            OutPoint::Regular {
+                txid: Default::default(),
+                vout: u32::MAX,
+            },
+            OutPoint::Coinbase {
+                merkle_root: Default::default(),
+                vout: u32::MAX,
+            },
+            OutPoint::Deposit(bitcoin::OutPoint {
+                txid: bitcoin::Txid::from_byte_array([0; 32]),
+                vout: u32::MAX,
+            }),
+        ];
+
+        for op in variants {
+            let serialized = borsh::to_vec(&op)?;
+            anyhow::ensure!(
+                serialized.len() == OUTPOINT_KEY_SIZE,
+                "unexpected serialized size: {}",
+                serialized.len()
+            );
+
+            let key = OutPointKey::from(op);
+            let decoded = OutPoint::from(key);
+            anyhow::ensure!(decoded == op);
+        }
+        Ok(())
     }
 }
 
@@ -516,11 +541,11 @@ pub struct Transaction {
 
 impl Transaction {
     pub fn txid(&self) -> Txid {
-        hash(self).into()
+        hash_with_scratch_buffer(self).into()
     }
 
     /// Canonical size in bytes. The canonical encoding is used for hashing,
-    /// But other encodings may be used at eg. networking, rpc levels.
+    /// but other encodings may be used at eg. networking, rpc levels.
     pub fn canonical_size(&self) -> u64 {
         (borsh::object_length(self).unwrap() / 8) as u64
     }

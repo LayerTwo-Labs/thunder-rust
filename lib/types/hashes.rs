@@ -86,6 +86,7 @@ impl utoipa::ToSchema for BlockHash {
 
 #[derive(
     BorshSerialize,
+    BorshDeserialize,
     Clone,
     Copy,
     Default,
@@ -231,4 +232,31 @@ where
     let data_serialized = borsh::to_vec(data)
         .expect("failed to serialize with borsh to compute a hash");
     blake3::hash(&data_serialized).into()
+}
+
+/// Optimized hash function that reuses a thread-local scratch buffer
+/// to avoid heap allocations for each hash operation. Useful for hashing many
+/// small objects in tight loops.
+pub fn hash_with_scratch_buffer<T>(data: &T) -> Hash
+where
+    T: BorshSerialize + ?Sized,
+{
+    use smallvec::SmallVec;
+
+    thread_local! {
+        // Thread-local scratch buffer that starts with 256 bytes on the stack
+        // and grows as needed. This avoids heap allocations for most hashes.
+        static SCRATCH_BUFFER: std::cell::RefCell<SmallVec<[u8; 256]>> =
+            std::cell::RefCell::new(SmallVec::new());
+    }
+
+    SCRATCH_BUFFER.with(|buffer| {
+        let mut buffer = buffer.borrow_mut();
+        buffer.clear();
+
+        borsh::to_writer(&mut *buffer, data)
+            .expect("failed to serialize with borsh to compute a hash");
+
+        blake3::hash(&buffer).into()
+    })
 }
