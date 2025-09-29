@@ -16,10 +16,10 @@ use crate::{
     authorization::Authorization,
     types::{
         Accumulator, Address, AmountOverflowError, AmountUnderflowError,
-        Authorized, AuthorizedTransaction, BlockHash, Body, FilledTransaction,
-        GetAddress, GetValue, Header, InPoint, M6id, MerkleRoot, OutPoint,
-        OutPointKey, Output, PointedOutput, SpentOutput, Transaction, VERSION,
-        Verify, Version, WithdrawalBundle, WithdrawalBundleStatus,
+        AuthorizedTransaction, BlockHash, Body, FilledTransaction, GetAddress,
+        GetValue, Header, InPoint, M6id, MerkleRoot, OutPoint, OutPointKey,
+        Output, PointedOutput, SpentOutput, Transaction, VERSION, Verify,
+        Version, WithdrawalBundle, WithdrawalBundleStatus,
         proto::mainchain::TwoWayPegData,
     },
     util::Watchable,
@@ -37,12 +37,13 @@ pub const WITHDRAWAL_BUNDLE_FAILURE_GAP: u32 = 4;
 
 /// Prevalidated block data containing computed values from validation
 /// to avoid redundant computation during connection
+#[derive(Clone, Debug)]
 pub struct PrevalidatedBlock {
     pub filled_transactions: Vec<FilledTransaction>,
     pub computed_merkle_root: MerkleRoot,
     pub total_fees: bitcoin::Amount,
     pub coinbase_value: bitcoin::Amount,
-    pub next_height: u32, // Precomputed next height to avoid DB read in write txn
+    pub next_height: u32,
     pub accumulator_diff: crate::types::AccumulatorDiff,
 }
 
@@ -270,16 +271,19 @@ impl State {
         Ok(proof)
     }
 
-    fn fill_transaction(
+    pub fn fill_transaction(
         &self,
-        rotxn: &RoTxn,
+        txn: &RoTxn,
         transaction: &Transaction,
     ) -> Result<FilledTransaction, Error> {
         let mut spent_utxos = Vec::with_capacity(transaction.inputs.len());
         for (outpoint, _) in &transaction.inputs {
             let key = OutPointKey::from(outpoint);
-            let utxo =
-                self.utxos.try_get(rotxn, &key)?.ok_or(Error::NoUtxo {
+            let utxo = self
+                .utxos
+                .try_get(txn, &key)
+                .map_err(DbError::from)?
+                .ok_or(Error::NoUtxo {
                     outpoint: *outpoint,
                 })?;
             spent_utxos.push(utxo);
@@ -287,20 +291,6 @@ impl State {
         Ok(FilledTransaction {
             spent_utxos,
             transaction: transaction.clone(),
-        })
-    }
-
-    pub fn fill_authorized_transaction(
-        &self,
-        rotxn: &RoTxn,
-        transaction: AuthorizedTransaction,
-    ) -> Result<Authorized<FilledTransaction>, Error> {
-        let filled_tx =
-            self.fill_transaction(rotxn, &transaction.transaction)?;
-        let authorizations = transaction.authorizations;
-        Ok(Authorized {
-            transaction: filled_tx,
-            authorizations,
         })
     }
 
@@ -356,7 +346,7 @@ impl State {
             }
         }
         if Authorization::verify_transaction(transaction).is_err() {
-            return Err(Error::Authorization);
+            return Err(Error::AuthorizationError);
         }
         let fee = self.validate_filled_transaction(&filled_transaction)?;
         Ok(fee)
@@ -430,7 +420,7 @@ impl State {
             .map_err(DbError::from)?
             .map_err(|err| DbError::from(err).into())
             .for_each(|(outpoint_key, output)| {
-                let outpoint = outpoint_key.into();
+                let outpoint: OutPoint = outpoint_key.into();
                 if let OutPoint::Deposit(_) = outpoint {
                     total_deposit_utxo_value = total_deposit_utxo_value
                         .checked_add(output.get_value())
@@ -445,7 +435,7 @@ impl State {
             .map_err(DbError::from)?
             .map_err(|err| DbError::from(err).into())
             .for_each(|(outpoint_key, spent_output)| {
-                let outpoint = outpoint_key.into();
+                let outpoint: OutPoint = outpoint_key.into();
                 if let OutPoint::Deposit(_) = outpoint {
                     total_deposit_stxo_value = total_deposit_stxo_value
                         .checked_add(spent_output.output.get_value())
@@ -472,7 +462,7 @@ impl State {
         rotxn: &RoTxn,
         header: &Header,
         body: &Body,
-    ) -> Result<(bitcoin::Amount, MerkleRoot), Error> {
+    ) -> Result<bitcoin::Amount, Error> {
         block::validate(self, rotxn, header, body)
     }
 
@@ -481,10 +471,11 @@ impl State {
         rwtxn: &mut RwTxn,
         header: &Header,
         body: &Body,
-    ) -> Result<MerkleRoot, Error> {
+    ) -> Result<(), Error> {
         block::connect(self, rwtxn, header, body)
     }
 
+    /// Prevalidate a block under a read transaction, computing values reused on connect.
     pub fn prevalidate_block(
         &self,
         rotxn: &RoTxn,
@@ -494,6 +485,7 @@ impl State {
         block::prevalidate(self, rotxn, header, body)
     }
 
+    /// Connect a block using prevalidated data to avoid recomputation.
     pub fn connect_prevalidated_block(
         &self,
         rwtxn: &mut RwTxn,
@@ -504,14 +496,15 @@ impl State {
         block::connect_prevalidated(self, rwtxn, header, body, prevalidated)
     }
 
+    /// Convenience: prevalidate then connect using the same write transaction.
     pub fn apply_block(
         &self,
         rwtxn: &mut RwTxn,
         header: &Header,
         body: &Body,
     ) -> Result<(), Error> {
-        let prevalidated = self.prevalidate_block(rwtxn, header, body)?;
-        self.connect_prevalidated_block(rwtxn, header, body, prevalidated)?;
+        let pre = self.prevalidate_block(rwtxn, header, body)?;
+        let _ = self.connect_prevalidated_block(rwtxn, header, body, pre)?;
         Ok(())
     }
 

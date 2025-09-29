@@ -6502,6 +6502,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "smallvec",
  "sneed",
  "strum 0.26.3",
  "thiserror 2.0.12",

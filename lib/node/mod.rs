@@ -20,9 +20,9 @@ use crate::{
     state::{self, State},
     types::{
         Accumulator, Address, AmountOverflowError, AmountUnderflowError,
-        Authorized, AuthorizedTransaction, BlockHash, BmmResult, Body,
-        FilledTransaction, GetValue, Header, Network, OutPoint, OutPointKey,
-        Output, SpentOutput, Tip, Transaction, Txid, WithdrawalBundle,
+        AuthorizedTransaction, BlockHash, BmmResult, Body, GetValue, Header,
+        Network, OutPoint, OutPointKey, Output, SpentOutput, Tip, Transaction,
+        Txid, WithdrawalBundle,
         proto::{self, mainchain},
     },
     util::Watchable,
@@ -137,6 +137,7 @@ where
         // let _ = std::fs::remove_dir_all(&env_path);
         std::fs::create_dir_all(&env_path)?;
         let env = {
+            use heed::EnvFlags;
             let mut env_open_opts = heed::EnvOpenOptions::new();
             env_open_opts
                 .map_size(128 * 1024 * 1024 * 1024) // 128 GB
@@ -146,6 +147,28 @@ where
                         + MemPool::NUM_DBS
                         + Net::NUM_DBS,
                 );
+            // Apply LMDB "fast" flags consistent with our benchmark setup:
+            // - WRITE_MAP lets us write directly into the memory map instead of
+            //   copying into LMDB's page buffer, reducing syscall overhead for
+            //   write-heavy workloads.
+            // - MAP_ASYNC hands dirty-page flushing to the kernel so commits do
+            //   not block waiting for msync, keeping latencies tight.
+            // - NO_SYNC and NO_META_SYNC skip fsync calls for data and
+            //   metadata; this trades durability for throughput, which is
+            //   acceptable here because the state can be reconstructed from the
+            //   canonical chain if a crash occurs.
+            // - NO_READ_AHEAD disables kernel readahead that would otherwise
+            //   touch cold pages we immediately overwrite, improving random
+            //   access behaviour on SSDs used in testing.
+            // - NO_TLS stops LMDB from relying on thread-local storage for
+            //   reader slots so transactions can be moved across Tokio tasks.
+            let fast_flags = EnvFlags::WRITE_MAP
+                | EnvFlags::MAP_ASYNC
+                | EnvFlags::NO_SYNC
+                | EnvFlags::NO_META_SYNC
+                | EnvFlags::NO_READ_AHEAD
+                | EnvFlags::NO_TLS;
+            unsafe { env_open_opts.flags(fast_flags) };
             unsafe { Env::open(&env_open_opts, &env_path) }
                 .map_err(EnvError::from)?
         };
@@ -410,14 +433,13 @@ where
     pub fn get_transactions(
         &self,
         number: usize,
-    ) -> Result<(Vec<Authorized<FilledTransaction>>, bitcoin::Amount), Error>
-    {
+    ) -> Result<(Vec<AuthorizedTransaction>, bitcoin::Amount), Error> {
         let mut rwtxn = self.env.write_txn().map_err(EnvError::from)?;
         let transactions = self.mempool.take(&rwtxn, number)?;
         let mut fee = bitcoin::Amount::ZERO;
         let mut returned_transactions = vec![];
         let mut spent_utxos = HashSet::new();
-        for transaction in transactions {
+        for transaction in &transactions {
             let inputs: HashSet<_> =
                 transaction.transaction.inputs.iter().copied().collect();
             if !spent_utxos.is_disjoint(&inputs) {
@@ -428,7 +450,7 @@ where
             }
             if self
                 .state
-                .validate_transaction(&rwtxn, &transaction)
+                .validate_transaction(&rwtxn, transaction)
                 .is_err()
             {
                 self.mempool
@@ -437,16 +459,14 @@ where
             }
             let filled_transaction = self
                 .state
-                .fill_authorized_transaction(&rwtxn, transaction)?;
+                .fill_transaction(&rwtxn, &transaction.transaction)?;
             let value_in: bitcoin::Amount = filled_transaction
-                .transaction
                 .spent_utxos
                 .iter()
                 .map(GetValue::get_value)
                 .checked_sum()
                 .ok_or(AmountOverflowError)?;
             let value_out: bitcoin::Amount = filled_transaction
-                .transaction
                 .transaction
                 .outputs
                 .iter()
@@ -460,15 +480,8 @@ where
                         .ok_or(AmountOverflowError)?,
                 )
                 .ok_or(AmountUnderflowError)?;
-            spent_utxos.extend(
-                filled_transaction
-                    .transaction
-                    .transaction
-                    .inputs
-                    .iter()
-                    .cloned(),
-            );
-            returned_transactions.push(filled_transaction);
+            returned_transactions.push(transaction.clone());
+            spent_utxos.extend(transaction.transaction.inputs.clone());
         }
         rwtxn.commit().map_err(RwTxnError::from)?;
         Ok((returned_transactions, fee))

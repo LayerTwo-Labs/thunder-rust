@@ -13,7 +13,7 @@ use crate::{
     types::{
         AccumulatorDiff, AggregatedWithdrawal, AmountOverflowError, InPoint,
         M6id, OutPoint, OutPointKey, Output, OutputContent, PointedOutput,
-        PointedOutputRef, SpentOutput, WithdrawalBundle, WithdrawalBundleEvent,
+        SpentOutput, WithdrawalBundle, WithdrawalBundleEvent,
         WithdrawalBundleStatus, hash,
         proto::mainchain::{BlockEvent, TwoWayPegData},
     },
@@ -44,7 +44,8 @@ fn collect_withdrawal_bundle(
         .iter(rotxn)
         .map_err(DbError::from)?
         .map_err(|err| DbError::from(err).into())
-        .for_each(|(outpoint, output)| {
+        .for_each(|(outpoint_key, output)| {
+            let outpoint: OutPoint = outpoint_key.into();
             if let OutputContent::Withdrawal {
                 value,
                 ref main_address,
@@ -68,7 +69,7 @@ fn collect_withdrawal_bundle(
                     .main_fee
                     .checked_add(main_fee)
                     .ok_or(AmountOverflowError)?;
-                aggregated.spend_utxos.insert(outpoint.into(), output);
+                aggregated.spend_utxos.insert(outpoint, output);
             }
             Ok::<_, Error>(())
         })?;
@@ -80,7 +81,7 @@ fn collect_withdrawal_bundle(
     aggregated_withdrawals.sort_by_key(|a| std::cmp::Reverse(a.clone()));
     let mut fee = bitcoin::Amount::ZERO;
     let mut spend_utxos = BTreeMap::<OutPoint, Output>::new();
-    let mut bundle_outputs = Vec::with_capacity(MAX_BUNDLE_OUTPUTS);
+    let mut bundle_outputs = vec![];
     for aggregated in &aggregated_withdrawals {
         if bundle_outputs.len() > MAX_BUNDLE_OUTPUTS {
             break;
@@ -122,20 +123,22 @@ fn connect_withdrawal_bundle_submitted(
             "Withdrawal bundle successfully submitted"
         );
         for (outpoint, spend_output) in bundle.spend_utxos() {
-            let utxo_hash = hash(&PointedOutputRef {
+            let utxo_hash = hash(&PointedOutput {
                 outpoint: *outpoint,
-                output: spend_output,
+                output: spend_output.clone(),
             });
             accumulator_diff.remove(utxo_hash.into());
-            let key = OutPointKey::from(outpoint);
-            state.utxos.delete(rwtxn, &key).map_err(DbError::from)?;
+            state
+                .utxos
+                .delete(rwtxn, &OutPointKey::from(outpoint))
+                .map_err(DbError::from)?;
             let spent_output = SpentOutput {
                 output: spend_output.clone(),
                 inpoint: InPoint::Withdrawal { m6id },
             };
             state
                 .stxos
-                .put(rwtxn, &key, &spent_output)
+                .put(rwtxn, &OutPointKey::from(outpoint), &spent_output)
                 .map_err(DbError::from)?;
         }
         state
@@ -223,10 +226,11 @@ fn connect_withdrawal_bundle_confirmed(
                 %m6id,
                 "Unknown withdrawal bundle confirmed, marking all UTXOs as spent"
             );
-            let utxos: BTreeMap<_, _> = state
+            let utxos: BTreeMap<OutPoint, Output> = state
                 .utxos
                 .iter(rwtxn)
                 .map_err(DbError::from)?
+                .map(|(key, output)| Ok((key.into(), output)))
                 .collect()
                 .map_err(DbError::from)?;
             for (outpoint, output) in &utxos {
@@ -236,20 +240,17 @@ fn connect_withdrawal_bundle_confirmed(
                 };
                 state
                     .stxos
-                    .put(rwtxn, outpoint, &spent_output)
+                    .put(rwtxn, &OutPointKey::from(outpoint), &spent_output)
                     .map_err(DbError::from)?;
-                let utxo_hash = hash(&PointedOutputRef {
-                    outpoint: outpoint.into(),
-                    output: &spent_output.output,
+                let utxo_hash = hash(&PointedOutput {
+                    outpoint: *outpoint,
+                    output: spent_output.output,
                 });
                 accumulator_diff.remove(utxo_hash.into());
             }
             state.utxos.clear(rwtxn).map_err(DbError::from)?;
-            let spend_utxos: BTreeMap<OutPoint, Output> = utxos
-                .into_iter()
-                .map(|(key, output)| (key.into(), output))
-                .collect();
-            bundle = WithdrawalBundleInfo::UnknownConfirmed { spend_utxos };
+            bundle =
+                WithdrawalBundleInfo::UnknownConfirmed { spend_utxos: utxos };
         } else {
             return Err(Error::UnknownWithdrawalBundleConfirmed {
                 event_block_hash: *event_block_hash,
@@ -299,11 +300,13 @@ fn connect_withdrawal_bundle_failed(
         | WithdrawalBundleInfo::UnknownConfirmed { .. } => (),
         WithdrawalBundleInfo::Known(bundle) => {
             for (outpoint, output) in bundle.spend_utxos() {
-                let key = OutPointKey::from(outpoint);
-                state.stxos.delete(rwtxn, &key).map_err(DbError::from)?;
+                state
+                    .stxos
+                    .delete(rwtxn, &OutPointKey::from(outpoint))
+                    .map_err(DbError::from)?;
                 state
                     .utxos
-                    .put(rwtxn, &key, output)
+                    .put(rwtxn, &OutPointKey::from(outpoint), output)
                     .map_err(DbError::from)?;
                 let utxo_hash = hash(&PointedOutput {
                     outpoint: *outpoint,
@@ -389,12 +392,12 @@ fn connect_event(
     match event {
         BlockEvent::Deposit(deposit) => {
             let outpoint = OutPoint::Deposit(deposit.outpoint);
-            let output = &deposit.output;
+            let output = deposit.output.clone();
             state
                 .utxos
-                .put(rwtxn, &OutPointKey::from(&outpoint), output)
+                .put(rwtxn, &OutPointKey::from(&outpoint), &output)
                 .map_err(DbError::from)?;
-            let utxo_hash = hash(&PointedOutputRef { outpoint, output });
+            let utxo_hash = hash(&PointedOutput { outpoint, output });
             accumulator_diff.insert(utxo_hash.into());
             *latest_deposit_block_hash = Some(event_block_hash);
         }

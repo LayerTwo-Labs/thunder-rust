@@ -1,14 +1,19 @@
-use std::borrow::Borrow;
+use std::collections::HashMap;
 
 use bitcoin::amount::CheckedSum;
-use borsh::BorshSerialize;
+use borsh::{self, BorshDeserialize, BorshSerialize};
 use heed::{BoxedError, BytesDecode, BytesEncode};
-use rustreexo::accumulator::{node_hash::BitcoinNodeHash, proof::Proof};
+use rustreexo::accumulator::{
+    mem_forest::MemForest, node_hash::BitcoinNodeHash, proof::Proof,
+};
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
+use std::io::Cursor;
 use utoipa::ToSchema;
 
-use super::{Address, AmountOverflowError, Hash, M6id, MerkleRoot, Txid, hash};
+use super::{
+    Address, AmountOverflowError, Hash, M6id, MerkleRoot, Txid, hash,
+    hash_with_scratch_buffer,
+};
 use crate::authorization::Authorization;
 
 pub trait GetAddress {
@@ -37,8 +42,24 @@ where
     borsh::BorshSerialize::serialize(&(txid_bytes, vout), writer)
 }
 
+fn borsh_deserialize_bitcoin_outpoint<R>(
+    reader: &mut R,
+) -> borsh::io::Result<bitcoin::OutPoint>
+where
+    R: borsh::io::Read,
+{
+    use bitcoin::hashes::Hash as BitcoinHash;
+    let (txid_bytes, vout): ([u8; 32], u32) =
+        <([u8; 32], u32) as BorshDeserialize>::deserialize_reader(reader)?;
+    Ok(bitcoin::OutPoint {
+        txid: bitcoin::Txid::from_byte_array(txid_bytes),
+        vout,
+    })
+}
+
 #[derive(
     BorshSerialize,
+    BorshDeserialize,
     Clone,
     Copy,
     Debug,
@@ -65,7 +86,10 @@ pub enum OutPoint {
     // Created by mainchain deposits.
     #[schema(value_type = crate::types::schema::BitcoinOutPoint)]
     Deposit(
-        #[borsh(serialize_with = "borsh_serialize_bitcoin_outpoint")]
+        #[borsh(
+            serialize_with = "borsh_serialize_bitcoin_outpoint",
+            deserialize_with = "borsh_deserialize_bitcoin_outpoint"
+        )]
         bitcoin::OutPoint,
     ),
 }
@@ -84,18 +108,16 @@ impl std::fmt::Display for OutPoint {
     }
 }
 
-/// Fixed-width lexicographically sortable key for OutPoint
-/// Layout: [tag: u8][id: 32][vout: u32 BE]
-/// - tag: 0 = Regular, 1 = Coinbase, 2 = Deposit
-/// - id: txid/merkle_root/bitcoin::txid
-/// - vout: big-endian for numeric order = lexicographic order
+const OUTPOINT_KEY_SIZE: usize = 37;
+
+/// Fixed-width key for OutPoint based on its canonical Borsh encoding.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct OutPointKey([u8; 37]);
+pub struct OutPointKey([u8; OUTPOINT_KEY_SIZE]);
 
 impl OutPointKey {
     /// Get the raw key bytes
     #[inline]
-    pub fn as_bytes(&self) -> &[u8; 37] {
+    pub fn as_bytes(&self) -> &[u8; OUTPOINT_KEY_SIZE] {
         &self.0
     }
 }
@@ -103,71 +125,35 @@ impl OutPointKey {
 impl From<OutPoint> for OutPointKey {
     #[inline]
     fn from(op: OutPoint) -> Self {
-        let mut k = [0u8; 37];
-        match op {
-            OutPoint::Regular {
-                txid: Txid(id),
-                vout,
-            } => {
-                k[0] = 0;
-                k[1..33].copy_from_slice(&id);
-                k[33..37].copy_from_slice(&vout.to_be_bytes());
-            }
-            OutPoint::Coinbase { merkle_root, vout } => {
-                k[0] = 1;
-                let id: Hash = merkle_root.into();
-                k[1..33].copy_from_slice(&id);
-                k[33..37].copy_from_slice(&vout.to_be_bytes());
-            }
-            OutPoint::Deposit(ref bop) => {
-                k[0] = 2;
-                k[1..33].copy_from_slice(bop.txid.as_ref());
-                k[33..37].copy_from_slice(&bop.vout.to_be_bytes());
-            }
-        }
-        Self(k)
+        let mut key = [0u8; OUTPOINT_KEY_SIZE];
+        let mut cursor = Cursor::new(&mut key[..]);
+        BorshSerialize::serialize(&op, &mut cursor)
+            .expect("serializing OutPoint into key buffer should never fail");
+        debug_assert_eq!(cursor.position() as usize, OUTPOINT_KEY_SIZE);
+        Self(key)
     }
 }
 
 impl From<&OutPoint> for OutPointKey {
     #[inline]
     fn from(op: &OutPoint) -> Self {
-        Self::from(*op)
+        <Self as From<OutPoint>>::from(*op)
     }
 }
 
 impl From<OutPointKey> for OutPoint {
     #[inline]
     fn from(key: OutPointKey) -> Self {
-        let tag = key.0[0];
-        let mut id = [0u8; 32];
-        id.copy_from_slice(&key.0[1..33]);
-        let vout =
-            u32::from_be_bytes([key.0[33], key.0[34], key.0[35], key.0[36]]);
-
-        match tag {
-            0 => OutPoint::Regular {
-                txid: Txid(id),
-                vout,
-            },
-            1 => OutPoint::Coinbase {
-                merkle_root: MerkleRoot::from(Hash::from(id)),
-                vout,
-            },
-            2 => {
-                use bitcoin::hashes::Hash as BitcoinHash;
-                let txid = bitcoin::Txid::from_byte_array(id);
-                OutPoint::Deposit(bitcoin::OutPoint { txid, vout })
-            }
-            _ => unreachable!("Invalid OutPointKey tag"),
-        }
+        let mut cursor = Cursor::new(&key.0[..]);
+        OutPoint::deserialize_reader(&mut cursor)
+            .expect("deserializing OutPointKey should never fail")
     }
 }
 
 impl From<&OutPointKey> for OutPoint {
     #[inline]
     fn from(key: &OutPointKey) -> Self {
-        Self::from(*key)
+        <Self as From<OutPointKey>>::from(*key)
     }
 }
 
@@ -209,12 +195,53 @@ impl<'a> BytesDecode<'a> for OutPointKey {
 
     #[inline]
     fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem, BoxedError> {
-        if bytes.len() != 37 {
+        if bytes.len() != OUTPOINT_KEY_SIZE {
             return Err("OutPointKey must be exactly 37 bytes".into());
         }
-        let mut key = [0u8; 37];
+        let mut key = [0u8; OUTPOINT_KEY_SIZE];
         key.copy_from_slice(bytes);
+        let mut cursor = Cursor::new(&key[..]);
+        let _ = OutPoint::deserialize_reader(&mut cursor)
+            .map_err(|err| -> BoxedError { Box::new(err) })?;
         Ok(OutPointKey(key))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{OUTPOINT_KEY_SIZE, OutPoint, OutPointKey};
+    use bitcoin::hashes::Hash as BitcoinHash;
+
+    #[test]
+    fn check_outpoint_key_size() -> anyhow::Result<()> {
+        let variants = [
+            OutPoint::Regular {
+                txid: Default::default(),
+                vout: u32::MAX,
+            },
+            OutPoint::Coinbase {
+                merkle_root: Default::default(),
+                vout: u32::MAX,
+            },
+            OutPoint::Deposit(bitcoin::OutPoint {
+                txid: bitcoin::Txid::from_byte_array([0; 32]),
+                vout: u32::MAX,
+            }),
+        ];
+
+        for op in variants {
+            let serialized = borsh::to_vec(&op)?;
+            anyhow::ensure!(
+                serialized.len() == OUTPOINT_KEY_SIZE,
+                "unexpected serialized size: {}",
+                serialized.len()
+            );
+
+            let key = OutPointKey::from(op);
+            let decoded = OutPoint::from(key);
+            anyhow::ensure!(decoded == op);
+        }
+        Ok(())
     }
 }
 
@@ -329,7 +356,7 @@ mod content {
         }
     }
 
-    impl crate::types::GetValue for Content {
+    impl crate::wallet::GetValue for Content {
         #[inline(always)]
         fn get_value(&self) -> bitcoin::Amount {
             match self {
@@ -487,20 +514,6 @@ impl From<&PointedOutput> for BitcoinNodeHash {
     }
 }
 
-/// Useful when computing hashes for Utreexo,
-/// without needing to clone an output
-#[derive(BorshSerialize, Clone, Copy, Debug)]
-pub struct PointedOutputRef<'a> {
-    pub outpoint: OutPoint,
-    pub output: &'a Output,
-}
-
-impl From<PointedOutputRef<'_>> for BitcoinNodeHash {
-    fn from(pointed_output: PointedOutputRef) -> Self {
-        Self::new(hash(&pointed_output))
-    }
-}
-
 #[derive(
     BorshSerialize, Clone, Debug, Default, Deserialize, Serialize, ToSchema,
 )]
@@ -518,12 +531,6 @@ impl Transaction {
     pub fn txid(&self) -> Txid {
         hash(self).into()
     }
-
-    /// Canonical size in bytes. The canonical encoding is used for hashing,
-    /// But other encodings may be used at eg. networking, rpc levels.
-    pub fn canonical_size(&self) -> u64 {
-        (borsh::object_length(self).unwrap() / 8) as u64
-    }
 }
 
 /// Representation of a spent output
@@ -531,16 +538,6 @@ impl Transaction {
 pub struct SpentOutput {
     pub output: Output,
     pub inpoint: InPoint,
-}
-
-#[derive(Debug, Error)]
-pub enum ComputeFeeError {
-    #[error("underfunded (value in < value out)")]
-    Underfunded,
-    #[error("value in overflow")]
-    ValueInOverflow(#[source] AmountOverflowError),
-    #[error("value out overflow")]
-    ValueOutOverflow(#[source] AmountOverflowError),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -569,41 +566,163 @@ impl FilledTransaction {
             .ok_or(AmountOverflowError)
     }
 
-    pub fn get_fee(&self) -> Result<bitcoin::Amount, ComputeFeeError> {
-        let value_in = self
-            .get_value_in()
-            .map_err(ComputeFeeError::ValueInOverflow)?;
-        let value_out = self
-            .get_value_out()
-            .map_err(ComputeFeeError::ValueOutOverflow)?;
+    pub fn get_fee(
+        &self,
+    ) -> Result<Option<bitcoin::Amount>, AmountOverflowError> {
+        let value_in = self.get_value_in()?;
+        let value_out = self.get_value_out()?;
         if value_in < value_out {
-            Err(ComputeFeeError::Underfunded)
+            Ok(None)
         } else {
-            Ok(value_in - value_out)
+            Ok(Some(value_in - value_out))
         }
     }
 }
 
 #[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize)]
-pub struct Authorized<T> {
-    pub transaction: T,
-    /// Authorizations are called witnesses in Bitcoin.
+pub struct AuthorizedTransaction {
+    pub transaction: Transaction,
+    /// Authorization is called witness in Bitcoin.
     pub authorizations: Vec<Authorization>,
 }
 
-pub type AuthorizedTransaction = Authorized<Transaction>;
+#[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct Body {
+    pub coinbase: Vec<Output>,
+    pub transactions: Vec<Transaction>,
+    pub authorizations: Vec<Authorization>,
+}
 
-impl<T> Borrow<T> for Authorized<T> {
-    fn borrow(&self) -> &T {
-        &self.transaction
+impl Body {
+    pub fn new(
+        authorized_transactions: Vec<AuthorizedTransaction>,
+        coinbase: Vec<Output>,
+    ) -> Self {
+        let mut authorizations = Vec::with_capacity(
+            authorized_transactions
+                .iter()
+                .map(|t| t.transaction.inputs.len())
+                .sum(),
+        );
+        let mut transactions =
+            Vec::with_capacity(authorized_transactions.len());
+        for at in authorized_transactions.into_iter() {
+            authorizations.extend(at.authorizations);
+            transactions.push(at.transaction);
+        }
+        Self {
+            coinbase,
+            transactions,
+            authorizations,
+        }
+    }
+
+    pub fn authorized_transactions(&self) -> Vec<AuthorizedTransaction> {
+        let mut authorizations_iter = self.authorizations.iter();
+        self.transactions
+            .iter()
+            .map(|tx| {
+                let mut authorizations = Vec::with_capacity(tx.inputs.len());
+                for _ in 0..tx.inputs.len() {
+                    let auth = authorizations_iter.next().unwrap();
+                    authorizations.push(auth.clone());
+                }
+                AuthorizedTransaction {
+                    transaction: tx.clone(),
+                    authorizations,
+                }
+            })
+            .collect()
+    }
+
+    pub fn compute_merkle_root(&self) -> MerkleRoot {
+        // FIXME: Compute actual merkle root instead of just a hash.
+        hash_with_scratch_buffer(&(&self.coinbase, &self.transactions)).into()
+    }
+
+    // Modifies the memforest, without checking tx proofs
+    pub fn modify_memforest(
+        &self,
+        memforest: &mut MemForest<BitcoinNodeHash>,
+    ) -> Result<(), String> {
+        // New leaves for the accumulator
+        let mut accumulator_add = Vec::<BitcoinNodeHash>::new();
+        // Accumulator leaves to delete
+        let mut accumulator_del = Vec::<BitcoinNodeHash>::new();
+        let merkle_root = self.compute_merkle_root();
+        for (vout, output) in self.coinbase.iter().enumerate() {
+            let outpoint = OutPoint::Coinbase {
+                merkle_root,
+                vout: vout as u32,
+            };
+            let pointed_output = PointedOutput {
+                outpoint,
+                output: output.clone(),
+            };
+            accumulator_add.push((&pointed_output).into());
+        }
+        for transaction in &self.transactions {
+            let txid = transaction.txid();
+            for (_, utxo_hash) in transaction.inputs.iter() {
+                accumulator_del.push(utxo_hash.into());
+            }
+            for (vout, output) in transaction.outputs.iter().enumerate() {
+                let outpoint = OutPoint::Regular {
+                    txid,
+                    vout: vout as u32,
+                };
+                let pointed_output = PointedOutput {
+                    outpoint,
+                    output: output.clone(),
+                };
+                accumulator_add.push((&pointed_output).into());
+            }
+        }
+        memforest.modify(&accumulator_add, &accumulator_del)
+    }
+
+    pub fn get_inputs(&self) -> Vec<OutPoint> {
+        self.transactions
+            .iter()
+            .flat_map(|tx| tx.inputs.iter().map(|(outpoint, _)| outpoint))
+            .copied()
+            .collect()
+    }
+
+    pub fn get_outputs(&self) -> HashMap<OutPoint, Output> {
+        let mut outputs = HashMap::new();
+        let merkle_root = self.compute_merkle_root();
+        for (vout, output) in self.coinbase.iter().enumerate() {
+            let vout = vout as u32;
+            let outpoint = OutPoint::Coinbase { merkle_root, vout };
+            outputs.insert(outpoint, output.clone());
+        }
+        for transaction in &self.transactions {
+            let txid = transaction.txid();
+            for (vout, output) in transaction.outputs.iter().enumerate() {
+                let vout = vout as u32;
+                let outpoint = OutPoint::Regular { txid, vout };
+                outputs.insert(outpoint, output.clone());
+            }
+        }
+        outputs
+    }
+
+    pub fn get_coinbase_value(
+        &self,
+    ) -> Result<bitcoin::Amount, AmountOverflowError> {
+        self.coinbase
+            .iter()
+            .map(|output| output.get_value())
+            .checked_sum()
+            .ok_or(AmountOverflowError)
     }
 }
 
-impl From<Authorized<FilledTransaction>> for AuthorizedTransaction {
-    fn from(tx: Authorized<FilledTransaction>) -> Self {
-        Self {
-            transaction: tx.transaction.transaction,
-            authorizations: tx.authorizations,
-        }
-    }
+pub trait Verify {
+    type Error;
+    fn verify_transaction(
+        transaction: &AuthorizedTransaction,
+    ) -> Result<(), Self::Error>;
+    fn verify_body(body: &Body) -> Result<(), Self::Error>;
 }
