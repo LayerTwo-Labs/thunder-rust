@@ -26,6 +26,7 @@ pub const fn magic_bytes(network: Network) -> MagicBytes {
     match network {
         Network::Regtest => (),
         Network::Signet => b3 |= 0b0000_0001,
+        Network::Forknet => b3 |= 0b0000_0010,
     }
     [b0, b1, b2, b3]
 }

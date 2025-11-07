@@ -165,10 +165,20 @@ const SIGNET_SEED_NODE_ADDRS: &[SocketAddr] = {
     &[SIGNET_MINING_SERVER, BIP300_XYZ]
 };
 
+const FORKNET_SEED_NODE_ADDRS: &[SocketAddr] = {
+    // explorer.bip300.xyz
+    const BIP300_XYZ: SocketAddr = SocketAddr::new(
+        std::net::IpAddr::V4(std::net::Ipv4Addr::new(157, 180, 8, 224)),
+        4000 + THIS_SIDECHAIN as u16,
+    );
+    &[BIP300_XYZ]
+};
+
 const fn seed_node_addrs(network: Network) -> &'static [SocketAddr] {
     match network {
         Network::Signet => SIGNET_SEED_NODE_ADDRS,
         Network::Regtest => &[],
+        Network::Forknet => FORKNET_SEED_NODE_ADDRS,
     }
 }
 
