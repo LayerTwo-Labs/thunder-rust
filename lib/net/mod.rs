@@ -186,6 +186,7 @@ const fn seed_node_addrs(network: Network) -> &'static [SocketAddr] {
 pub struct Net {
     pub server: Endpoint,
     archive: Archive,
+    network: Network,
     state: State,
     active_peers: Arc<RwLock<HashMap<SocketAddr, PeerConnectionHandle>>>,
     // None indicates that the stream has ended
@@ -280,6 +281,7 @@ impl Net {
         let connection_ctxt = PeerConnectionCtxt {
             env,
             archive: self.archive.clone(),
+            network: self.network,
             state: self.state.clone(),
         };
 
@@ -358,6 +360,7 @@ impl Net {
         let net = Net {
             server,
             archive,
+            network,
             state,
             active_peers,
             peer_info_tx,
@@ -430,7 +433,7 @@ impl Net {
                         remote_address,
                     }
                 })?;
-                Connection::from(raw_conn)
+                Connection::new(raw_conn, self.network)
             }
             None => {
                 tracing::debug!("server endpoint closed");
@@ -462,6 +465,7 @@ impl Net {
         let connection_ctxt = PeerConnectionCtxt {
             env,
             archive: self.archive.clone(),
+            network: self.network,
             state: self.state.clone(),
         };
         let (connection_handle, info_rx) =

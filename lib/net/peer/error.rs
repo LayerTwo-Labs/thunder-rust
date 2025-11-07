@@ -71,10 +71,14 @@ pub(in crate::net::peer) mod connection {
 
     #[derive(Debug, Error)]
     pub enum Receive {
+        #[error("received incorrect magic: {}", hex::encode(.0))]
+        BadMagic(crate::net::peer::message::MagicBytes),
         #[error("bincode error")]
         Bincode(#[from] bincode::Error),
         #[error("connection error")]
         Connection(#[from] quinn::ConnectionError),
+        #[error("failed to read magic bytes")]
+        ReadMagic(#[source] quinn::ReadExactError),
         #[error("read to end error")]
         ReadToEnd(#[from] quinn::ReadToEndError),
     }

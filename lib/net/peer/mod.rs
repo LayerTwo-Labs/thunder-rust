@@ -18,7 +18,7 @@ use tokio::{spawn, task::JoinHandle, time::Duration};
 use crate::{
     archive::Archive,
     state::State,
-    types::{AuthorizedTransaction, Hash, Tip, Version, hash, schema},
+    types::{AuthorizedTransaction, Hash, Network, Tip, Version, hash, schema},
 };
 
 mod channel_pool;
@@ -140,6 +140,7 @@ where
 #[derive(Clone)]
 pub struct Connection {
     pub(in crate::net) inner: quinn::Connection,
+    pub network: Network,
 }
 
 impl Connection {
@@ -154,14 +155,25 @@ impl Connection {
         self.inner.remote_address()
     }
 
-    pub async fn new(
+    pub fn new(connection: quinn::Connection, network: Network) -> Self {
+        Self {
+            inner: connection,
+            network,
+        }
+    }
+
+    pub async fn from_connecting(
         connecting: quinn::Connecting,
+        network: Network,
     ) -> Result<Self, quinn::ConnectionError> {
         let addr = connecting.remote_address();
         tracing::trace!(%addr, "connecting to peer");
         let connection = connecting.await?;
         tracing::info!(%addr, "connected successfully to peer");
-        Ok(Self { inner: connection })
+        Ok(Self {
+            inner: connection,
+            network,
+        })
     }
 
     async fn receive_request(
@@ -170,6 +182,15 @@ impl Connection {
     {
         let (tx, mut rx) = self.inner.accept_bi().await?;
         tracing::trace!(recv_id = %rx.id(), "Receiving request");
+        let mut magic_bytes = [0u8; message::MAGIC_BYTES_LEN];
+        rx.read_exact(&mut magic_bytes)
+            .await
+            .map_err(error::connection::Receive::ReadMagic)?;
+        if magic_bytes != message::magic_bytes(self.network) {
+            return Err(
+                error::connection::Receive::BadMagic(magic_bytes).into()
+            );
+        }
         let msg_bytes = rx.read_to_end(Connection::READ_REQUEST_LIMIT).await?;
         let msg: RequestMessage = bincode::deserialize(&msg_bytes)?;
         tracing::trace!(
@@ -191,8 +212,9 @@ impl Connection {
             "Sending heartbeat"
         );
         let message = RequestMessageRef::from(heartbeat);
-        let message = bincode::serialize(&message)?;
-        send.write_all(&message).await.map_err(|err| {
+        let mut message_buf = message::magic_bytes(self.network).to_vec();
+        bincode::serialize_into::<&mut Vec<_>, _>(&mut message_buf, &message)?;
+        send.write_all(&message_buf).await.map_err(|err| {
             error::connection::Send::Write {
                 stream_id: send.id(),
                 source: err,
@@ -203,10 +225,20 @@ impl Connection {
     }
 
     async fn receive_response(
+        network: Network,
         mut recv: RecvStream,
         read_response_limit: NonZeroUsize,
     ) -> ResponseResult {
         tracing::trace!(recv_id = %recv.id(), "Receiving response");
+        let mut magic_bytes = [0u8; message::MAGIC_BYTES_LEN];
+        recv.read_exact(&mut magic_bytes)
+            .await
+            .map_err(error::connection::Receive::ReadMagic)?;
+        if magic_bytes != message::magic_bytes(network) {
+            return Err(
+                error::connection::Receive::BadMagic(magic_bytes).into()
+            );
+        }
         let response_bytes =
             recv.read_to_end(read_response_limit.get()).await?;
         let response: ResponseMessage = bincode::deserialize(&response_bytes)?;
@@ -230,18 +262,25 @@ impl Connection {
             "Sending request"
         );
         let message = RequestMessageRef::from(request);
-        let message = bincode::serialize(&message)?;
-        send.write_all(&message).await.map_err(|err| {
+        let mut message_buf = message::magic_bytes(self.network).to_vec();
+        bincode::serialize_into::<&mut Vec<_>, _>(&mut message_buf, &message)?;
+        send.write_all(&message_buf).await.map_err(|err| {
             error::connection::Send::Write {
                 stream_id: send.id(),
                 source: err,
             }
         })?;
         send.finish()?;
-        Ok(Self::receive_response(recv, read_response_limit).await)
+        Ok(
+            Self::receive_response(self.network, recv, read_response_limit)
+                .await,
+        )
     }
 
+    // Send a pre-serialized response, where the response does not include
+    // magic bytes
     async fn send_serialized_response(
+        network: Network,
         mut response_tx: SendStream,
         serialized_response: &[u8],
     ) -> Result<(), error::connection::SendResponse> {
@@ -249,21 +288,26 @@ impl Connection {
             send_id = %response_tx.id(),
             "Sending response"
         );
-        response_tx
-            .write_all(serialized_response)
-            .await
-            .map_err(|err| {
-                {
-                    error::connection::Send::Write {
-                        stream_id: response_tx.id(),
-                        source: err,
-                    }
+        async {
+            response_tx
+                .write_all(&message::magic_bytes(network))
+                .await?;
+            response_tx.write_all(serialized_response).await
+        }
+        .await
+        .map_err(|err| {
+            {
+                error::connection::Send::Write {
+                    stream_id: response_tx.id(),
+                    source: err,
                 }
-                .into()
-            })
+            }
+            .into()
+        })
     }
 
     async fn send_response(
+        network: Network,
         mut response_tx: SendStream,
         response: ResponseMessage,
     ) -> Result<(), error::connection::SendResponse> {
@@ -272,8 +316,9 @@ impl Connection {
             send_id = %response_tx.id(),
             "Sending response"
         );
-        let response_bytes = bincode::serialize(&response)?;
-        response_tx.write_all(&response_bytes).await.map_err(|err| {
+        let mut message_buf = message::magic_bytes(network).to_vec();
+        bincode::serialize_into::<&mut Vec<_>, _>(&mut message_buf, &response)?;
+        response_tx.write_all(&message_buf).await.map_err(|err| {
             {
                 error::connection::Send::Write {
                     stream_id: response_tx.id(),
@@ -285,15 +330,10 @@ impl Connection {
     }
 }
 
-impl From<quinn::Connection> for Connection {
-    fn from(inner: quinn::Connection) -> Self {
-        Self { inner }
-    }
-}
-
 pub struct ConnectionContext {
     pub env: sneed::Env,
     pub archive: Archive,
+    pub network: Network,
     pub state: State,
 }
 
@@ -427,7 +467,8 @@ pub fn connect(
         let status_repr = status_repr.clone();
         let info_tx = info_tx.clone();
         move || async move {
-            let connection = Connection::new(connecting).await?;
+            let connection =
+                Connection::from_connecting(connecting, ctxt.network).await?;
             status_repr.store(
                 PeerConnectionStatus::Connected.as_repr(),
                 atomic::Ordering::SeqCst,
