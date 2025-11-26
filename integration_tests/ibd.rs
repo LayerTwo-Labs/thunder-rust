@@ -8,7 +8,7 @@ use bip300301_enforcer_integration_tests::{
         Mode, Network, PostSetup as EnforcerPostSetup, Sidechain as _,
         setup as setup_enforcer,
     },
-    util::{AbortOnDrop, AsyncTrial},
+    util::{AbortOnDrop, AsyncTrial, TestFailureCollector, TestFileRegistry},
 };
 use futures::{FutureExt, StreamExt as _, channel::mpsc, future::BoxFuture};
 use thunder_app_rpc_api::RpcClient as _;
@@ -162,11 +162,14 @@ async fn initial_block_download_task(
     }
     drop(thunder_nodes.syncer);
     drop(thunder_nodes.sender);
-    tracing::info!("Removing {}", enforcer_post_setup.out_dir.path().display());
+    tracing::info!(
+        "Removing {}",
+        enforcer_post_setup.directories.base_dir.path().display()
+    );
     drop(enforcer_post_setup.tasks);
     // Wait for tasks to die
     sleep(std::time::Duration::from_secs(1)).await;
-    enforcer_post_setup.out_dir.cleanup()?;
+    enforcer_post_setup.directories.base_dir.cleanup()?;
     Ok(())
 }
 
@@ -189,6 +192,13 @@ async fn ibd(bin_paths: BinPaths) -> anyhow::Result<()> {
 
 pub fn ibd_trial(
     bin_paths: BinPaths,
+    file_registry: TestFileRegistry,
+    failure_collector: TestFailureCollector,
 ) -> AsyncTrial<BoxFuture<'static, anyhow::Result<()>>> {
-    AsyncTrial::new("initial_block_download", ibd(bin_paths).boxed())
+    AsyncTrial::new(
+        "initial_block_download",
+        ibd(bin_paths).boxed(),
+        file_registry,
+        failure_collector,
+    )
 }

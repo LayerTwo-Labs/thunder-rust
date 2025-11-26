@@ -4,7 +4,7 @@ use thiserror::Error;
 
 /// Convenience alias to avoid writing out a lengthy trait bound
 pub trait Transport = where
-    Self: tonic::client::GrpcService<tonic::body::BoxBody>,
+    Self: tonic::client::GrpcService<tonic::body::Body>,
     Self::Error: Into<tonic::codegen::StdError>,
     Self::ResponseBody:
         tonic::codegen::Body<Data = tonic::codegen::Bytes> + Send + 'static,

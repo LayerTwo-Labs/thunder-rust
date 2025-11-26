@@ -12,7 +12,7 @@ bincode = { workspace = true }
 bitcoin = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["derive"] }
 dirs = "5.0.1"
-eframe = "0.30.0"
+eframe = "0.31.0"
 fallible-iterator = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
@@ -34,7 +34,7 @@ tiny-bip39 = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-util = { workspace = true, features = ["rt"] }
 tonic = { workspace = true }
-tonic-health = "0.12.3"
+tonic-health = "0.14.2"
 # needs to line up with jsonrpsee tower version...
 tower = "0.5.2"
 tower-http = { version = "0.6.2", features = ["request-id", "trace"] }

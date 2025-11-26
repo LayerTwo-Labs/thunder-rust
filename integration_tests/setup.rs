@@ -148,9 +148,13 @@ impl Sidechain for PostSetup {
     ) -> Result<Self, Self::SetupError> {
         let reserved_ports = ReservedPorts::new()?;
         let thunder_dir = if let Some(suffix) = init.data_dir_suffix {
-            post_setup.out_dir.path().join(format!("thunder-{suffix}"))
+            post_setup
+                .directories
+                .base_dir
+                .path()
+                .join(format!("thunder-{suffix}"))
         } else {
-            post_setup.out_dir.path().join("thunder")
+            post_setup.directories.base_dir.path().join("thunder")
         };
         std::fs::create_dir(&thunder_dir)
             .map_err(Self::SetupError::CreateThunderDir)?;
