@@ -8,9 +8,9 @@ version.workspace = true
 
 [build-dependencies]
 prost = { workspace = true }
-prost-build = "0.13.3"
-protox = "0.7.1"
-tonic-build = "0.12.3"
+prost-build = "0.14.1"
+protox = "0.9.0"
+tonic-prost-build = "0.14.2"
 
 [dependencies]
 anyhow = { workspace = true, features = ["backtrace"] }
@@ -35,7 +35,7 @@ merkle-cbt = "0.3.2"
 nonempty = { version = "0.11.0", features = ["serialize"] }
 parking_lot = { workspace = true }
 prost = { workspace = true }
-prost-types = "0.13.3"
+prost-types = "0.14.1"
 quinn = "0.11.6"
 rayon = "1.7.0"
 rcgen = "0.13.2"
@@ -54,6 +54,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 tokio-stream = { version = "0.1.15", features = ["sync"] }
 tokio-util = { workspace = true, features = ["rt"] }
 tonic = { workspace = true }
+tonic-prost = "0.14.2"
 tracing = { workspace = true }
 transitive = "1.0.1"
 utoipa = { workspace = true, features = ["macros", "non_strict_integers"] }

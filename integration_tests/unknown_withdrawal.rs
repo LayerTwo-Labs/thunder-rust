@@ -9,7 +9,7 @@ use bip300301_enforcer_integration_tests::{
         Mode, Network, PostSetup as EnforcerPostSetup, Sidechain as _,
         setup as setup_enforcer,
     },
-    util::{AbortOnDrop, AsyncTrial},
+    util::{AbortOnDrop, AsyncTrial, TestFailureCollector, TestFileRegistry},
 };
 use futures::{
     FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture,
@@ -141,11 +141,14 @@ async fn unknown_withdrawal_task(
     }
     drop(sidechain_successor);
     drop(sidechain_withdrawer);
-    tracing::info!("Removing {}", enforcer_post_setup.out_dir.path().display());
+    tracing::info!(
+        "Removing {}",
+        enforcer_post_setup.directories.base_dir.path().display()
+    );
     drop(enforcer_post_setup.tasks);
     // Wait for tasks to die
     sleep(std::time::Duration::from_secs(1)).await;
-    enforcer_post_setup.out_dir.cleanup()?;
+    enforcer_post_setup.directories.base_dir.cleanup()?;
     Ok(())
 }
 
@@ -167,6 +170,13 @@ async fn unknown_withdrawal(bin_paths: BinPaths) -> anyhow::Result<()> {
 
 pub fn unknown_withdrawal_trial(
     bin_paths: BinPaths,
+    file_registry: TestFileRegistry,
+    failure_collector: TestFailureCollector,
 ) -> AsyncTrial<BoxFuture<'static, anyhow::Result<()>>> {
-    AsyncTrial::new("unknown_withdrawal", unknown_withdrawal(bin_paths).boxed())
+    AsyncTrial::new(
+        "unknown_withdrawal",
+        unknown_withdrawal(bin_paths).boxed(),
+        file_registry,
+        failure_collector,
+    )
 }

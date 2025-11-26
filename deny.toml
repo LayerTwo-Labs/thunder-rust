@@ -115,14 +115,15 @@ confidence-threshold = 0.8
 exceptions = [
     # Each entry is the crate and version constraint, and its specific allow
     # list
+    { allow = ["CDLA-Permissive-2.0"], name = "webpki-roots", version = "1.0.4" },
+    { allow = ["CDLA-Permissive-2.0"], name = "webpki-root-certs", version = "0.26.11" },
+    { allow = ["CDLA-Permissive-2.0"], name = "webpki-root-certs", version = "1.0.4" },
     { allow = ["LicenseRef-UFL-1.0", "OFL-1.1"], name = "epaint_default_fonts", version = "0.30.0" },
     { allow = ["MPL-2.0"], name = "bitmaps", version = "3.2.1" },
     { allow = ["MPL-2.0"], name = "imbl", version = "3.0.0" },
     { allow = ["MPL-2.0"], name = "imbl-sized-chunks", version = "0.1.3" },
     { allow = ["MPL-2.0"], name = "option-ext", version = "0.2.0" },
-    { allow = ["MPL-2.0"], name = "webpki-root-certs", version = "0.26.7" },
     { allow = ["MPL-2.0"], name = "webpki-roots", version = "0.25.4" },
-    { allow = ["MPL-2.0"], name = "webpki-roots", version = "0.26.7" },
     { allow = ["Zlib"], name = "foldhash" },
     { allow = ["Zlib"], name = "slotmap", version = "1.0.7" },
     { allow = ["Zlib"], name = "typewit", version = "1.11.0" },
