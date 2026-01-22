@@ -18,7 +18,7 @@ jsonrpsee = { workspace = true }
 libtest-mimic = "0.8.1"
 reserve-port = "2.0.1"
 thiserror = { workspace = true }
-photon = { path = "../lib" }
+photon = { path = "../lib", features = ["clap"] }
 photon_app_rpc_api = { path = "../rpc-api" }
 tracing = { workspace = true }
 tracing-indicatif = "0.3.8"

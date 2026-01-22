@@ -41,7 +41,7 @@ pub enum InvalidHeader {
 #[transitive(from(rwtxn::Error, sneed::Error))]
 pub enum Error {
     #[error("failed to verify authorization")]
-    Authorization,
+    Authorization(#[from] crate::authorization::Error),
     #[error(transparent)]
     AmountOverflow(#[from] AmountOverflowError),
     #[error(transparent)]

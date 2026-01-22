@@ -5,7 +5,6 @@ use std::{
 
 use bitcoin::Amount;
 use byteorder::{BigEndian, ByteOrder};
-use ed25519_dalek_bip32::{ChildIndex, DerivationPath, ExtendedSigningKey};
 use fallible_iterator::FallibleIterator as _;
 use futures::{Stream, StreamExt};
 use heed::types::{Bytes, SerdeBincode, U8};
@@ -56,7 +55,7 @@ pub enum Error {
     #[error("authorization error")]
     Authorization(#[from] crate::authorization::Error),
     #[error("bip32 error")]
-    Bip32(#[from] ed25519_dalek_bip32::Error),
+    Bip32(#[from] bitcoin::bip32::Error),
     #[error(transparent)]
     Db(#[from] DbError),
     #[error("Database env error")]
@@ -475,8 +474,12 @@ impl Wallet {
                 })?;
             let index = BigEndian::read_u32(&index);
             let signing_key = self.get_signing_key(&txn, index)?;
-            let signature =
-                crate::authorization::sign(&signing_key, &transaction)?;
+            let mut rng = rand::thread_rng();
+            let signature = crate::authorization::sign(
+                &mut rng,
+                &signing_key,
+                &transaction,
+            )?;
             authorizations.push(Authorization {
                 verifying_key: signing_key.verifying_key(),
                 signature,
@@ -525,21 +528,61 @@ impl Wallet {
         &self,
         rotxn: &RoTxn,
         index: u32,
-    ) -> Result<ed25519_dalek::SigningKey, Error> {
+    ) -> Result<crate::authorization::SigningKey, Error> {
+        use bitcoin::{
+            NetworkKind,
+            bip32::{ChildNumber, Xpriv},
+        };
         let seed = self
             .seed
             .try_get(rotxn, &0)
             .map_err(DbError::from)?
             .ok_or(Error::NoSeed)?;
-        let xpriv = ExtendedSigningKey::from_seed(seed)?;
-        let derivation_path = DerivationPath::new([
-            ChildIndex::Hardened(1),
-            ChildIndex::Hardened(0),
-            ChildIndex::Hardened(0),
-            ChildIndex::Hardened(index),
-        ]);
-        let xsigning_key = xpriv.derive(&derivation_path)?;
-        Ok(xsigning_key.signing_key)
+        let xpriv = Xpriv::new_master(NetworkKind::Test, seed)?;
+        const BIP44_COIN_TYPE: u32 = {
+            // First 30 bits are the US-TTY (LSB Left) Baudot–Murray code for
+            // "PHOTON".
+            let b0 = 0b1011_0101;
+            let b1 = 0b0011_0001;
+            let b2 = 0b0000_1100;
+            let b3 = 0b0011_0000;
+            u32::from_le_bytes([b0, b1, b2, b3])
+        };
+        let derivation_path = [
+            // purpose'
+            ChildNumber::Hardened { index: 44 },
+            // coin_type'
+            ChildNumber::Hardened {
+                index: BIP44_COIN_TYPE,
+            },
+            // account'
+            ChildNumber::Hardened { index: 0 },
+            // address_index'
+            ChildNumber::Hardened { index },
+        ];
+        let secret_bytes = xpriv
+            .derive_priv(
+                &bitcoin::secp256k1::Secp256k1::new(),
+                &derivation_path,
+            )?
+            .private_key
+            .secret_bytes();
+        let signing_key = {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(&secret_bytes);
+            let mut xof_reader = hasher.finalize_xof();
+            // Use a multiple of 64 so that the XOF is efficient
+            let mut sk_bytes = [0u8; fips205::slh_dsa_shake_256s::N * 2];
+            xof_reader.fill(&mut sk_bytes);
+            let (sk_seed, sk_prf) = sk_bytes.split_first_chunk().unwrap();
+            let (sk_prf, _) = sk_prf.split_first_chunk().unwrap();
+            let mut pk_seed = [0u8; fips205::slh_dsa_shake_256s::N];
+            xof_reader.fill(&mut pk_seed);
+            crate::authorization::SigningKey::from_seeds(
+                sk_seed, sk_prf, &pk_seed,
+            )
+        };
+        Ok(signing_key)
     }
 }
 

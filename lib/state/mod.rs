@@ -357,9 +357,7 @@ impl State {
                 return Err(Error::WrongPubKeyForAddress);
             }
         }
-        if Authorization::verify_transaction(transaction).is_err() {
-            return Err(Error::Authorization);
-        }
+        let () = Authorization::verify_transaction(transaction)?;
         let fee = self.validate_filled_transaction(&filled_transaction)?;
         Ok(fee)
     }

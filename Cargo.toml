@@ -77,5 +77,8 @@ branch = "temp-dir-leak"
 git = "https://github.com/torkelrogstad/tokio-tracing.git"
 branch = "log-rotation-size"
 
+[profile.dev.package.fips205]
+opt-level = 3
+
 [profile.release]
 # lto = "fat"

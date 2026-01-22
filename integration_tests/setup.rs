@@ -5,7 +5,9 @@ use std::{
 };
 
 use bip300301_enforcer_integration_tests::{
-    setup::{PostSetup as EnforcerPostSetup, Sidechain},
+    setup::{
+        Network as EnforcerNetwork, PostSetup as EnforcerPostSetup, Sidechain,
+    },
     util::AbortOnDrop,
 };
 use bip300301_enforcer_lib::types::SidechainNumber;
@@ -167,6 +169,10 @@ impl Sidechain for PostSetup {
                 .enforcer_serve_grpc
                 .port(),
             net_port: reserved_ports.net.port(),
+            network: match post_setup.network {
+                EnforcerNetwork::Regtest => photon::types::Network::Regtest,
+                EnforcerNetwork::Signet => photon::types::Network::Signet,
+            },
             rpc_port: reserved_ports.rpc.port(),
         };
         let photon_app_task = photon_app

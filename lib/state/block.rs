@@ -155,9 +155,7 @@ pub fn prevalidate(
             return Err(Error::WrongPubKeyForAddress);
         }
     }
-    if Authorization::verify_body(body).is_err() {
-        return Err(Error::Authorization);
-    }
+    let () = Authorization::verify_body(body)?;
     // Check root consistency without committing to DB
     let () = accumulator.apply_diff(accumulator_diff.clone())?;
     let roots: Vec<BitcoinNodeHash> = accumulator.get_roots();
@@ -395,9 +393,7 @@ pub fn validate(
             return Err(Error::WrongPubKeyForAddress);
         }
     }
-    if Authorization::verify_body(body).is_err() {
-        return Err(Error::Authorization);
-    }
+    let () = Authorization::verify_body(body)?;
     // Check root consistency without committing to DB
     let () = accumulator.apply_diff(accumulator_diff)?;
     let roots: Vec<BitcoinNodeHash> = accumulator.get_roots();

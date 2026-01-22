@@ -39,6 +39,7 @@ pub struct PhotonApp {
     pub mainchain_grpc_port: u16,
     /// Port to use for P2P networking
     pub net_port: u16,
+    pub network: photon::types::Network,
     /// Port to use for the RPC server
     pub rpc_port: u16,
 }
@@ -65,6 +66,8 @@ impl PhotonApp {
             format!("http://127.0.0.1:{}", self.mainchain_grpc_port),
             "--net-addr".to_owned(),
             format!("127.0.0.1:{}", self.net_port),
+            "--network".to_owned(),
+            self.network.to_string(),
             "--rpc-addr".to_owned(),
             format!("127.0.0.1:{}", self.rpc_port),
         ];

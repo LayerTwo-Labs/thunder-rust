@@ -105,8 +105,8 @@ jobs:
         with:
           shared-key: x86_64-unknown-linux-gnu
 
-      - name: Build (debug)
-        run: cargo build
+      - name: Build (release)
+        run: cargo build --release
 
       - name: Run integration tests
         id: runIntegrationTests
@@ -115,8 +115,8 @@ jobs:
           export BITCOIND='../bitcoin-patched-bins/bitcoind'
           export BITCOIN_CLI='../bitcoin-patched-bins/bitcoin-cli'
           export ELECTRS='../electrs/target/release/electrs'
-          export PHOTON_APP='target/debug/photon_app'
-          cargo run --example integration_tests
+          export PHOTON_APP='target/release/photon_app'
+          cargo run --release --example integration_tests
 
   build-release:
     strategy:
