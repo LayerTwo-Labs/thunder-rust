@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use eframe::egui;
 
-use thunder::types::{GetValue, Transaction};
+use photon::types::{GetValue, Transaction};
 
 use super::{
     tx_creator::TxCreator,
@@ -43,7 +43,7 @@ impl TxBuilder {
             .sum();
         self.tx_creator.value_in = value_in;
         spent_utxos.sort_by_key(|(outpoint, _)| {
-            thunder::types::OutPointKey::from(*outpoint)
+            photon::types::OutPointKey::from(*outpoint)
         });
         ui.separator();
         ui.monospace(format!("Total: {value_in}"));

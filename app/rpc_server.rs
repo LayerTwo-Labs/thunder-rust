@@ -6,12 +6,12 @@ use jsonrpsee::{
     server::Server,
     types::ErrorObject,
 };
-use thunder::{
+use photon::{
     net::Peer,
     types::{Address, PointedOutput, Txid, WithdrawalBundle},
     wallet::Balance,
 };
-use thunder_app_rpc_api::RpcServer;
+use photon_app_rpc_api::RpcServer;
 use tower_http::{
     request_id::{
         MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer,
@@ -90,8 +90,8 @@ impl RpcServer for RpcServerImpl {
 
     async fn get_block(
         &self,
-        block_hash: thunder::types::BlockHash,
-    ) -> RpcResult<Option<thunder::types::Block>> {
+        block_hash: photon::types::BlockHash,
+    ) -> RpcResult<Option<photon::types::Block>> {
         let Some(header) = self
             .app
             .node
@@ -101,13 +101,13 @@ impl RpcServer for RpcServerImpl {
             return Ok(None);
         };
         let body = self.app.node.get_body(block_hash).map_err(custom_err)?;
-        let block = thunder::types::Block { header, body };
+        let block = photon::types::Block { header, body };
         Ok(Some(block))
     }
 
     async fn get_best_sidechain_block_hash(
         &self,
-    ) -> RpcResult<Option<thunder::types::BlockHash>> {
+    ) -> RpcResult<Option<photon::types::BlockHash>> {
         self.app.node.try_get_tip().map_err(custom_err)
     }
 
@@ -130,7 +130,7 @@ impl RpcServer for RpcServerImpl {
 
     async fn get_bmm_inclusions(
         &self,
-        block_hash: thunder::types::BlockHash,
+        block_hash: photon::types::BlockHash,
     ) -> RpcResult<Vec<bitcoin::BlockHash>> {
         self.app
             .node
@@ -211,7 +211,7 @@ impl RpcServer for RpcServerImpl {
     }
 
     async fn openapi_schema(&self) -> RpcResult<utoipa::openapi::OpenApi> {
-        let res = <thunder_app_rpc_api::RpcDoc as utoipa::OpenApi>::openapi();
+        let res = <photon_app_rpc_api::RpcDoc as utoipa::OpenApi>::openapi();
         Ok(res)
     }
 

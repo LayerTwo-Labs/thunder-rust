@@ -6,7 +6,7 @@ use std::{
 };
 
 use clap::{Arg, Parser};
-use thunder::types::{Network, THIS_SIDECHAIN};
+use photon::types::{Network, THIS_SIDECHAIN};
 
 use crate::util::saturating_pred_level;
 
@@ -22,7 +22,7 @@ static DEFAULT_DATA_DIR: LazyLock<Option<PathBuf>> =
             tracing::warn!("Failed to resolve default data dir");
             None
         }
-        Some(data_dir) => Some(data_dir.join("thunder")),
+        Some(data_dir) => Some(data_dir.join("photon")),
     });
 
 const DEFAULT_NET_ADDR: SocketAddr =
@@ -105,8 +105,8 @@ pub(super) struct Cli {
     #[arg(long)]
     headless: bool,
     /// Directory in which to store log files.
-    /// Defaults to `<DATADIR>/logs/v<VERSION>`, where `<DATADIR>` is thunder's data
-    /// directory, and `<VERSION>` is the thunder app version.
+    /// Defaults to `<DATADIR>/logs/v<VERSION>`, where `<DATADIR>` is photon's data
+    /// directory, and `<VERSION>` is the photon app version.
     /// By default, only logs at the WARN level and above are logged to file.
     /// If set to the empty string, logging to file will be disabled.
     #[arg(long)]

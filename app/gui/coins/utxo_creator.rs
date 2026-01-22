@@ -1,5 +1,5 @@
 use eframe::egui::{self, Button};
-use thunder::types::{self, Output, OutputContent, Transaction};
+use photon::types::{self, Output, OutputContent, Transaction};
 
 use crate::app::App;
 

@@ -1,5 +1,5 @@
 [package]
-name = "thunder"
+name = "photon"
 authors.workspace = true
 edition.workspace = true
 license-file.workspace = true
@@ -76,5 +76,5 @@ clap = ["dep:clap"]
 workspace = true
 
 [lib]
-name = "thunder"
+name = "photon"
 path = "lib.rs"

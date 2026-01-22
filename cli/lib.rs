@@ -4,8 +4,8 @@ use clap::{Parser, Subcommand};
 use http::HeaderMap;
 use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder};
 
-use thunder::types::{Address, Txid};
-use thunder_app_rpc_api::RpcClient;
+use photon::types::{Address, Txid};
+use photon_app_rpc_api::RpcClient;
 use tracing_subscriber::layer::SubscriberExt as _;
 
 #[derive(Clone, Debug, Subcommand)]
@@ -36,11 +36,11 @@ pub enum Command {
     GetBestSidechainBlockHash,
     /// Get the block with specified block hash, if it exists
     GetBlock {
-        block_hash: thunder::types::BlockHash,
+        block_hash: photon::types::BlockHash,
     },
     /// Get mainchain blocks that commit to a specified block hash
     GetBmmInclusions {
-        block_hash: thunder::types::BlockHash,
+        block_hash: photon::types::BlockHash,
     },
     /// Get a new address
     GetNewAddress,
@@ -98,7 +98,7 @@ pub enum Command {
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
     /// Base URL used for requests to the RPC server.
-    #[arg(default_value = "http://localhost:6009", long)]
+    #[arg(default_value = "http://localhost:6099", long)]
     pub rpc_url: url::Url,
 
     #[arg(long, help = "Timeout for RPC requests in seconds (default: 60)")]
@@ -202,7 +202,7 @@ where
         }
         Command::OpenApiSchema => {
             let openapi =
-                <thunder_app_rpc_api::RpcDoc as utoipa::OpenApi>::openapi();
+                <photon_app_rpc_api::RpcDoc as utoipa::OpenApi>::openapi();
             openapi.to_pretty_json()?
         }
         Command::RemoveFromMempool { txid } => {

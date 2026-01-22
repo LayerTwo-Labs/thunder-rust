@@ -122,8 +122,8 @@ fn set_tracing_subscriber(
                 "h2::codec::framed_write",
                 saturating_pred_level(saturating_pred_level(log_level)),
             ),
-            ("thunder", log_level),
-            ("thunder_app", log_level),
+            ("photon", log_level),
+            ("photon_app", log_level),
             (
                 "tower::buffer::worker",
                 saturating_pred_level(saturating_pred_level(log_level)),
@@ -183,7 +183,7 @@ fn run_egui_app(
     let rpc_addr = url::Url::parse(&format!("http://{}", config.rpc_addr))
         .expect("failed to parse rpc addr");
     eframe::run_native(
-        "Thunder",
+        "Photon",
         native_options,
         Box::new(move |cc| {
             Ok(Box::new(gui::EguiApp::new(

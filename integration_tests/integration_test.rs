@@ -29,7 +29,7 @@ fn deposit_withdraw_roundtrip(
             bip300301_enforcer_integration_tests::integration_test::deposit_withdraw_roundtrip::<PostSetup>(
                     post_setup,
                     Init {
-                        thunder_app: bin_paths.thunder,
+                        photon_app: bin_paths.photon,
                         data_dir_suffix: None,
                     },
                 ).await

@@ -4778,6 +4778,160 @@ dependencies = [
 ]
 
 [[package]]
+name = "photon"
+version = "0.13.0-alpha"
+dependencies = [
+ "anyhow",
+ "async-lock",
+ "bincode",
+ "bitcoin",
+ "blake3",
+ "borsh",
+ "byteorder",
+ "bytes",
+ "clap",
+ "ed25519-dalek",
+ "ed25519-dalek-bip32",
+ "educe",
+ "fallible-iterator",
+ "fatality",
+ "futures",
+ "governor",
+ "hashlink 0.10.0",
+ "heed",
+ "hex 0.4.3",
+ "jsonrpsee",
+ "merkle-cbt",
+ "nonempty",
+ "parking_lot",
+ "prost",
+ "prost-build",
+ "prost-types",
+ "protox",
+ "quinn",
+ "rayon",
+ "rcgen",
+ "rustls",
+ "rustreexo",
+ "semver",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "smallvec",
+ "sneed 0.0.11",
+ "strum 0.27.2",
+ "thiserror 2.0.16",
+ "tiny-bip39",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+ "tracing",
+ "transitive",
+ "utoipa",
+]
+
+[[package]]
+name = "photon_app"
+version = "0.13.0-alpha"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "bitcoin",
+ "clap",
+ "dirs",
+ "eframe",
+ "fallible-iterator",
+ "futures",
+ "http",
+ "human-size",
+ "include_path",
+ "jsonrpsee",
+ "mimalloc",
+ "parking_lot",
+ "photon",
+ "photon_app_cli",
+ "photon_app_rpc_api",
+ "poll-promise",
+ "rustreexo",
+ "serde",
+ "shlex",
+ "strum 0.27.2",
+ "thiserror 2.0.16",
+ "tiny-bip39",
+ "tokio",
+ "tokio-util",
+ "tonic",
+ "tonic-health",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "url",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
+name = "photon_app_cli"
+version = "0.13.0-alpha"
+dependencies = [
+ "anyhow",
+ "bitcoin",
+ "clap",
+ "http",
+ "jsonrpsee",
+ "photon",
+ "photon_app_rpc_api",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
+name = "photon_app_rpc_api"
+version = "0.13.0-alpha"
+dependencies = [
+ "bitcoin",
+ "jsonrpsee",
+ "l2l-openapi",
+ "photon",
+ "serde",
+ "serde_json",
+ "utoipa",
+]
+
+[[package]]
+name = "photon_integration_tests"
+version = "0.13.0-alpha"
+dependencies = [
+ "anyhow",
+ "bip300301_enforcer_integration_tests",
+ "bip300301_enforcer_lib",
+ "bitcoin",
+ "clap",
+ "dotenvy",
+ "futures",
+ "jsonrpsee",
+ "libtest-mimic",
+ "photon",
+ "photon_app_rpc_api",
+ "reserve-port",
+ "thiserror 2.0.16",
+ "tokio",
+ "tracing",
+ "tracing-indicatif",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "pin-project"
 version = "1.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6392,160 +6546,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
 dependencies = [
  "cfg-if",
-]
-
-[[package]]
-name = "thunder"
-version = "0.13.0-alpha"
-dependencies = [
- "anyhow",
- "async-lock",
- "bincode",
- "bitcoin",
- "blake3",
- "borsh",
- "byteorder",
- "bytes",
- "clap",
- "ed25519-dalek",
- "ed25519-dalek-bip32",
- "educe",
- "fallible-iterator",
- "fatality",
- "futures",
- "governor",
- "hashlink 0.10.0",
- "heed",
- "hex 0.4.3",
- "jsonrpsee",
- "merkle-cbt",
- "nonempty",
- "parking_lot",
- "prost",
- "prost-build",
- "prost-types",
- "protox",
- "quinn",
- "rayon",
- "rcgen",
- "rustls",
- "rustreexo",
- "semver",
- "serde",
- "serde_json",
- "serde_with",
- "smallvec",
- "sneed 0.0.11",
- "strum 0.27.2",
- "thiserror 2.0.16",
- "tiny-bip39",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tonic",
- "tonic-prost",
- "tonic-prost-build",
- "tracing",
- "transitive",
- "utoipa",
-]
-
-[[package]]
-name = "thunder_app"
-version = "0.13.0-alpha"
-dependencies = [
- "anyhow",
- "bincode",
- "bitcoin",
- "clap",
- "dirs",
- "eframe",
- "fallible-iterator",
- "futures",
- "http",
- "human-size",
- "include_path",
- "jsonrpsee",
- "mimalloc",
- "parking_lot",
- "poll-promise",
- "rustreexo",
- "serde",
- "shlex",
- "strum 0.27.2",
- "thiserror 2.0.16",
- "thunder",
- "thunder_app_cli",
- "thunder_app_rpc_api",
- "tiny-bip39",
- "tokio",
- "tokio-util",
- "tonic",
- "tonic-health",
- "tower",
- "tower-http",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "url",
- "utoipa",
- "uuid",
-]
-
-[[package]]
-name = "thunder_app_cli"
-version = "0.13.0-alpha"
-dependencies = [
- "anyhow",
- "bitcoin",
- "clap",
- "http",
- "jsonrpsee",
- "serde_json",
- "thunder",
- "thunder_app_rpc_api",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "url",
- "utoipa",
- "uuid",
-]
-
-[[package]]
-name = "thunder_app_rpc_api"
-version = "0.13.0-alpha"
-dependencies = [
- "bitcoin",
- "jsonrpsee",
- "l2l-openapi",
- "serde",
- "serde_json",
- "thunder",
- "utoipa",
-]
-
-[[package]]
-name = "thunder_integration_tests"
-version = "0.13.0-alpha"
-dependencies = [
- "anyhow",
- "bip300301_enforcer_integration_tests",
- "bip300301_enforcer_lib",
- "bitcoin",
- "clap",
- "dotenvy",
- "futures",
- "jsonrpsee",
- "libtest-mimic",
- "reserve-port",
- "thiserror 2.0.16",
- "thunder",
- "thunder_app_rpc_api",
- "tokio",
- "tracing",
- "tracing-indicatif",
- "tracing-subscriber",
 ]
 
 [[package]]

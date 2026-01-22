@@ -1,8 +1,8 @@
 use std::task::Poll;
 
 use eframe::egui::{self, RichText};
+use photon::{util::Watchable, wallet::Wallet};
 use strum::{EnumIter, IntoEnumIterator};
-use thunder::{util::Watchable, wallet::Wallet};
 use util::{BITCOIN_LOGO_FA, BITCOIN_ORANGE, show_btc_amount};
 
 use crate::{app::App, line_buffer::LineBuffer, util::PromiseStream};

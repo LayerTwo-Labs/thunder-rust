@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use eframe::egui;
-use thunder::types::{
+use photon::types::{
     GetValue, OutPoint, Output, PointedOutput, Transaction, hash,
 };
 
@@ -32,7 +32,7 @@ impl UtxoSelector {
                     (*utxos_read).clone().into_iter().collect();
                 drop(utxos_read);
                 utxos.sort_by_key(|(outpoint, _)| {
-                    thunder::types::OutPointKey::from(outpoint)
+                    photon::types::OutPointKey::from(outpoint)
                 });
                 (total, utxos)
             })

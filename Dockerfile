@@ -8,12 +8,12 @@ RUN cargo build --locked --release
 # Runtime stage
 FROM debian:bookworm-slim
 
-COPY --from=builder /workspace/target/release/thunder_app /bin/thunder_app
-COPY --from=builder /workspace/target/release/thunder_app_cli /bin/thunder_app_cli
+COPY --from=builder /workspace/target/release/photon_app /bin/photon_app
+COPY --from=builder /workspace/target/release/photon_app_cli /bin/photon_app_cli
 
 # Verify we placed the binary in the right place, 
 # and that it's executable.
-RUN thunder_app --help
+RUN photon_app --help
 
-ENTRYPOINT ["thunder_app"]
+ENTRYPOINT ["photon_app"]
 

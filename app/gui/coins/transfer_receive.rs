@@ -1,5 +1,5 @@
 use eframe::egui::{self, Button};
-use thunder::types::Address;
+use photon::types::Address;
 
 use crate::{app::App, gui::util::UiExt};
 

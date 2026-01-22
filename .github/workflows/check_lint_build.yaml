@@ -115,7 +115,7 @@ jobs:
           export BITCOIND='../bitcoin-patched-bins/bitcoind'
           export BITCOIN_CLI='../bitcoin-patched-bins/bitcoin-cli'
           export ELECTRS='../electrs/target/release/electrs'
-          export THUNDER_APP='target/debug/thunder_app'
+          export PHOTON_APP='target/debug/photon_app'
           cargo run --example integration_tests
 
   build-release:
@@ -167,29 +167,29 @@ jobs:
 
       - name: 'Set environment variables: version number and output filenames'
         run: |
-          THUNDER_APP_VERSION=$(cargo metadata --format-version 1 | \
-            jq -er '.packages | map(select(.name == "thunder_app") | .version) | .[0]')
-          THUNDER_APP_FILENAME="thunder-${THUNDER_APP_VERSION}-${{ matrix.name }}${{ matrix.binary-suffix }}"
-          THUNDER_CLI_FILENAME="thunder-cli-${THUNDER_APP_VERSION}-${{ matrix.name }}${{ matrix.binary-suffix }}"
-          echo "THUNDER_APP_VERSION=$THUNDER_APP_VERSION" >> "$GITHUB_ENV"
-          echo "THUNDER_APP_FILENAME=$THUNDER_APP_FILENAME" >> "$GITHUB_ENV"
-          echo "THUNDER_CLI_FILENAME=$THUNDER_CLI_FILENAME" >> "$GITHUB_ENV"
+          PHOTON_APP_VERSION=$(cargo metadata --format-version 1 | \
+            jq -er '.packages | map(select(.name == "photon_app") | .version) | .[0]')
+          PHOTON_APP_FILENAME="photon-${PHOTON_APP_VERSION}-${{ matrix.name }}${{ matrix.binary-suffix }}"
+          PHOTON_CLI_FILENAME="photon-cli-${PHOTON_APP_VERSION}-${{ matrix.name }}${{ matrix.binary-suffix }}"
+          echo "PHOTON_APP_VERSION=$PHOTON_APP_VERSION" >> "$GITHUB_ENV"
+          echo "PHOTON_APP_FILENAME=$PHOTON_APP_FILENAME" >> "$GITHUB_ENV"
+          echo "PHOTON_CLI_FILENAME=$PHOTON_CLI_FILENAME" >> "$GITHUB_ENV"
 
       - name: 'Set filenames for release binaries'
         run: |
           pushd "target/${{ matrix.name }}/release/"
-          ln -fs "thunder_app${{ matrix.binary-suffix }}" "${THUNDER_APP_FILENAME}"
-          ln -fs "thunder_app_cli${{ matrix.binary-suffix }}" "${THUNDER_CLI_FILENAME}"
+          ln -fs "photon_app${{ matrix.binary-suffix }}" "${PHOTON_APP_FILENAME}"
+          ln -fs "photon_app_cli${{ matrix.binary-suffix }}" "${PHOTON_CLI_FILENAME}"
           popd
 
-      - name: 'Upload Artifacts (thunder)'
+      - name: 'Upload Artifacts (photon)'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.THUNDER_APP_FILENAME }}
+          name: ${{ env.PHOTON_APP_FILENAME }}
           if-no-files-found: error
           path: |
-            target/${{ matrix.name }}/release/${{ env.THUNDER_APP_FILENAME }}
-            target/${{ matrix.name }}/release/${{ env.THUNDER_CLI_FILENAME }}
+            target/${{ matrix.name }}/release/${{ env.PHOTON_APP_FILENAME }}
+            target/${{ matrix.name }}/release/${{ env.PHOTON_CLI_FILENAME }}
 
       - name: Extract Git tag name
         id: git-tag-name
@@ -209,8 +209,8 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
-            target/${{ matrix.name }}/release/${{ env.THUNDER_APP_FILENAME }}
-            target/${{ matrix.name }}/release/${{ env.THUNDER_CLI_FILENAME }}
+            target/${{ matrix.name }}/release/${{ env.PHOTON_APP_FILENAME }}
+            target/${{ matrix.name }}/release/${{ env.PHOTON_CLI_FILENAME }}
           fail_on_unmatched_files: true
           prerelease: ${{ steps.parse-git-tag-name-semver.outputs.prerelease != '' }}
 
@@ -246,21 +246,21 @@ jobs:
       - name: Create zip files for releases.drivechain.info
         run: |
           shopt -s extglob
-          mv thunder-+([0-9]).+([0-9]).+([0-9])-x86_64-apple-darwin thunder-latest-x86_64-apple-darwin
-          mv thunder-cli-+([0-9]).+([0-9]).+([0-9])-x86_64-apple-darwin thunder-cli-latest-x86_64-apple-darwin
-          zip L2-S9-Thunder-latest-x86_64-apple-darwin.zip \
-            thunder-latest-x86_64-apple-darwin \
-            thunder-cli-latest-x86_64-apple-darwin
-          mv thunder-+([0-9]).+([0-9]).+([0-9])-x86_64-pc-windows-gnu.exe thunder-latest-x86_64-pc-windows-gnu.exe
-          mv thunder-cli-+([0-9]).+([0-9]).+([0-9])-x86_64-pc-windows-gnu.exe thunder-cli-latest-x86_64-pc-windows-gnu.exe
-          zip L2-S9-Thunder-latest-x86_64-pc-windows-gnu.zip \
-            thunder-latest-x86_64-pc-windows-gnu.exe \
-            thunder-cli-latest-x86_64-pc-windows-gnu.exe
-          mv thunder-+([0-9]).+([0-9]).+([0-9])-x86_64-unknown-linux-gnu thunder-latest-x86_64-unknown-linux-gnu
-          mv thunder-cli-+([0-9]).+([0-9]).+([0-9])-x86_64-unknown-linux-gnu thunder-cli-latest-x86_64-unknown-linux-gnu
-          zip L2-S9-Thunder-latest-x86_64-unknown-linux-gnu.zip \
-            thunder-latest-x86_64-unknown-linux-gnu \
-            thunder-cli-latest-x86_64-unknown-linux-gnu
+          mv photon-+([0-9]).+([0-9]).+([0-9])-x86_64-apple-darwin photon-latest-x86_64-apple-darwin
+          mv photon-cli-+([0-9]).+([0-9]).+([0-9])-x86_64-apple-darwin photon-cli-latest-x86_64-apple-darwin
+          zip L2-S99-Photon-latest-x86_64-apple-darwin.zip \
+            photon-latest-x86_64-apple-darwin \
+            photon-cli-latest-x86_64-apple-darwin
+          mv photon-+([0-9]).+([0-9]).+([0-9])-x86_64-pc-windows-gnu.exe photon-latest-x86_64-pc-windows-gnu.exe
+          mv photon-cli-+([0-9]).+([0-9]).+([0-9])-x86_64-pc-windows-gnu.exe photon-cli-latest-x86_64-pc-windows-gnu.exe
+          zip L2-S99-Photon-latest-x86_64-pc-windows-gnu.zip \
+            photon-latest-x86_64-pc-windows-gnu.exe \
+            photon-cli-latest-x86_64-pc-windows-gnu.exe
+          mv photon-+([0-9]).+([0-9]).+([0-9])-x86_64-unknown-linux-gnu photon-latest-x86_64-unknown-linux-gnu
+          mv photon-cli-+([0-9]).+([0-9]).+([0-9])-x86_64-unknown-linux-gnu photon-cli-latest-x86_64-unknown-linux-gnu
+          zip L2-S99-Photon-latest-x86_64-unknown-linux-gnu.zip \
+            photon-latest-x86_64-unknown-linux-gnu \
+            photon-cli-latest-x86_64-unknown-linux-gnu
 
       - name: Upload release assets to releases.drivechain.info
         uses: appleboy/scp-action@v1
@@ -269,5 +269,5 @@ jobs:
           username: root
           password: ${{ secrets.RELEASES_SERVER_PW }}
           port: 22
-          source: 'L2-S9-Thunder-latest-*.zip'
+          source: 'L2-S99-Photon-latest-*.zip'
           target: '/var/www/html/'

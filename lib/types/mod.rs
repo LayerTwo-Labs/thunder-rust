@@ -34,7 +34,7 @@ pub use transaction::{
     Output, PointedOutput, PointedOutputRef, SpentOutput, Transaction,
 };
 
-pub const THIS_SIDECHAIN: u8 = 9;
+pub const THIS_SIDECHAIN: u8 = 99;
 
 #[derive(Debug, Error)]
 #[error("Bitcoin amount overflow")]
