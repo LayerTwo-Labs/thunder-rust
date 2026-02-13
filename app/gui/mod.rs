@@ -11,6 +11,7 @@ mod block_explorer;
 mod coins;
 mod console_logs;
 mod fonts;
+mod layout_style;
 mod mempool_explorer;
 mod miner;
 mod parent_chain;
