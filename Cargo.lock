@@ -562,9 +562,9 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "aws-lc-rs"
-version = "1.15.3"
+version = "1.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e84ce723ab67259cfeb9877c6a639ee9eb7a27b28123abd71db7f0d5d0cc9d86"
+checksum = "a054912289d18629dc78375ba2c3726a3afe3ff71b4edba9dedfca0e3446d1fc"
 dependencies = [
  "aws-lc-sys",
  "zeroize",
@@ -572,9 +572,9 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-sys"
-version = "0.36.0"
+version = "0.39.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43a442ece363113bd4bd4c8b18977a7798dd4d3c3383f34fb61936960e8f4ad8"
+checksum = "1fa7e52a4c5c547c741610a2c6f123f3881e409b714cd27e6798ef020c514f0a"
 dependencies = [
  "cc",
  "cmake",
@@ -753,7 +753,7 @@ dependencies = [
 [[package]]
 name = "bip300301_enforcer_integration_tests"
 version = "0.3.4"
-source = "git+https://github.com/LayerTwo-Labs/bip300301_enforcer?rev=a8d169ee34aeddf6d354aa52376d847831d7fbb3#a8d169ee34aeddf6d354aa52376d847831d7fbb3"
+source = "git+https://github.com/LayerTwo-Labs/bip300301_enforcer?rev=9c3eb0bdcb5b9a458e6f92cafb8bdbf76a860f74#9c3eb0bdcb5b9a458e6f92cafb8bdbf76a860f74"
 dependencies = [
  "anyhow",
  "bdk_wallet",
@@ -786,7 +786,7 @@ dependencies = [
 [[package]]
 name = "bip300301_enforcer_lib"
 version = "0.3.4"
-source = "git+https://github.com/LayerTwo-Labs/bip300301_enforcer?rev=a8d169ee34aeddf6d354aa52376d847831d7fbb3#a8d169ee34aeddf6d354aa52376d847831d7fbb3"
+source = "git+https://github.com/LayerTwo-Labs/bip300301_enforcer?rev=9c3eb0bdcb5b9a458e6f92cafb8bdbf76a860f74#9c3eb0bdcb5b9a458e6f92cafb8bdbf76a860f74"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -5272,9 +5272,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.13"
+version = "0.11.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1906b49b0c3bc04b5fe5d86a77925ae6524a19b816ae38ce1e426255f1d8a31"
+checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
 dependencies = [
  "bytes",
  "fastbloom",
@@ -6097,7 +6097,7 @@ version = "1.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
- "errno 0.3.14",
+ "errno 0.2.8",
  "libc",
 ]
 

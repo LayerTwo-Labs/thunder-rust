@@ -5,8 +5,9 @@ use std::net::SocketAddr;
 use bip300301_enforcer_integration_tests::{
     integration_test::{activate_sidechain, fund_enforcer, propose_sidechain},
     setup::{
-        Mode, Network, PostSetup as EnforcerPostSetup, Sidechain as _,
-        setup as setup_enforcer,
+        Mode, Network, PostSetup as EnforcerPostSetup,
+        PreSetup as EnforcerPreSetup, SetupOpts as EnforcerSetupOpts,
+        Sidechain as _,
     },
     util::{AbortOnDrop, AsyncTrial, TestFailureCollector, TestFileRegistry},
 };
@@ -33,13 +34,14 @@ async fn setup(
     bin_paths: BinPaths,
     res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
 ) -> anyhow::Result<(EnforcerPostSetup, PhotonNodes)> {
-    let mut enforcer_post_setup = setup_enforcer(
-        &bin_paths.others,
-        Network::Regtest,
-        Mode::Mempool,
-        res_tx.clone(),
-    )
-    .await?;
+    let enforcer_pre_setup =
+        EnforcerPreSetup::new(bin_paths.others, Network::Regtest)?;
+    let mut enforcer_post_setup = {
+        let setup_opts: EnforcerSetupOpts = Default::default();
+        enforcer_pre_setup
+            .setup(Mode::Mempool, setup_opts, res_tx.clone())
+            .await?
+    };
     let sidechain_sender = PostSetup::setup(
         Init {
             photon_app: bin_paths.photon.clone(),
