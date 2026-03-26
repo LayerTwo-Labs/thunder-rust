@@ -6,10 +6,14 @@ use bip300301_enforcer_integration_tests::{
         withdraw_succeed,
     },
     setup::{
-        Mode, Network, PostSetup as EnforcerPostSetup, Sidechain as _,
-        setup as setup_enforcer,
+        Mode, Network, PostSetup as EnforcerPostSetup,
+        PreSetup as EnforcerPreSetup, SetupOpts as EnforcerSetupOpts,
+        Sidechain as _,
     },
-    util::{AbortOnDrop, AsyncTrial, TestFailureCollector, TestFileRegistry},
+    util::{
+        AbortOnDrop, AsyncTrial, BinPaths as EnforcerBinPaths,
+        TestFailureCollector, TestFileRegistry,
+    },
 };
 use futures::{
     FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture,
@@ -26,16 +30,17 @@ use crate::{
 
 /// Initial setup for the test
 async fn setup(
-    bin_paths: &BinPaths,
+    enforcer_bin_paths: EnforcerBinPaths,
     res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
 ) -> anyhow::Result<EnforcerPostSetup> {
-    let mut enforcer_post_setup = setup_enforcer(
-        &bin_paths.others,
-        Network::Regtest,
-        Mode::Mempool,
-        res_tx.clone(),
-    )
-    .await?;
+    let enforcer_pre_setup =
+        EnforcerPreSetup::new(enforcer_bin_paths, Network::Regtest)?;
+    let mut enforcer_post_setup = {
+        let setup_opts: EnforcerSetupOpts = Default::default();
+        enforcer_pre_setup
+            .setup(Mode::Mempool, setup_opts, res_tx.clone())
+            .await?
+    };
     let () = propose_sidechain::<PostSetup>(&mut enforcer_post_setup).await?;
     tracing::info!("Proposed sidechain successfully");
     let () = activate_sidechain::<PostSetup>(&mut enforcer_post_setup).await?;
@@ -53,7 +58,8 @@ async fn unknown_withdrawal_task(
     bin_paths: BinPaths,
     res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
 ) -> anyhow::Result<()> {
-    let mut enforcer_post_setup = setup(&bin_paths, res_tx.clone()).await?;
+    let mut enforcer_post_setup =
+        setup(bin_paths.others, res_tx.clone()).await?;
     let mut sidechain_withdrawer = PostSetup::setup(
         Init {
             thunder_app: bin_paths.thunder.clone(),

@@ -10,7 +10,7 @@ impl Withdrawals {
     pub fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
         ui.heading("Pending withdrawals");
         let bundle = app.and_then(|app| {
-            app.node.get_pending_withdrawal_bundle().ok().flatten()
+            app.node.try_get_pending_withdrawal_bundle().ok().flatten()
         });
         if let Some(bundle) = bundle {
             let mut spent_utxos: Vec<_> = bundle.spend_utxos().iter().collect();

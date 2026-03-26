@@ -146,16 +146,26 @@ impl Header {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub enum WithdrawalBundleStatus {
+pub enum WithdrawalBundleEventStatus {
     Confirmed,
     Failed,
+    Submitted,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum WithdrawalBundleStatus {
+    Confirmed,
+    /// Formerly pending bundle
+    Dropped,
+    Failed,
+    Pending,
     Submitted,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct WithdrawalBundleEvent {
     pub m6id: M6id,
-    pub status: WithdrawalBundleStatus,
+    pub status: WithdrawalBundleEventStatus,
 }
 
 pub static OP_DRIVECHAIN_SCRIPT: LazyLock<bitcoin::ScriptBuf> =
@@ -851,7 +861,11 @@ pub struct Tip {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-#[cfg_attr(feature = "clap", derive(clap::ValueEnum, strum::Display))]
+#[cfg_attr(
+    feature = "clap",
+    derive(clap::ValueEnum, strum::Display),
+    strum(serialize_all = "lowercase")
+)]
 pub enum Network {
     #[default]
     Signet,

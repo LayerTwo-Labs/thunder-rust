@@ -61,6 +61,16 @@ jobs:
           chmod +x bitcoin-patched-bins/bitcoin-cli
           popd
 
+      - name: Download bitcoin unpatched
+        run: |
+          pushd ..
+          wget https://bitcoincore.org/bin/bitcoin-core-30.2/bitcoin-30.2-x86_64-linux-gnu.tar.gz
+          tar -xf bitcoin-30.2-x86_64-linux-gnu.tar.gz
+          rm bitcoin-30.2-x86_64-linux-gnu.tar.gz
+          mv bitcoin-30.2/bin bitcoin-unpatched-bins
+          rm -r bitcoin-30.2
+          popd
+
       - name: Download latest bip300301_enforcer
         run: |
           pushd ..
@@ -113,6 +123,7 @@ jobs:
         run: |
           export BIP300301_ENFORCER='../bip300301-enforcer'
           export BITCOIND='../bitcoin-patched-bins/bitcoind'
+          export BITCOIND_UNPATCHED='../bitcoin-unpatched-bins/bitcoind'
           export BITCOIN_CLI='../bitcoin-patched-bins/bitcoin-cli'
           export ELECTRS='../electrs/target/release/electrs'
           export THUNDER_APP='target/debug/thunder_app'
