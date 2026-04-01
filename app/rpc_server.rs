@@ -206,7 +206,7 @@ impl RpcServer for RpcServerImpl {
     ) -> RpcResult<Option<WithdrawalBundle>> {
         self.app
             .node
-            .get_pending_withdrawal_bundle()
+            .try_get_pending_withdrawal_bundle()
             .map_err(custom_err)
     }
 

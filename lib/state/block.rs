@@ -68,7 +68,7 @@ pub fn prevalidate(
         for (outpoint, utxo_hash) in &transaction.inputs {
             let key = OutPointKey::from(outpoint);
             let spent_output =
-                state.utxos.try_get(rotxn, &key)?.ok_or(Error::NoUtxo {
+                state.utxos.try_get(rotxn, &key)?.ok_or(error::NoUtxo {
                     outpoint: *outpoint,
                 })?;
             all_input_keys.push(OutPointKey::from(outpoint));
@@ -217,7 +217,7 @@ pub fn connect_prevalidated(
                 .utxos
                 .try_get(rwtxn, &OutPointKey::from(outpoint))
                 .map_err(DbError::from)?
-                .ok_or(Error::NoUtxo {
+                .ok_or(error::NoUtxo {
                     outpoint: *outpoint,
                 })?;
             state
@@ -445,7 +445,7 @@ pub fn connect(
         {
             let key = OutPointKey::from(outpoint);
             let spent_output =
-                state.utxos.try_get(rwtxn, &key)?.ok_or(Error::NoUtxo {
+                state.utxos.try_get(rwtxn, &key)?.ok_or(error::NoUtxo {
                     outpoint: *outpoint,
                 })?;
 
@@ -545,10 +545,10 @@ pub fn disconnect_tip(
                 };
                 accumulator_diff.remove((&pointed_output).into());
                 let key = OutPointKey::from(&outpoint);
-                if state.utxos.delete(rwtxn, &key).map_err(DbError::from)? {
-                    Ok(())
+                if state.utxos.delete(rwtxn, &key)? {
+                    Ok::<_, Error>(())
                 } else {
-                    Err(Error::NoUtxo { outpoint })
+                    Err(error::NoUtxo { outpoint }.into())
                 }
             },
         )?;
@@ -586,10 +586,10 @@ pub fn disconnect_tip(
             };
             accumulator_diff.remove((&pointed_output).into());
             let key = OutPointKey::from(&outpoint);
-            if state.utxos.delete(rwtxn, &key).map_err(DbError::from)? {
-                Ok(())
+            if state.utxos.delete(rwtxn, &key)? {
+                Ok::<_, Error>(())
             } else {
-                Err(Error::NoUtxo { outpoint })
+                Err(error::NoUtxo { outpoint }.into())
             }
         })?;
     let height = state

@@ -497,13 +497,13 @@ where
         Ok((returned_transactions, fee))
     }
 
-    pub fn get_pending_withdrawal_bundle(
+    pub fn try_get_pending_withdrawal_bundle(
         &self,
     ) -> Result<Option<WithdrawalBundle>, Error> {
-        let txn = self.env.read_txn().map_err(EnvError::from)?;
+        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         let bundle = self
             .state
-            .get_pending_withdrawal_bundle(&txn)?
+            .try_get_pending_withdrawal_bundle(&rotxn)?
             .map(|(bundle, _)| bundle);
         Ok(bundle)
     }
@@ -645,7 +645,7 @@ where
             return Ok(false);
         };
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
-        let bundle = self.state.get_pending_withdrawal_bundle(&rotxn)?;
+        let bundle = self.state.try_get_pending_withdrawal_bundle(&rotxn)?;
         if let Some((bundle, _)) = bundle {
             let m6id = bundle.compute_m6id();
             let mut cusf_mainchain_wallet_lock =

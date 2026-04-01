@@ -51,6 +51,7 @@ fn set_tracing_subscriber(log_level: tracing::Level) -> anyhow::Result<()> {
     let targets_filter = {
         let default_directives_str = targets_directive_str([
             ("", saturating_pred_level(log_level)),
+            ("bip300301_enforcer_integration_tests", log_level),
             ("integration_tests", log_level),
         ]);
         let directives_str =

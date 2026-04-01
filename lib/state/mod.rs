@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use fallible_iterator::FallibleIterator;
+use fallible_iterator::FallibleIterator as _;
 use futures::Stream;
 use heed::types::SerdeBincode;
 use rustreexo::accumulator::{node_hash::BitcoinNodeHash, proof::Proof};
@@ -79,9 +79,8 @@ pub struct State {
     height: DatabaseUnique<UnitKey, SerdeBincode<u32>>,
     pub utxos: DatabaseUnique<OutPointKey, SerdeBincode<Output>>,
     pub stxos: DatabaseUnique<OutPointKey, SerdeBincode<SpentOutput>>,
-    /// Pending withdrawal bundle and block height
-    pub pending_withdrawal_bundle:
-        DatabaseUnique<UnitKey, SerdeBincode<(WithdrawalBundle, u32)>>,
+    /// Pending withdrawal bundle. MUST exist in withdrawal_bundles
+    pub pending_withdrawal_bundle: DatabaseUnique<UnitKey, SerdeBincode<M6id>>,
     /// Latest failed (known) withdrawal bundle
     latest_failed_withdrawal_bundle:
         DatabaseUnique<UnitKey, SerdeBincode<RollBack<M6id>>>,
@@ -224,10 +223,23 @@ impl State {
         };
         let latest_failed_m6id = latest_failed_m6id.latest().value;
         let (_bundle, bundle_status) = self.withdrawal_bundles.try_get(rotxn, &latest_failed_m6id)?
-            .expect("Inconsistent DBs: latest failed m6id should exist in withdrawal_bundles");
-        let bundle_status = bundle_status.latest();
-        assert_eq!(bundle_status.value, WithdrawalBundleStatus::Failed);
-        Ok(Some((bundle_status.height, latest_failed_m6id)))
+            .unwrap_or_else(||
+                panic!("Inconsistent DBs: latest failed m6id {latest_failed_m6id} should exist in withdrawal_bundles")
+            );
+        let failed_height = bundle_status
+            .iter()
+            .rev()
+            .find_map(|status| match status.value {
+                WithdrawalBundleStatus::Failed => Some(status.height),
+                WithdrawalBundleStatus::Confirmed
+                | WithdrawalBundleStatus::Dropped
+                | WithdrawalBundleStatus::Pending
+                | WithdrawalBundleStatus::Submitted => None,
+            })
+            .unwrap_or_else(|| {
+                panic!("missing failure status for {latest_failed_m6id}")
+            });
+        Ok(Some((failed_height, latest_failed_m6id)))
     }
 
     /// Get the current Utreexo accumulator
@@ -281,7 +293,7 @@ impl State {
         for (outpoint, _) in &transaction.inputs {
             let key = OutPointKey::from(outpoint);
             let utxo =
-                self.utxos.try_get(rotxn, &key)?.ok_or(Error::NoUtxo {
+                self.utxos.try_get(rotxn, &key)?.ok_or(error::NoUtxo {
                     outpoint: *outpoint,
                 })?;
             spent_utxos.push(utxo);
@@ -307,14 +319,25 @@ impl State {
     }
 
     /// Get pending withdrawal bundle and block height
-    pub fn get_pending_withdrawal_bundle(
+    pub fn try_get_pending_withdrawal_bundle(
         &self,
-        txn: &RoTxn,
+        rotxn: &RoTxn,
     ) -> Result<Option<(WithdrawalBundle, u32)>, Error> {
-        Ok(self
-            .pending_withdrawal_bundle
-            .try_get(txn, &())
-            .map_err(DbError::from)?)
+        let Some(m6id) = self.pending_withdrawal_bundle.try_get(rotxn, &())?
+        else {
+            return Ok(None);
+        };
+        let (bundle_info, bundle_status) =
+            self.withdrawal_bundles.get(rotxn, &m6id)?;
+        let bundle = match bundle_info {
+            WithdrawalBundleInfo::Known(bundle) => bundle,
+            WithdrawalBundleInfo::Unknown
+            | WithdrawalBundleInfo::UnknownConfirmed { spend_utxos: _ } => {
+                return Err(error::PendingWithdrawalBundleUnknown(m6id).into());
+            }
+        };
+        let height = bundle_status.latest().height;
+        Ok(Some((bundle, height)))
     }
 
     pub fn validate_filled_transaction(

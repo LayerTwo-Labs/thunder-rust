@@ -12,7 +12,7 @@ use bip300301_enforcer_integration_tests::{
 };
 use bip300301_enforcer_lib::types::SidechainNumber;
 use futures::{TryFutureExt as _, channel::mpsc, future};
-use photon::types::{OutputContent, PointedOutput};
+use photon::types::{Network, OutputContent, PointedOutput};
 use photon_app_rpc_api::RpcClient as _;
 use reserve_port::ReservedPort;
 use thiserror::Error;
@@ -170,8 +170,8 @@ impl Sidechain for PostSetup {
                 .port(),
             net_port: reserved_ports.net.port(),
             network: match post_setup.network {
-                EnforcerNetwork::Regtest => photon::types::Network::Regtest,
-                EnforcerNetwork::Signet => photon::types::Network::Signet,
+                EnforcerNetwork::Regtest => Network::Regtest,
+                EnforcerNetwork::Signet => Network::Signet,
             },
             rpc_port: reserved_ports.rpc.port(),
         };
@@ -274,12 +274,10 @@ impl Sidechain for PostSetup {
                 .latest_failed_withdrawal_bundle_height()
                 .await?
                 .unwrap_or(0);
-            match WITHDRAWAL_BUNDLE_FAILURE_GAP.saturating_sub(
+            let blocks_to_mine = WITHDRAWAL_BUNDLE_FAILURE_GAP.saturating_sub(
                 block_height - latest_failed_withdrawal_bundle_height,
-            ) {
-                0 => WITHDRAWAL_BUNDLE_FAILURE_GAP + 1,
-                blocks_to_mine => blocks_to_mine,
-            }
+            );
+            std::cmp::max(1, blocks_to_mine)
         };
         tracing::debug!(
             "Mining photon blocks until withdrawal bundle is broadcast"

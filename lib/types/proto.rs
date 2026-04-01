@@ -529,7 +529,7 @@ pub mod mainchain {
     }
 
     impl From<generated::withdrawal_bundle_event::event::Event>
-        for crate::types::WithdrawalBundleStatus
+        for crate::types::WithdrawalBundleEventStatus
     {
         fn from(
             event: generated::withdrawal_bundle_event::event::Event,
@@ -549,7 +549,7 @@ pub mod mainchain {
     }
 
     impl TryFrom<generated::withdrawal_bundle_event::Event>
-        for crate::types::WithdrawalBundleStatus
+        for crate::types::WithdrawalBundleEventStatus
     {
         type Error = super::Error;
 
