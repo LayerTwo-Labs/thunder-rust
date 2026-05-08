@@ -62,15 +62,6 @@ enum WithdrawalBundleInfo {
     },
 }
 
-impl WithdrawalBundleInfo {
-    fn is_known(&self) -> bool {
-        match self {
-            Self::Known(_) => true,
-            Self::Unknown | Self::UnknownConfirmed { .. } => false,
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct State {
     /// Current tip
@@ -234,7 +225,8 @@ impl State {
                 WithdrawalBundleStatus::Confirmed
                 | WithdrawalBundleStatus::Dropped
                 | WithdrawalBundleStatus::Pending
-                | WithdrawalBundleStatus::Submitted => None,
+                | WithdrawalBundleStatus::Submitted
+                | WithdrawalBundleStatus::SubmittedUnexpected => None,
             })
             .unwrap_or_else(|| {
                 panic!("missing failure status for {latest_failed_m6id}")
