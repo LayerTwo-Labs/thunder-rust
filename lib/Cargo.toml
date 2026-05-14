@@ -23,8 +23,8 @@ byteorder = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true, features = ["derive"], optional = true }
 educe = { workspace = true, features = ["Clone", "Debug"] }
+error-fatality = { workspace = true }
 fallible-iterator = { workspace = true }
-fatality = { workspace = true }
 fips205 = { workspace = true, features = ["slh_dsa_shake_256s"] }
 futures = { workspace = true, features = ["alloc"] }
 governor = { workspace = true, features = ["quanta", "std"] }

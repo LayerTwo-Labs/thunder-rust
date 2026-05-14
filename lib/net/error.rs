@@ -1,6 +1,6 @@
 use std::net::{IpAddr, SocketAddr};
 
-use fatality::fatality;
+use error_fatality::{Fatality, Split};
 use sneed::{db, env, rwtxn};
 use thiserror::Error;
 use transitive::Transitive;
@@ -13,8 +13,8 @@ pub struct AlreadyConnected(pub SocketAddr);
 
 /// Another connection can be accepted after a non-fatal error
 #[allow(clippy::duplicated_attributes)]
-#[derive(transitive::Transitive)]
-#[fatality(splitable)]
+#[derive(Debug, Error, Fatality, Split, Transitive)]
+#[split(attrs(derive(Debug, Error)))]
 #[transitive(
     from(sneed::db::error::Put, sneed::DbError),
     from(sneed::DbError, sneed::Error),
@@ -24,18 +24,20 @@ pub struct AlreadyConnected(pub SocketAddr);
 )]
 pub enum AcceptConnection {
     #[error(transparent)]
+    #[fatal(false)]
     AlreadyConnected(#[from] AlreadyConnected),
     #[error("connection error (remote address: {remote_address})")]
+    #[fatal(false)]
     Connection {
         #[source]
         error: quinn::ConnectionError,
         remote_address: SocketAddr,
     },
     #[error(transparent)]
-    #[fatal]
+    #[fatal(true)]
     Db(#[from] sneed::Error),
     #[error("server endpoint closed")]
-    #[fatal]
+    #[fatal(true)]
     ServerEndpointClosed,
 }
 
@@ -49,7 +51,7 @@ pub enum AcceptConnection {
 #[transitive(from(rwtxn::error::Commit, rwtxn::Error))]
 pub enum Error {
     #[error(transparent)]
-    AcceptConnection(#[from] <AcceptConnection as fatality::Split>::Fatal),
+    AcceptConnection(#[from] <AcceptConnection as Split>::Fatal),
     #[error("accept error")]
     AcceptError,
     #[error(transparent)]

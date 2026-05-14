@@ -30,7 +30,7 @@ use crate::{
 
 /// Initial setup for the test
 async fn setup(
-    enforcer_bin_paths: EnforcerBinPaths,
+    enforcer_bin_paths: &EnforcerBinPaths,
     res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
 ) -> anyhow::Result<EnforcerPostSetup> {
     let enforcer_pre_setup =
@@ -59,10 +59,10 @@ async fn unknown_withdrawal_task(
     res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
 ) -> anyhow::Result<()> {
     let mut enforcer_post_setup =
-        setup(bin_paths.others, res_tx.clone()).await?;
+        setup(&bin_paths.others, res_tx.clone()).await?;
     let mut sidechain_withdrawer = PostSetup::setup(
         Init {
-            photon_app: bin_paths.photon.clone(),
+            photon_app: bin_paths.photon()?.clone(),
             data_dir_suffix: Some("withdrawer".to_owned()),
         },
         &enforcer_post_setup,
@@ -93,7 +93,7 @@ async fn unknown_withdrawal_task(
     // New sidechain node, starting from scratch
     let mut sidechain_successor = PostSetup::setup(
         Init {
-            photon_app: bin_paths.photon,
+            photon_app: bin_paths.photon()?.clone(),
             data_dir_suffix: Some("successor".to_owned()),
         },
         &enforcer_post_setup,
