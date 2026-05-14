@@ -26,8 +26,8 @@ dirs = "5.0.1"
 dotenvy = "0.15.7"
 educe = { version = "0.6.0", default-features = false }
 eframe = "0.31.0"
+error-fatality = "0.1.2"
 fallible-iterator = "0.3.0"
-fatality = "0.1.1"
 fips205 = "0.4.1"
 futures = { version = "0.3.30", default-features = false }
 governor = { version = "0.8.1", default-features = false }
@@ -66,7 +66,7 @@ sneed = "0.0.11"
 strum = { version = "0.27.2", features = ["derive"] }
 thiserror = "2.0.11"
 tiny-bip39 = "2.0.0"
-tokio = { version = "1.48.0", default-features = false }
+tokio = { version = "1.50.0", default-features = false }
 tokio-stream = "0.1.15"
 tokio-util = "0.7.18"
 tonic = "0.14.2"
@@ -88,12 +88,12 @@ uuid = "1.13.1"
 [workspace.dependencies.bip300301_enforcer_lib]
 default-features = false
 git = "https://github.com/LayerTwo-Labs/bip300301_enforcer"
-rev = "9c3eb0bdcb5b9a458e6f92cafb8bdbf76a860f74"
+rev = "57bf4f8ace4454eddaec83dbc634dc706fc71516"
 
 [workspace.dependencies.bip300301_enforcer_integration_tests]
 default-features = false
 git = "https://github.com/LayerTwo-Labs/bip300301_enforcer"
-rev = "9c3eb0bdcb5b9a458e6f92cafb8bdbf76a860f74"
+rev = "57bf4f8ace4454eddaec83dbc634dc706fc71516"
 
 [workspace.dependencies.l2l-openapi]
 git = "https://github.com/Ash-L2L/l2l-openapi"

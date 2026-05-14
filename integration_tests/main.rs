@@ -99,7 +99,7 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
     let failure_collector = TestFailureCollector::new();
     tests.extend(
         integration_test::tests(
-            util::BinPaths::from_env()?,
+            util::BinPaths::default(),
             file_registry,
             failure_collector,
         )
