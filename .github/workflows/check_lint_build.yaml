@@ -142,6 +142,10 @@ jobs:
             name: x86_64-apple-darwin
             binary-suffix: ""
             rustflags: ""
+          - os: macos-latest
+            name: aarch64-apple-darwin
+            binary-suffix: ""
+            rustflags: ""
           - os: ubuntu-latest
             name: x86_64-pc-windows-gnu
             binary-suffix: .exe
@@ -262,6 +266,11 @@ jobs:
           zip L2-S9-Thunder-latest-x86_64-apple-darwin.zip \
             thunder-latest-x86_64-apple-darwin \
             thunder-cli-latest-x86_64-apple-darwin
+          mv thunder-+([0-9]).+([0-9]).+([0-9])-aarch64-apple-darwin thunder-latest-aarch64-apple-darwin
+          mv thunder-cli-+([0-9]).+([0-9]).+([0-9])-aarch64-apple-darwin thunder-cli-latest-aarch64-apple-darwin
+          zip L2-S9-Thunder-latest-aarch64-apple-darwin.zip \
+            thunder-latest-aarch64-apple-darwin \
+            thunder-cli-latest-aarch64-apple-darwin
           mv thunder-+([0-9]).+([0-9]).+([0-9])-x86_64-pc-windows-gnu.exe thunder-latest-x86_64-pc-windows-gnu.exe
           mv thunder-cli-+([0-9]).+([0-9]).+([0-9])-x86_64-pc-windows-gnu.exe thunder-cli-latest-x86_64-pc-windows-gnu.exe
           zip L2-S9-Thunder-latest-x86_64-pc-windows-gnu.zip \
