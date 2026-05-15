@@ -142,6 +142,10 @@ jobs:
             name: x86_64-apple-darwin
             binary-suffix: ""
             rustflags: ""
+          - os: macos-latest
+            name: aarch64-apple-darwin
+            binary-suffix: ""
+            rustflags: ""
           - os: ubuntu-latest
             name: x86_64-pc-windows-gnu
             binary-suffix: .exe
@@ -262,6 +266,11 @@ jobs:
           zip L2-S99-Photon-latest-x86_64-apple-darwin.zip \
             photon-latest-x86_64-apple-darwin \
             photon-cli-latest-x86_64-apple-darwin
+          mv photon-+([0-9]).+([0-9]).+([0-9])-aarch64-apple-darwin photon-latest-aarch64-apple-darwin
+          mv photon-cli-+([0-9]).+([0-9]).+([0-9])-aarch64-apple-darwin photon-cli-latest-aarch64-apple-darwin
+          zip L2-S99-Photon-latest-aarch64-apple-darwin.zip \
+            photon-latest-aarch64-apple-darwin \
+            photon-cli-latest-aarch64-apple-darwin
           mv photon-+([0-9]).+([0-9]).+([0-9])-x86_64-pc-windows-gnu.exe photon-latest-x86_64-pc-windows-gnu.exe
           mv photon-cli-+([0-9]).+([0-9]).+([0-9])-x86_64-pc-windows-gnu.exe photon-cli-latest-x86_64-pc-windows-gnu.exe
           zip L2-S99-Photon-latest-x86_64-pc-windows-gnu.zip \
