@@ -11,9 +11,9 @@ bitcoin = { workspace = true, features = ["serde"] }
 jsonrpsee = { workspace = true, features = ["client", "macros", "server"] }
 l2l-openapi = { workspace = true }
 photon = { path = "../lib" }
+serde = {workspace = true }
 serde_json = { workspace = true }
 utoipa = { workspace = true }
-serde.workspace = true
 
 [lints]
 workspace = true
