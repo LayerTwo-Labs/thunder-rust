@@ -179,7 +179,11 @@ fn run_egui_app(
     line_buffer: LineBuffer,
     app: Result<crate::app::App, crate::app::Error>,
 ) -> Result<(), eframe::Error> {
-    let native_options = eframe::NativeOptions::default();
+    let native_options = eframe::NativeOptions {
+        viewport: eframe::egui::ViewportBuilder::default()
+            .with_inner_size(eframe::egui::vec2(1280.0, 720.0)),
+        ..Default::default()
+    };
     let rpc_addr = url::Url::parse(&format!("http://{}", config.rpc_addr))
         .expect("failed to parse rpc addr");
     eframe::run_native(
@@ -225,6 +229,17 @@ fn main() -> anyhow::Result<()> {
     });
 
     if !config.headless {
+        let fallback_rt;
+        let _guard = match &app {
+            Ok(app) => Some(app.runtime.enter()),
+            Err(_) => {
+                fallback_rt = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .ok();
+                fallback_rt.as_ref().map(|rt| rt.enter())
+            }
+        };
         // For GUI mode we want the GUI to start, even if the app fails to start.
         return run_egui_app(&config, line_buffer, app)
             .map_err(|e| anyhow::anyhow!("failed to run egui app: {e:#}"));

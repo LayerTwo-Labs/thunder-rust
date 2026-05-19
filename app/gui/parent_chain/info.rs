@@ -10,44 +10,67 @@ struct Inner {
     sidechain_wealth: bitcoin::Amount,
 }
 
-pub(super) struct Info(Option<anyhow::Result<Inner>>);
+pub(super) struct Info {
+    promise: Option<poll_promise::Promise<anyhow::Result<Inner>>>,
+    last_value: Option<anyhow::Result<Inner>>,
+}
 
 impl Info {
-    fn get_parent_chain_info(app: &App) -> anyhow::Result<Inner> {
-        let mainchain_tip_info =
-            app.runtime.block_on(app.node.with_cusf_mainchain(
-                |cusf_mainchain| cusf_mainchain.get_chain_tip().boxed(),
-            ))?;
-        let sidechain_wealth = app.node.get_sidechain_wealth()?;
-        Ok(Inner {
-            mainchain_tip_info,
-            sidechain_wealth,
-        })
-    }
-
     pub fn new(app: Option<&App>) -> Self {
-        let inner = app.map(|app| {
-            Self::get_parent_chain_info(app)
-                .inspect_err(|err| tracing::error!("{err:#}"))
-        });
-        Self(inner)
+        let mut this = Self {
+            promise: None,
+            last_value: None,
+        };
+        if let Some(app) = app {
+            this.refresh_parent_chain_info(app);
+        }
+        this
     }
 
     fn refresh_parent_chain_info(&mut self, app: &App) {
-        self.0 = Some(
-            Self::get_parent_chain_info(app)
-                .inspect_err(|err| tracing::error!("{err:#}")),
-        );
+        let app = app.clone();
+        self.promise = Some(poll_promise::Promise::spawn_async(async move {
+            let mainchain_tip_info = app
+                .node
+                .with_cusf_mainchain(|cusf_mainchain| {
+                    cusf_mainchain.get_chain_tip().boxed()
+                })
+                .await?;
+            let sidechain_wealth = app.node.get_sidechain_wealth()?;
+            Ok(Inner {
+                mainchain_tip_info,
+                sidechain_wealth,
+            })
+        }));
     }
 
     pub fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
-        if ui
-            .add_enabled(app.is_some(), Button::new("Refresh"))
-            .clicked()
-        {
-            let () = self.refresh_parent_chain_info(app.unwrap());
+        if let Some(result) = self.promise.as_ref().and_then(|p| p.ready()) {
+            self.last_value = Some(match result {
+                Ok(inner) => Ok(inner.clone()),
+                Err(err) => Err(anyhow::anyhow!("{err:#}")),
+            });
+            self.promise = None;
         }
-        let parent_chain_info = match self.0.as_ref() {
+
+        ui.horizontal(|ui| {
+            let is_refreshing = self.promise.is_some();
+            if ui
+                .add_enabled(
+                    app.is_some() && !is_refreshing,
+                    Button::new("Refresh"),
+                )
+                .clicked()
+            {
+                self.refresh_parent_chain_info(app.unwrap());
+            }
+            if is_refreshing {
+                ui.spinner();
+                ui.label("Refreshing parent chain info...");
+            }
+        });
+
+        let parent_chain_info = match self.last_value.as_ref() {
             Some(Ok(parent_chain_info)) => parent_chain_info,
             Some(Err(err)) => {
                 ui.monospace_selectable_multiline(format!("{err:#}"));

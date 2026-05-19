@@ -48,7 +48,7 @@ impl TxBuilder {
         ui.separator();
         ui.monospace(format!("Total: {value_in}"));
         ui.separator();
-        egui::Grid::new("utxos").striped(true).show(ui, |ui| {
+        egui::Grid::new("spent_utxos").striped(true).show(ui, |ui| {
             ui.monospace("kind");
             ui.monospace("outpoint");
             ui.monospace("value");
@@ -111,33 +111,29 @@ impl TxBuilder {
         ui: &mut egui::Ui,
     ) -> anyhow::Result<()> {
         egui::ScrollArea::horizontal().show(ui, |ui| {
-            egui::SidePanel::left("spend_utxo")
-                .exact_width(300.)
-                .resizable(false)
-                .show_inside(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(250.0);
                     self.utxo_selector.show(app, ui, &mut self.base_tx);
                 });
-            egui::SidePanel::left("value_in")
-                .exact_width(300.)
-                .resizable(false)
-                .show_inside(ui, |ui| {
+                ui.separator();
+                ui.vertical(|ui| {
+                    ui.set_width(250.0);
                     let () = self.show_value_in(app, ui);
                 });
-            egui::SidePanel::left("value_out")
-                .exact_width(250.)
-                .resizable(false)
-                .show_inside(ui, |ui| {
+                ui.separator();
+                ui.vertical(|ui| {
+                    ui.set_width(250.0);
                     let () = self.show_value_out(ui);
                 });
-            egui::SidePanel::left("create_utxo")
-                .exact_width(450.)
-                .resizable(false)
-                .show_separator_line(false)
-                .show_inside(ui, |ui| {
+                ui.separator();
+                ui.vertical(|ui| {
+                    ui.set_width(450.0);
                     self.utxo_creator.show(app, ui, &mut self.base_tx);
                     ui.separator();
                     self.tx_creator.show(app, ui, &mut self.base_tx).unwrap();
                 });
+            });
         });
         Ok(())
     }

@@ -13,6 +13,7 @@ use photon::{
 };
 use photon_app_rpc_api::RpcServer;
 use tower_http::{
+    cors::CorsLayer,
     request_id::{
         MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer,
     },
@@ -356,7 +357,9 @@ pub async fn run_server(
         )))
         .into_inner();
 
-    let http_middleware = tower::ServiceBuilder::new().layer(tracer);
+    let http_middleware = tower::ServiceBuilder::new()
+        .layer(tracer)
+        .layer(CorsLayer::permissive());
     let rpc_middleware = RpcServiceBuilder::new().rpc_logger(1024);
 
     let server = Server::builder()
