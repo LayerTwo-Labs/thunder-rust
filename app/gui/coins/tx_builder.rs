@@ -112,13 +112,13 @@ impl TxBuilder {
     ) -> anyhow::Result<()> {
         egui::ScrollArea::horizontal().show(ui, |ui| {
             egui::SidePanel::left("spend_utxo")
-                .exact_width(250.)
+                .exact_width(300.)
                 .resizable(false)
                 .show_inside(ui, |ui| {
                     self.utxo_selector.show(app, ui, &mut self.base_tx);
                 });
             egui::SidePanel::left("value_in")
-                .exact_width(250.)
+                .exact_width(300.)
                 .resizable(false)
                 .show_inside(ui, |ui| {
                     let () = self.show_value_in(app, ui);
