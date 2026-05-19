@@ -100,7 +100,7 @@ impl Receive {
         };
         let address = app
             .wallet
-            .get_new_address()
+            .get_address_or_new()
             .map_err(anyhow::Error::from)
             .inspect_err(|err| tracing::error!("{err:#}"));
         Self {
@@ -122,7 +122,13 @@ impl Receive {
             .add_enabled(app.is_some(), Button::new("generate"))
             .clicked()
         {
-            *self = Self::new(app)
+            let address = app
+                .unwrap()
+                .wallet
+                .get_new_address()
+                .map_err(anyhow::Error::from)
+                .inspect_err(|err| tracing::error!("{err:#}"));
+            self.address = Some(address);
         }
     }
 }
