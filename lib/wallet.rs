@@ -510,6 +510,20 @@ impl Wallet {
         Ok(address)
     }
 
+    pub fn get_last_address(&self) -> Result<Option<Address>, Error> {
+        let txn = self.env.read_txn().map_err(EnvError::from)?;
+        let last = self.index_to_address.last(&txn).map_err(DbError::from)?;
+        Ok(last.map(|(_, address)| address))
+    }
+
+    pub fn get_address_or_new(&self) -> Result<Address, Error> {
+        if let Some(address) = self.get_last_address()? {
+            Ok(address)
+        } else {
+            self.get_new_address()
+        }
+    }
+
     pub fn get_num_addresses(&self) -> Result<u32, Error> {
         let txn = self.env.read_txn().map_err(EnvError::from)?;
         let (last_index, _) = self
@@ -573,5 +587,65 @@ impl Watchable<()> for Wallet {
             #[allow(clippy::unused_unit)]
             ()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_address_or_new() -> Result<(), Error> {
+        let test_dir = std::env::temp_dir().join(format!(
+            "thunder_test_wallet_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        // Ensure clean state
+        if test_dir.exists() {
+            let _unused = std::fs::remove_dir_all(&test_dir);
+        }
+
+        let wallet = Wallet::new(&test_dir)?;
+
+        // Seed must be set before we can generate addresses
+        assert!(!wallet.has_seed()?);
+        let seed = [1u8; 64];
+        wallet.set_seed(&seed)?;
+        assert!(wallet.has_seed()?);
+
+        // Get last address when none have been generated
+        let last = wallet.get_last_address()?;
+        assert!(last.is_none());
+
+        // Get address or new should generate the first address
+        let addr1 = wallet.get_address_or_new()?;
+
+        // Now last address should be addr1
+        let last = wallet.get_last_address()?;
+        assert_eq!(last, Some(addr1));
+
+        // Subsequent get_address_or_new calls should return the same addr1
+        let addr2 = wallet.get_address_or_new()?;
+        assert_eq!(addr1, addr2);
+
+        // Generating a new address explicitly should give a new one
+        let addr3 = wallet.get_new_address()?;
+        assert_ne!(addr1, addr3);
+
+        // Now last address should be addr3
+        let last = wallet.get_last_address()?;
+        assert_eq!(last, Some(addr3));
+
+        // And get_address_or_new should return addr3
+        let addr4 = wallet.get_address_or_new()?;
+        assert_eq!(addr3, addr4);
+
+        // Clean up
+        let _unused = std::fs::remove_dir_all(&test_dir);
+        Ok(())
     }
 }
