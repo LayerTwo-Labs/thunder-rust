@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 use clap::Parser as _;
 use mimalloc::MiMalloc;
@@ -229,17 +229,16 @@ fn main() -> anyhow::Result<()> {
     });
 
     if !config.headless {
-        let fallback_rt;
-        let _guard = match &app {
-            Ok(app) => Some(app.runtime.enter()),
+        let rt = match &app {
+            Ok(app) => Arc::clone(&app.runtime),
             Err(_) => {
-                fallback_rt = tokio::runtime::Builder::new_multi_thread()
+                let rt = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
-                    .build()
-                    .ok();
-                fallback_rt.as_ref().map(|rt| rt.enter())
+                    .build()?;
+                Arc::new(rt)
             }
         };
+        let _rt_guard = rt.enter();
         // For GUI mode we want the GUI to start, even if the app fails to start.
         return run_egui_app(&config, line_buffer, app)
             .map_err(|e| anyhow::anyhow!("failed to run egui app: {e:#}"));

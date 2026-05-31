@@ -51,7 +51,7 @@ impl RpcServer for RpcServerImpl {
     ) -> RpcResult<bitcoin::Txid> {
         let app = self.app.clone();
         tokio::task::spawn_blocking(move || {
-            app.deposit(
+            app.deposit_blocking(
                 address,
                 bitcoin::Amount::from_sat(value_sats),
                 bitcoin::Amount::from_sat(fee_sats),
