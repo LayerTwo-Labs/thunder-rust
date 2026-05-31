@@ -287,7 +287,7 @@ impl App {
         Ok(())
     }
 
-    pub async fn get_new_main_address_async(
+    pub async fn get_new_main_address(
         &self,
     ) -> Result<bitcoin::Address<bitcoin::address::NetworkChecked>, Error> {
         let Some(miner) = self.miner.as_ref() else {
@@ -306,10 +306,10 @@ impl App {
         Ok(res)
     }
 
-    pub fn get_new_main_address(
+    pub fn get_new_main_address_blocking(
         &self,
     ) -> Result<bitcoin::Address<bitcoin::address::NetworkChecked>, Error> {
-        self.runtime.block_on(self.get_new_main_address_async())
+        self.runtime.block_on(self.get_new_main_address())
     }
 
     const EMPTY_BLOCK_BMM_BRIBE: bitcoin::Amount =
@@ -530,7 +530,7 @@ impl App {
         Ok(())
     }
 
-    pub async fn deposit_async(
+    pub async fn deposit(
         &self,
         address: Address,
         amount: bitcoin::Amount,
@@ -548,14 +548,13 @@ impl App {
         Ok(txid)
     }
 
-    pub fn deposit(
+    pub fn deposit_blocking(
         &self,
         address: Address,
         amount: bitcoin::Amount,
         fee: bitcoin::Amount,
     ) -> Result<bitcoin::Txid, Error> {
-        self.runtime
-            .block_on(self.deposit_async(address, amount, fee))
+        self.runtime.block_on(self.deposit(address, amount, fee))
     }
 }
 

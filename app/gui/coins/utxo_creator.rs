@@ -93,7 +93,7 @@ impl UtxoCreator {
                     .add_enabled(app.is_some(), Button::new("generate"))
                     .clicked()
                 {
-                    match app.unwrap().get_new_main_address() {
+                    match app.unwrap().get_new_main_address_blocking() {
                         Ok(main_address) => {
                             self.main_address = format!("{main_address}");
                         }
