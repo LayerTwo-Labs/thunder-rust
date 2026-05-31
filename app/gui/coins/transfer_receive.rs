@@ -100,7 +100,7 @@ impl Receive {
         };
         let address = app
             .wallet
-            .get_address_or_new()
+            .get_or_generate_last_address()
             .map_err(anyhow::Error::from)
             .inspect_err(|err| tracing::error!("{err:#}"));
         Self {
