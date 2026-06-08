@@ -1095,3 +1095,90 @@ pub fn disconnect(
     state.utreexo_accumulator.put(rwtxn, &(), &accumulator)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{Address, Txid};
+
+    // open a fresh state-backed env in a unique temp dir
+    fn temp_env() -> sneed::Env {
+        let mut path = std::env::temp_dir();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        path.push(format!("photon-test-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&path).unwrap();
+        let mut opts = heed::EnvOpenOptions::new();
+        opts.map_size(16 * 1024 * 1024).max_dbs(State::NUM_DBS);
+        unsafe { sneed::Env::open(&opts, &path) }.unwrap()
+    }
+
+    // a failed known bundle reinstates its utxos as spendable, so disconnecting
+    // the failure must spend them again
+    #[test]
+    fn disconnect_failed_bundle_spends_reinstated_utxo() {
+        let env = temp_env();
+        let state = State::new(&env).unwrap();
+        let outpoint = OutPoint::Regular {
+            txid: Txid::from([1; 32]),
+            vout: 0,
+        };
+        let output = Output {
+            address: Address::ALL_ZEROS,
+            content: OutputContent::Value(bitcoin::Amount::from_sat(1000)),
+        };
+        let key = OutPointKey::from(&outpoint);
+
+        let m6id = {
+            let mut spend_utxos = BTreeMap::new();
+            spend_utxos.insert(outpoint, output.clone());
+            let bundle = WithdrawalBundle::new(
+                1,
+                bitcoin::Amount::ZERO,
+                spend_utxos,
+                Vec::new(),
+            )
+            .unwrap();
+            let m6id = bundle.compute_m6id();
+            let mut bundle_status =
+                RollBack::new(WithdrawalBundleStatus::Submitted, 0);
+            bundle_status
+                .push(WithdrawalBundleStatus::Failed, 1)
+                .unwrap();
+            let mut rwtxn = env.write_txn().unwrap();
+            state
+                .withdrawal_bundles
+                .put(
+                    &mut rwtxn,
+                    &m6id,
+                    &(WithdrawalBundleInfo::Known(bundle), bundle_status),
+                )
+                .unwrap();
+            state
+                .latest_failed_withdrawal_bundle
+                .put(&mut rwtxn, &(), &RollBack::new(m6id, 1))
+                .unwrap();
+            // the failure reinstated the utxo
+            state.utxos.put(&mut rwtxn, &key, &output).unwrap();
+            rwtxn.commit().unwrap();
+            m6id
+        };
+
+        let mut rwtxn = env.write_txn().unwrap();
+        let mut accumulator_diff = AccumulatorDiff::default();
+        disconnect_withdrawal_bundle_failed(
+            &state,
+            &mut rwtxn,
+            1,
+            &mut accumulator_diff,
+            m6id,
+        )
+        .unwrap();
+        assert!(state.utxos.try_get(&rwtxn, &key).unwrap().is_none());
+        let stxo = state.stxos.try_get(&rwtxn, &key).unwrap().unwrap();
+        assert_eq!(stxo.inpoint, InPoint::Withdrawal { m6id });
+        rwtxn.commit().unwrap();
+    }
+}
