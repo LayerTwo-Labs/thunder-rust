@@ -865,7 +865,7 @@ fn disconnect_withdrawal_bundle_failed(
                     .stxos
                     .put(rwtxn, &OutPointKey::from(outpoint), &spent_output)
                     .map_err(DbError::from)?;
-                if state
+                if !state
                     .utxos
                     .delete(rwtxn, &OutPointKey::from(outpoint))
                     .map_err(DbError::from)?
