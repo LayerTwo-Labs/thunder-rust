@@ -1098,8 +1098,27 @@ pub fn disconnect(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::types::{Address, Txid};
+    use std::collections::BTreeMap;
+
+    use bitcoin::hashes::Hash as _;
+    use hashlink::LinkedHashMap;
+
+    use crate::{
+        state::{
+            State, WithdrawalBundleInfo,
+            rollback::RollBack,
+            two_way_peg_data::{
+                disconnect, disconnect_withdrawal_bundle_failed,
+            },
+        },
+        types::{
+            AccumulatorDiff, Address, InPoint, M6id, OutPoint, OutPointKey,
+            Output, OutputContent, Txid, WithdrawalBundle,
+            WithdrawalBundleEvent, WithdrawalBundleEventStatus,
+            WithdrawalBundleStatus,
+            proto::mainchain::{BlockEvent, BlockInfo, TwoWayPegData},
+        },
+    };
 
     // open a fresh state-backed env in a unique temp dir
     fn temp_env() -> sneed::Env {
@@ -1179,6 +1198,75 @@ mod tests {
         assert!(state.utxos.try_get(&rwtxn, &key).unwrap().is_none());
         let stxo = state.stxos.try_get(&rwtxn, &key).unwrap().unwrap();
         assert_eq!(stxo.inpoint, InPoint::Withdrawal { m6id });
+    }
+
+    // disconnecting a withdrawal bundle event must remove its
+    // withdrawal_bundle_event_blocks record, not a deposit_blocks record that
+    // happens to share the same sequence index
+    #[test]
+    fn disconnect_withdrawal_event_block_uses_correct_db() {
+        let env = temp_env();
+        let state = State::new(&env).unwrap();
+
+        let block_height = 5u32;
+        let m6id = M6id(bitcoin::Txid::from_byte_array([7; 32]));
+        let event_block_hash = bitcoin::BlockHash::from_byte_array([9; 32]);
+        let deposit_block_hash = bitcoin::BlockHash::from_byte_array([3; 32]);
+
+        let mut rwtxn = env.write_txn().unwrap();
+        state.height.put(&mut rwtxn, &(), &block_height).unwrap();
+        state
+            .withdrawal_bundles
+            .put(
+                &mut rwtxn,
+                &m6id,
+                &(
+                    WithdrawalBundleInfo::Unknown,
+                    RollBack::new(
+                        WithdrawalBundleStatus::Submitted,
+                        block_height,
+                    ),
+                ),
+            )
+            .unwrap();
+        state
+            .withdrawal_bundle_event_blocks
+            .put(&mut rwtxn, &0, &(event_block_hash, block_height - 1))
+            .unwrap();
+        // a deposit record at the same sequence index that must survive
+        state
+            .deposit_blocks
+            .put(&mut rwtxn, &0, &(deposit_block_hash, block_height - 1))
+            .unwrap();
+        rwtxn.commit().unwrap();
+
+        let two_way_peg_data = {
+            let mut block_info = LinkedHashMap::new();
+            block_info.insert(
+                event_block_hash,
+                BlockInfo {
+                    bmm_commitment: None,
+                    events: vec![BlockEvent::WithdrawalBundle(
+                        WithdrawalBundleEvent {
+                            m6id,
+                            status: WithdrawalBundleEventStatus::Submitted,
+                        },
+                    )],
+                },
+            );
+            TwoWayPegData { block_info }
+        };
+
+        let mut rwtxn = env.write_txn().unwrap();
+        disconnect(&state, &mut rwtxn, &two_way_peg_data).unwrap();
+        assert!(
+            state
+                .withdrawal_bundle_event_blocks
+                .try_get(&rwtxn, &0)
+                .unwrap()
+                .is_none()
+        );
+        assert!(state.deposit_blocks.try_get(&rwtxn, &0).unwrap().is_some());
         rwtxn.commit().unwrap();
     }
 }
