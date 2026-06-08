@@ -359,7 +359,14 @@ mod content {
         fn get_value(&self) -> bitcoin::Amount {
             match self {
                 Self::Value(value) => *value,
-                Self::Withdrawal { value, .. } => *value,
+                // a withdrawal removes both the payout and the mainchain fee
+                // from the sidechain, since the enforcer pays both out of the
+                // treasury
+                Self::Withdrawal {
+                    value, main_fee, ..
+                } => value
+                    .checked_add(*main_fee)
+                    .unwrap_or(bitcoin::Amount::MAX),
             }
         }
     }
