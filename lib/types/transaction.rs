@@ -241,6 +241,51 @@ mod tests {
         }
         Ok(())
     }
+
+    // a withdrawal output must be funded for both its payout and its mainchain
+    // fee, since both leave the treasury
+    #[test]
+    fn withdrawal_value_includes_main_fee() {
+        use super::{
+            Content, FilledTransaction, GetValue, Output, Transaction,
+        };
+        use crate::types::Address;
+
+        let value = bitcoin::Amount::from_sat(1000);
+        let main_fee = bitcoin::Amount::from_sat(300);
+        let main_address = "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"
+            .parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>()
+            .unwrap();
+        let withdrawal = Output {
+            address: Address::ALL_ZEROS,
+            content: Content::Withdrawal {
+                value,
+                main_fee,
+                main_address,
+            },
+        };
+        assert_eq!(withdrawal.get_value(), value + main_fee);
+
+        let value_output = |amount| Output {
+            address: Address::ALL_ZEROS,
+            content: Content::Value(amount),
+        };
+        let withdrawal_tx = |funding| FilledTransaction {
+            transaction: Transaction {
+                outputs: vec![withdrawal.clone()],
+                ..Default::default()
+            },
+            spent_utxos: vec![value_output(funding)],
+        };
+
+        // inputs covering only the payout are insufficient
+        assert!(withdrawal_tx(value).get_fee().is_err());
+        // inputs covering payout plus mainchain fee fully fund it
+        assert_eq!(
+            withdrawal_tx(value + main_fee).get_fee().unwrap(),
+            bitcoin::Amount::ZERO
+        );
+    }
 }
 
 /// Reference to a tx input.
@@ -364,9 +409,9 @@ mod content {
                 // treasury
                 Self::Withdrawal {
                     value, main_fee, ..
-                } => value
-                    .checked_add(*main_fee)
-                    .unwrap_or(bitcoin::Amount::MAX),
+                } => {
+                    value.checked_add(*main_fee).unwrap_or(bitcoin::Amount::MAX)
+                }
             }
         }
     }
