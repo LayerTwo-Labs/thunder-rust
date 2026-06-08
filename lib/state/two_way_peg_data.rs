@@ -1040,7 +1040,7 @@ pub fn disconnect(
         );
         assert_eq!(block_height - 1, last_withdrawal_bundle_event_block_height);
         if !state
-            .deposit_blocks
+            .withdrawal_bundle_event_blocks
             .delete(rwtxn, &last_withdrawal_bundle_event_block_seq_idx)?
         {
             return Err(Error::NoWithdrawalBundleEventBlock);
