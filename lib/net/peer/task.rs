@@ -6,6 +6,7 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 
+use error_fatality::{Nested as _, Split};
 use fallible_iterator::FallibleIterator;
 use futures::{StreamExt as _, channel::mpsc};
 use quinn::SendStream;
@@ -23,6 +24,7 @@ use crate::{
         message::{self, Heartbeat, RequestMessage, ResponseMessage},
         request_queue,
     },
+    state,
     types::{
         AuthorizedTransaction, BlockHash, BmmResult, Header, Tip, VERSION,
     },
@@ -659,16 +661,10 @@ impl ConnectionTask {
             let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
             ctxt.state.validate_transaction(&rotxn, &tx)
         };
-        match validate_tx_result {
-            Err(err) => {
-                Connection::send_response(
-                    ctxt.network,
-                    response_tx,
-                    ResponseMessage::TransactionRejected(txid),
-                )
-                .await?;
-                Err(Error::from(err))
-            }
+        match validate_tx_result
+            .into_nested()
+            .map_err(state::Error::from)?
+        {
             Ok(_) => {
                 Connection::send_response(
                     ctxt.network,
@@ -679,6 +675,22 @@ impl ConnectionTask {
                 info_tx
                     .unbounded_send(Info::NewTransaction(tx))
                     .map_err(|_| Error::SendInfo)?;
+                Ok(())
+            }
+            Err(non_fatal) => {
+                let non_fatal: <state::ValidateTransaction as Split>::Jfyi =
+                    non_fatal;
+                let non_fatal = anyhow::Error::from(non_fatal);
+                tracing::warn!(
+                    "Rejected invalid pushed transaction from peer: \
+                     {non_fatal:#}"
+                );
+                Connection::send_response(
+                    ctxt.network,
+                    response_tx,
+                    ResponseMessage::TransactionRejected(txid),
+                )
+                .await?;
                 Ok(())
             }
         }

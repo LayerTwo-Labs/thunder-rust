@@ -18,9 +18,9 @@ use crate::{
         Accumulator, Address, AmountOverflowError, AmountUnderflowError,
         Authorized, AuthorizedTransaction, BlockHash, Body, FilledTransaction,
         GetAddress, GetValue, Header, InPoint, M6id, MerkleRoot, OutPoint,
-        OutPointKey, Output, PointedOutput, SpentOutput, Transaction, VERSION,
-        Verify, Version, WithdrawalBundle, WithdrawalBundleStatus,
-        proto::mainchain::TwoWayPegData,
+        OutPointKey, Output, PointedOutput, PointedOutputRef, SpentOutput,
+        Transaction, VERSION, Verify, Version, WithdrawalBundle,
+        WithdrawalBundleStatus, hash, proto::mainchain::TwoWayPegData,
     },
     util::Watchable,
 };
@@ -30,7 +30,7 @@ mod error;
 mod rollback;
 mod two_way_peg_data;
 
-pub use error::Error;
+pub use error::{Error, ValidateTransaction};
 use rollback::RollBack;
 
 pub const WITHDRAWAL_BUNDLE_FAILURE_GAP: u32 = 4;
@@ -280,14 +280,21 @@ impl State {
         &self,
         rotxn: &RoTxn,
         transaction: &Transaction,
-    ) -> Result<FilledTransaction, Error> {
+    ) -> Result<FilledTransaction, error::ValidateTransaction> {
         let mut spent_utxos = Vec::with_capacity(transaction.inputs.len());
-        for (outpoint, _) in &transaction.inputs {
+        for (outpoint, utxo_hash) in &transaction.inputs {
             let key = OutPointKey::from(outpoint);
             let utxo =
                 self.utxos.try_get(rotxn, &key)?.ok_or(error::NoUtxo {
                     outpoint: *outpoint,
                 })?;
+            let expected_utxo_hash = hash(&PointedOutputRef {
+                outpoint: *outpoint,
+                output: &utxo,
+            });
+            if expected_utxo_hash != *utxo_hash {
+                return Err(error::ValidateTransaction::WrongUtxoHash);
+            }
             spent_utxos.push(utxo);
         }
         Ok(FilledTransaction {
@@ -300,7 +307,7 @@ impl State {
         &self,
         rotxn: &RoTxn,
         transaction: AuthorizedTransaction,
-    ) -> Result<Authorized<FilledTransaction>, Error> {
+    ) -> Result<Authorized<FilledTransaction>, error::ValidateTransaction> {
         let filled_tx =
             self.fill_transaction(rotxn, &transaction.transaction)?;
         let authorizations = transaction.authorizations;
@@ -335,7 +342,7 @@ impl State {
     pub fn validate_filled_transaction(
         &self,
         transaction: &FilledTransaction,
-    ) -> Result<bitcoin::Amount, Error> {
+    ) -> Result<bitcoin::Amount, error::ValidateTransaction> {
         let mut value_in = bitcoin::Amount::ZERO;
         let mut value_out = bitcoin::Amount::ZERO;
         for utxo in &transaction.spent_utxos {
@@ -349,7 +356,7 @@ impl State {
                 .ok_or(AmountOverflowError)?;
         }
         if value_out > value_in {
-            return Err(Error::NotEnoughValueIn);
+            return Err(error::ValidateTransaction::NotEnoughValueIn);
         }
         value_in
             .checked_sub(value_out)
@@ -360,7 +367,7 @@ impl State {
         &self,
         rotxn: &RoTxn,
         transaction: &AuthorizedTransaction,
-    ) -> Result<bitcoin::Amount, Error> {
+    ) -> Result<bitcoin::Amount, error::ValidateTransaction> {
         let filled_transaction =
             self.fill_transaction(rotxn, &transaction.transaction)?;
         for (authorization, spent_utxo) in transaction
@@ -369,11 +376,11 @@ impl State {
             .zip(filled_transaction.spent_utxos.iter())
         {
             if authorization.get_address() != spent_utxo.address {
-                return Err(Error::WrongPubKeyForAddress);
+                return Err(error::ValidateTransaction::WrongPubKeyForAddress);
             }
         }
         if Authorization::verify_transaction(transaction).is_err() {
-            return Err(Error::Authorization);
+            return Err(error::ValidateTransaction::Authorization);
         }
         let fee = self.validate_filled_transaction(&filled_transaction)?;
         Ok(fee)
