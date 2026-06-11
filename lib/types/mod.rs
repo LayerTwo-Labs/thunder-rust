@@ -307,16 +307,16 @@ pub struct AggregatedWithdrawal {
 
 impl Ord for AggregatedWithdrawal {
     fn cmp(&self, other: &Self) -> Ordering {
-        if self == other {
-            Ordering::Equal
-        } else if self.main_fee > other.main_fee
-            || self.value > other.value
-            || self.main_address > other.main_address
-        {
-            Ordering::Greater
-        } else {
-            Ordering::Less
-        }
+        // A *total* order (lexicographic by main_fee, value, main_address). The
+        // previous `OR of >` was not antisymmetric/transitive, so the
+        // withdrawal-bundle output order (and hence compute_m6id) depended on
+        // HashMap iteration order and could differ across nodes. A real total order makes
+        // the sorted bundle canonical regardless of aggregation order.
+        (self.main_fee, self.value, &self.main_address).cmp(&(
+            other.main_fee,
+            other.value,
+            &other.main_address,
+        ))
     }
 }
 
@@ -930,4 +930,67 @@ pub(crate) static VERSION: LazyLock<Version> = LazyLock::new(|| {
 pub struct Block {
     pub header: Header,
     pub body: Body,
+}
+
+#[cfg(test)]
+mod withdrawal_bundle_order_regression {
+    use super::*;
+    use std::collections::{BTreeMap, HashMap};
+
+    use bitcoin::{Address, Amount, address::NetworkUnchecked};
+
+    fn aw(value: u64, main_fee: u64) -> AggregatedWithdrawal {
+        // value/main_fee drive the comparison; one address is enough to expose it.
+        let addr: Address<NetworkUnchecked> =
+            "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+                .parse()
+                .unwrap();
+        AggregatedWithdrawal {
+            spend_utxos: HashMap::new(),
+            main_address: addr,
+            value: Amount::from_sat(value),
+            main_fee: Amount::from_sat(main_fee),
+        }
+    }
+
+    // Build the bundle m6id exactly as `collect_withdrawal_bundle` does, for a given
+    // (HashMap-determined) input order.
+    fn bundle_m6id(mut aggregated: Vec<AggregatedWithdrawal>) -> M6id {
+        aggregated.sort_by_key(|a| std::cmp::Reverse(a.clone()));
+        let outputs: Vec<bitcoin::TxOut> = aggregated
+            .iter()
+            .map(|a| bitcoin::TxOut {
+                value: a.value,
+                script_pubkey: a
+                    .main_address
+                    .assume_checked_ref()
+                    .script_pubkey(),
+            })
+            .collect();
+        WithdrawalBundle::new(0, Amount::ZERO, BTreeMap::new(), outputs)
+            .unwrap()
+            .compute_m6id()
+    }
+
+    // The withdrawal bundle's m6id must not depend on the order in which withdrawals
+    // were aggregated (HashMap iteration order is randomized per process). Before the
+    // total-order fix, the comparator was non-transitive and this failed.
+    #[test]
+    fn m6id_is_independent_of_aggregation_order() {
+        let a = aw(1, 3);
+        let b = aw(3, 2);
+        let c = aw(2, 1);
+        let m = bundle_m6id(vec![a.clone(), b.clone(), c.clone()]);
+        for perm in [
+            vec![c.clone(), b.clone(), a.clone()],
+            vec![b.clone(), a.clone(), c.clone()],
+            vec![a.clone(), c.clone(), b.clone()],
+        ] {
+            assert_eq!(
+                m,
+                bundle_m6id(perm),
+                "m6id must not depend on aggregation order"
+            );
+        }
+    }
 }
