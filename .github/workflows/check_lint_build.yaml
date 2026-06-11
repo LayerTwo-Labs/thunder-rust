@@ -18,7 +18,7 @@ jobs:
     name: Check, Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
       
@@ -29,7 +29,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Rust Cache
-        uses: Swatinem/rust-cache@v2.5.1
+        uses: Swatinem/rust-cache@v2.9.1
         with:
           shared-key: x86_64-unknown-linux-gnu
 
@@ -95,7 +95,7 @@ jobs:
           target: x86_64-pc-windows-gnu
 
       - name: Rust Cache (electrs)
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.9.1
         with:
           prefix-key: "v0-rust-electrs"
           workspaces: ../electrs -> target
@@ -106,12 +106,12 @@ jobs:
           cargo build --locked --release
           popd
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: "recursive"
 
       - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.9.1
         with:
           shared-key: x86_64-unknown-linux-gnu
 
@@ -156,7 +156,7 @@ jobs:
       contents: write
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
       
@@ -167,7 +167,7 @@ jobs:
           target: ${{ matrix.name }}
 
       - name: Rust Cache
-        uses: Swatinem/rust-cache@v2.5.1
+        uses: Swatinem/rust-cache@v2.9.1
         with:
           key: ${{ matrix.name }}
 
@@ -198,7 +198,7 @@ jobs:
           popd
 
       - name: 'Upload Artifacts (thunder)'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.THUNDER_APP_FILENAME }}
           if-no-files-found: error
@@ -213,7 +213,7 @@ jobs:
           echo "git_tag_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
       - name: Parse Git tag name as semver
-        uses: madhead/semver-utils@v4.3.0
+        uses: madhead/semver-utils@v5.0.0
         if: startsWith(github.ref, 'refs/tags/')
         id: parse-git-tag-name-semver
         with:
@@ -242,7 +242,7 @@ jobs:
           echo "git_tag_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
       - name: Parse Git tag name as semver
-        uses: madhead/semver-utils@v4.3.0
+        uses: madhead/semver-utils@v5.0.0
         id: parse-git-tag-name-semver
         with:
           version: ${{ steps.git-tag-name.outputs.git_tag_name }}
@@ -254,7 +254,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/') && needs.parse-semver.outputs.prerelease == ''
     steps:
       - name: Download release assets
-        uses: robinraju/release-downloader@v1.9
+        uses: robinraju/release-downloader@v1.13
         with:
           tag: ${{ github.ref_name }}
 
