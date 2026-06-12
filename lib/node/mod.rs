@@ -249,7 +249,9 @@ where
     ) -> Result<(), Error> {
         {
             let mut rotxn = self.env.write_txn().map_err(EnvError::from)?;
-            self.state.validate_transaction(&rotxn, &transaction)?;
+            self.state
+                .validate_transaction(&rotxn, &transaction)
+                .map_err(state::Error::from)?;
             self.mempool.put(&mut rotxn, &transaction)?;
             rotxn.commit().map_err(RwTxnError::from)?;
         }
@@ -460,7 +462,8 @@ where
             }
             let filled_transaction = self
                 .state
-                .fill_authorized_transaction(&rwtxn, transaction)?;
+                .fill_authorized_transaction(&rwtxn, transaction)
+                .map_err(state::Error::from)?;
             let value_in: bitcoin::Amount = filled_transaction
                 .transaction
                 .spent_utxos

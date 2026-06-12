@@ -1,3 +1,4 @@
+use error_fatality::{Fatality, Split};
 use sneed::{db::error as db, env::error as env, rwtxn::error as rwtxn};
 use thiserror::Error;
 use transitive::Transitive;
@@ -12,6 +13,73 @@ use crate::types::{
 #[error("utxo {outpoint} doesn't exist")]
 pub struct NoUtxo {
     pub outpoint: OutPoint,
+}
+
+/// Error returned by [`crate::state::State::validate_transaction`].
+/// Validation failures (bad signature, missing UTXO, etc.) are non-fatal:
+/// a peer can supply an invalid transaction and the node must reject it
+/// without terminating the networking task. Database errors are fatal.
+#[allow(clippy::duplicated_attributes)]
+#[derive(Debug, Error, Fatality, Split, Transitive)]
+#[split(attrs(derive(Debug, Error)))]
+#[transitive(from(db::TryGet, db::Error))]
+#[transitive(from(db::Error, sneed::Error))]
+#[transitive(from(env::Error, sneed::Error))]
+#[transitive(from(rwtxn::Error, sneed::Error))]
+pub enum ValidateTransaction {
+    #[error("failed to verify authorization")]
+    #[fatal(false)]
+    Authorization,
+    #[error(transparent)]
+    #[fatal(false)]
+    AmountOverflow(#[from] AmountOverflowError),
+    #[error(transparent)]
+    #[fatal(false)]
+    AmountUnderflow(#[from] AmountUnderflowError),
+    #[error("value in is less than value out")]
+    #[fatal(false)]
+    NotEnoughValueIn,
+    #[error(transparent)]
+    #[fatal(false)]
+    NoUtxo(#[from] NoUtxo),
+    #[error("wrong UTXO hash")]
+    #[fatal(false)]
+    WrongUtxoHash,
+    #[error("wrong public key for address")]
+    #[fatal(false)]
+    WrongPubKeyForAddress,
+    #[error(transparent)]
+    #[fatal(true)]
+    Db(#[from] sneed::Error),
+}
+
+impl From<ValidateTransaction> for Error {
+    fn from(err: ValidateTransaction) -> Self {
+        match err {
+            ValidateTransaction::Authorization => Self::Authorization,
+            ValidateTransaction::AmountOverflow(err) => {
+                Self::AmountOverflow(err)
+            }
+            ValidateTransaction::AmountUnderflow(err) => {
+                Self::AmountUnderflow(err)
+            }
+            ValidateTransaction::NotEnoughValueIn => Self::NotEnoughValueIn,
+            ValidateTransaction::NoUtxo(err) => Self::NoUtxo(err),
+            ValidateTransaction::WrongUtxoHash => Self::WrongUtxoHash,
+            ValidateTransaction::WrongPubKeyForAddress => {
+                Self::WrongPubKeyForAddress
+            }
+            ValidateTransaction::Db(err) => Self::Db(err),
+        }
+    }
+}
+
+impl From<FatalValidateTransaction> for Error {
+    fn from(err: FatalValidateTransaction) -> Self {
+        match err {
+            FatalValidateTransaction::Db(err) => Self::Db(err),
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -170,6 +238,8 @@ pub enum Error {
     Utreexo(#[from] UtreexoError),
     #[error("Utreexo proof verification failed for tx {txid}")]
     UtreexoProofFailed { txid: Txid },
+    #[error("wrong UTXO hash")]
+    WrongUtxoHash,
     #[error("Computed Utreexo roots do not match the header roots")]
     UtreexoRootsMismatch,
     #[error("utxo double spent")]

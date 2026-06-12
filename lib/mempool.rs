@@ -180,3 +180,165 @@ impl MemPool {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod p2p_validation_bypass_tests {
+    //! Regression tests for the P2P transaction-validation gap.
+    //! MemPool::put tracks conflicts, but it is not a transaction validator.
+    //! Peer-supplied transactions must pass State::validate_transaction before
+    //! the net task regenerates proofs or inserts them into the mempool.
+
+    use bitcoin::Amount;
+    use heed::EnvOpenOptions;
+
+    use super::MemPool;
+    use crate::authorization::{Authorization, get_address, sign};
+    use crate::state::State;
+    use crate::types::{
+        Accumulator, AccumulatorDiff, Address, OutPoint, OutPointKey, Output,
+        OutputContent, PointedOutput, Transaction, Txid, hash,
+    };
+
+    // ed25519 signing keys from fixed seeds (deterministic; no RNG).
+    fn signing_key(seed: u8) -> crate::authorization::SigningKey {
+        crate::authorization::SigningKey::from_bytes(&[seed; 32])
+    }
+
+    fn temp_env() -> sneed::Env {
+        let dir = std::env::temp_dir()
+            .join(format!("thunder-m001-{}", std::process::id()));
+        drop(std::fs::remove_dir_all(&dir));
+        std::fs::create_dir_all(&dir).expect("create temp env dir");
+        let mut opts = EnvOpenOptions::new();
+        opts.map_size(16 * 1024 * 1024)
+            .max_dbs(State::NUM_DBS + MemPool::NUM_DBS + 4);
+        unsafe { sneed::Env::open(&opts, &dir) }.expect("open env")
+    }
+
+    #[test]
+    fn mempool_put_is_not_transaction_validation() {
+        let env = temp_env();
+        let state = State::new(&env).expect("State::new");
+        let mempool = MemPool::new(&env).expect("MemPool::new");
+
+        let victim = signing_key(1);
+        let victim_addr: Address = get_address(&victim.verifying_key());
+        let funding_outpoint = OutPoint::Regular {
+            txid: Txid([7u8; 32]),
+            vout: 0,
+        };
+        let funded_output = Output {
+            address: victim_addr,
+            content: OutputContent::Value(Amount::from_sat(100_000)),
+        };
+        let utxo_hash = hash(&PointedOutput {
+            outpoint: funding_outpoint,
+            output: funded_output.clone(),
+        });
+        {
+            let mut rwtxn = env.write_txn().expect("write txn");
+            state
+                .utxos
+                .put(
+                    &mut rwtxn,
+                    &OutPointKey::from(funding_outpoint),
+                    &funded_output,
+                )
+                .expect("put utxo");
+            // Keep the accumulator consistent so proof regeneration succeeds.
+            let mut acc: Accumulator =
+                state.get_accumulator(&rwtxn).expect("get accumulator");
+            let mut diff = AccumulatorDiff::default();
+            diff.insert(utxo_hash.into());
+            acc.apply_diff(diff).expect("apply diff");
+            state
+                .utreexo_accumulator
+                .put(&mut rwtxn, &(), &acc)
+                .expect("put accumulator");
+            rwtxn.commit().expect("commit funding");
+        }
+
+        let tx = Transaction {
+            inputs: vec![(funding_outpoint, utxo_hash)],
+            outputs: vec![Output {
+                address: get_address(&signing_key(2).verifying_key()),
+                content: OutputContent::Value(Amount::from_sat(90_000)),
+            }],
+            ..Default::default()
+        };
+
+        {
+            let mut wrong_hash_tx = tx.clone();
+            wrong_hash_tx.inputs[0].1 = [9u8; 32];
+            let wrong_hash_authd_tx = crate::types::AuthorizedTransaction {
+                transaction: wrong_hash_tx.clone(),
+                authorizations: vec![Authorization {
+                    verifying_key: victim.verifying_key(),
+                    signature: sign(&victim, &wrong_hash_tx).expect("sign"),
+                }],
+            };
+            let rotxn = env.read_txn().expect("read txn");
+            let result =
+                state.validate_transaction(&rotxn, &wrong_hash_authd_tx);
+            assert!(
+                matches!(
+                    result,
+                    Err(crate::state::ValidateTransaction::WrongUtxoHash)
+                ),
+                "validate_transaction must reject a mismatched UTXO hash, got {result:?}"
+            );
+        }
+
+        // Present the victim verifying key, but sign with a different key.
+        let attacker = signing_key(2);
+        let forged = Authorization {
+            verifying_key: victim.verifying_key(),
+            signature: sign(&attacker, &tx).expect("sign"),
+        };
+        let mut authd_tx = crate::types::AuthorizedTransaction {
+            transaction: tx,
+            authorizations: vec![forged],
+        };
+
+        // The validator rejects the forged signature.
+        {
+            let rotxn = env.read_txn().expect("read txn");
+            let result = state.validate_transaction(&rotxn, &authd_tx);
+            assert!(
+                matches!(
+                    result,
+                    Err(crate::state::ValidateTransaction::Authorization)
+                ),
+                "validate_transaction must reject the forged-signature tx with an Authorization error, got {result:?}"
+            );
+        }
+
+        // The old lower-level sequence accepted it because proof regeneration
+        // and mempool insertion are not signature-validation gates.
+        {
+            let mut rwtxn = env.write_txn().expect("write txn");
+            state
+                .regenerate_proof(&rwtxn, &mut authd_tx.transaction)
+                .expect("regenerate_proof accepted the forged tx");
+            mempool
+                .put(&mut rwtxn, &authd_tx)
+                .expect("mempool.put accepted the invalid tx (the bug)");
+            rwtxn.commit().expect("commit mempool");
+        }
+
+        // Confirm the invalid tx is now resident in the mempool.
+        {
+            let rotxn = env.read_txn().expect("read txn");
+            let in_mempool = mempool.take_all(&rotxn).expect("take_all");
+            assert_eq!(
+                in_mempool.len(),
+                1,
+                "the forged-signature tx must be sitting in the mempool"
+            );
+            assert_eq!(
+                in_mempool[0].transaction.txid(),
+                authd_tx.transaction.txid(),
+            );
+        }
+    }
+}

@@ -1089,11 +1089,55 @@ impl NetTask {
                                 .env
                                 .write_txn()
                                 .map_err(EnvError::from)?;
+                            // Validate the peer-supplied transaction before
+                            // accepting it into the mempool, mirroring the RPC
+                            // path (`Node::submit_transaction`). Without this,
+                            // transactions with invalid signatures / failing
+                            // balance checks are accepted and re-broadcast.
+                            // Validation failures are non-fatal: an individual
+                            // peer may send an invalid transaction, but that
+                            // must not stop the networking task.
+                            match self
+                                .ctxt
+                                .state
+                                .validate_transaction(&rwtxn, &new_tx)
+                                .into_nested()
+                                .map_err(state::Error::from)?
+                            {
+                                Ok(_) => {}
+                                Err(non_fatal) => {
+                                    let non_fatal: <state::ValidateTransaction as Split>::Jfyi =
+                                        non_fatal;
+                                    let non_fatal =
+                                        anyhow::Error::from(non_fatal);
+                                    tracing::warn!(
+                                        "Rejected invalid peer transaction: \
+                                         {non_fatal:#}"
+                                    );
+                                    continue;
+                                }
+                            }
+                            // Validation passed; regenerate the Utreexo proof
+                            // before insertion.
                             let () = self.ctxt.state.regenerate_proof(
                                 &rwtxn,
                                 &mut new_tx.transaction,
                             )?;
-                            self.ctxt.mempool.put(&mut rwtxn, &new_tx)?;
+                            // Insert into the mempool. A double-spend against
+                            // the mempool is a normal peer condition, not a
+                            // fatal error.
+                            match self.ctxt.mempool.put(&mut rwtxn, &new_tx) {
+                                Ok(()) => {}
+                                Err(mempool::Error::UtxoDoubleSpent) => {
+                                    tracing::warn!(
+                                        txid = %new_tx.transaction.txid(),
+                                        "Rejected peer transaction: UTXO \
+                                         already spent in mempool"
+                                    );
+                                    continue;
+                                }
+                                Err(err) => return Err(Error::MemPool(err)),
+                            }
                             rwtxn.commit().map_err(RwTxnError::from)?;
                             // broadcast
                             let () = self
