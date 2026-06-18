@@ -1400,4 +1400,98 @@ mod tests {
         );
         Ok(())
     }
+
+    // connecting a deposit then disconnecting it on a reorg must round-trip
+    #[test]
+    fn deposit_reorg_round_trips() {
+        use crate::types::proto::mainchain::Deposit;
+        use crate::types::{Body, FilledTransaction, Header};
+
+        let env = temp_env("deposit_reorg_round_trips");
+        let state = State::new(&env).unwrap();
+
+        let empty_body = Body {
+            coinbase: Vec::new(),
+            transactions: Vec::new(),
+            authorizations: Vec::new(),
+        };
+        let no_txs: &[FilledTransaction] = &[];
+        let merkle_root = Body::compute_merkle_root(&[], no_txs).unwrap();
+        let main0 = bitcoin::BlockHash::from_byte_array([10; 32]);
+        let main1 = bitcoin::BlockHash::from_byte_array([11; 32]);
+
+        let genesis = Header {
+            merkle_root,
+            prev_side_hash: None,
+            prev_main_hash: main0,
+            roots: Vec::new(),
+        };
+        {
+            let mut rwtxn = env.write_txn().unwrap();
+            state
+                .apply_block(&mut rwtxn, &genesis, &empty_body)
+                .unwrap();
+            state
+                .connect_two_way_peg_data(&mut rwtxn, &TwoWayPegData::default())
+                .unwrap();
+            rwtxn.commit().unwrap();
+        }
+
+        let block1 = Header {
+            merkle_root,
+            prev_side_hash: Some(genesis.hash()),
+            prev_main_hash: main1,
+            roots: Vec::new(),
+        };
+        let deposit_outpoint = bitcoin::OutPoint {
+            txid: bitcoin::Txid::from_byte_array([2; 32]),
+            vout: 0,
+        };
+        let deposit_key =
+            OutPointKey::from(&OutPoint::Deposit(deposit_outpoint));
+        let deposit_twpd = {
+            let mut block_info = LinkedHashMap::new();
+            block_info.insert(
+                main1,
+                BlockInfo {
+                    bmm_commitment: None,
+                    events: vec![BlockEvent::Deposit(Deposit {
+                        tx_index: 0,
+                        outpoint: deposit_outpoint,
+                        output: Output {
+                            address: Address::ALL_ZEROS,
+                            content: OutputContent::Value(
+                                bitcoin::Amount::from_sat(1000),
+                            ),
+                        },
+                    })],
+                },
+            );
+            TwoWayPegData { block_info }
+        };
+        {
+            let mut rwtxn = env.write_txn().unwrap();
+            state.apply_block(&mut rwtxn, &block1, &empty_body).unwrap();
+            state
+                .connect_two_way_peg_data(&mut rwtxn, &deposit_twpd)
+                .unwrap();
+            assert!(
+                state.utxos.try_get(&rwtxn, &deposit_key).unwrap().is_some()
+            );
+            assert!(state.deposit_blocks.last(&rwtxn).unwrap().is_some());
+            rwtxn.commit().unwrap();
+        }
+
+        {
+            let mut rwtxn = env.write_txn().unwrap();
+            state
+                .disconnect_two_way_peg_data(&mut rwtxn, &deposit_twpd)
+                .unwrap();
+            assert!(
+                state.utxos.try_get(&rwtxn, &deposit_key).unwrap().is_none()
+            );
+            assert!(state.deposit_blocks.last(&rwtxn).unwrap().is_none());
+            rwtxn.commit().unwrap();
+        }
+    }
 }
