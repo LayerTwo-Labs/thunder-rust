@@ -1049,7 +1049,7 @@ pub fn disconnect(
             latest_withdrawal_bundle_event_block_hash,
             last_withdrawal_bundle_event_block_hash
         );
-        assert_eq!(block_height - 1, last_withdrawal_bundle_event_block_height);
+        assert_eq!(block_height, last_withdrawal_bundle_event_block_height);
         if !state
             .withdrawal_bundle_event_blocks
             .delete(rwtxn, &last_withdrawal_bundle_event_block_seq_idx)?
@@ -1062,14 +1062,14 @@ pub fn disconnect(
         .map(|(height, _bundle)| height)
         .unwrap_or_default();
     if block_height - last_withdrawal_bundle_failure_height
-        > WITHDRAWAL_BUNDLE_FAILURE_GAP
+        >= WITHDRAWAL_BUNDLE_FAILURE_GAP
         && let Some(bundle_m6id) =
             state.pending_withdrawal_bundle.try_get(rwtxn, &())?
         && let (bundle, bundle_status) = state
             .withdrawal_bundles
             .try_get(rwtxn, &bundle_m6id)?
             .ok_or(error::PendingWithdrawalBundleUnknown(bundle_m6id))?
-        && bundle_status.latest().height == block_height - 1
+        && bundle_status.latest().height == block_height
     {
         state.pending_withdrawal_bundle.delete(rwtxn, &())?;
         if let (Some(bundle_status), _latest_bundle_status) =
@@ -1094,7 +1094,7 @@ pub fn disconnect(
             .last(rwtxn)?
             .ok_or(Error::NoDepositBlock)?;
         assert_eq!(latest_deposit_block_hash, last_deposit_block_hash);
-        assert_eq!(block_height - 1, last_deposit_block_height);
+        assert_eq!(block_height, last_deposit_block_height);
         if !state
             .deposit_blocks
             .delete(rwtxn, &last_deposit_block_seq_idx)?
@@ -1252,12 +1252,12 @@ mod tests {
             .unwrap();
         state
             .withdrawal_bundle_event_blocks
-            .put(&mut rwtxn, &0, &(event_block_hash, block_height - 1))
+            .put(&mut rwtxn, &0, &(event_block_hash, block_height))
             .unwrap();
         // a deposit record at the same sequence index that must survive
         state
             .deposit_blocks
-            .put(&mut rwtxn, &0, &(deposit_block_hash, block_height - 1))
+            .put(&mut rwtxn, &0, &(deposit_block_hash, block_height))
             .unwrap();
         rwtxn.commit().unwrap();
 
