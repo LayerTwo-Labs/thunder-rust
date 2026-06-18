@@ -44,6 +44,8 @@ pub enum Command {
     },
     /// Get a new address
     GetNewAddress,
+    /// Get transaction by txid
+    GetTransaction { txid: Txid },
     /// Get wallet addresses, sorted by base58 encoding
     GetWalletAddresses,
     /// Get wallet UTXOs
@@ -165,6 +167,10 @@ where
         Command::GetNewAddress => {
             let address = rpc_client.get_new_address().await?;
             format!("{address}")
+        }
+        Command::GetTransaction { txid } => {
+            let tx_info = rpc_client.get_transaction(txid).await?;
+            serde_json::to_string_pretty(&tx_info)?
         }
         Command::GetWalletAddresses => {
             let addresses = rpc_client.get_wallet_addresses().await?;

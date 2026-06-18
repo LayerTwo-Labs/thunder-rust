@@ -3,8 +3,7 @@ use std::collections::VecDeque;
 use fallible_iterator::FallibleIterator as _;
 use heed::types::SerdeBincode;
 use sneed::{
-    DatabaseUnique, EnvError, RoTxn, RwTxn, RwTxnError, UnitKey,
-    db::error::Error as DbError,
+    DatabaseUnique, DbError, EnvError, RoTxn, RwTxn, RwTxnError, UnitKey, db,
 };
 
 use crate::types::{
@@ -12,7 +11,9 @@ use crate::types::{
     Version,
 };
 
-#[derive(Debug, thiserror::Error)]
+#[allow(clippy::duplicated_attributes)]
+#[derive(Debug, thiserror::Error, transitive::Transitive)]
+#[transitive(from(db::error::TryGet, DbError))]
 pub enum Error {
     #[error(transparent)]
     Db(#[from] DbError),
