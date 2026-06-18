@@ -128,6 +128,7 @@ exceptions = [
     { allow = ["Zlib"], name = "slotmap", version = "1.0.7" },
     { allow = ["Zlib"], name = "typewit", version = "1.11.0" },
     { allow = ["Zlib"], name = "typewit_proc_macros", version = "1.8.1" },
+    { allow = ["Zlib"], name = "zlib-rs", version = "0.5.5" },
 ]
 
 # Some crates don't have (easily) machine readable licensing information,
