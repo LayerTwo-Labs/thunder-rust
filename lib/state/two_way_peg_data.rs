@@ -24,15 +24,6 @@ fn collect_withdrawal_bundle(
     rotxn: &RoTxn,
     block_height: u32,
 ) -> Result<Option<WithdrawalBundle>, Error> {
-    // Weight of a bundle with 0 outputs.
-    const BUNDLE_0_WEIGHT: u64 = 504;
-    // Weight of a single output.
-    const OUTPUT_WEIGHT: u64 = 128;
-    // Turns out to be 3121.
-    const MAX_BUNDLE_OUTPUTS: usize =
-        ((bitcoin::policy::MAX_STANDARD_TX_WEIGHT as u64 - BUNDLE_0_WEIGHT)
-            / OUTPUT_WEIGHT) as usize;
-
     // Aggregate all outputs by destination.
     // destination -> (value, mainchain fee, spent_utxos)
     let mut address_to_aggregated_withdrawal = HashMap::<
@@ -81,17 +72,37 @@ fn collect_withdrawal_bundle(
     aggregated_withdrawals.sort_by_key(|a| std::cmp::Reverse(a.clone()));
     let mut fee = bitcoin::Amount::ZERO;
     let mut spend_utxos = BTreeMap::<OutPoint, Output>::new();
-    let mut bundle_outputs = Vec::with_capacity(MAX_BUNDLE_OUTPUTS);
+    let mut bundle_outputs = Vec::new();
+    let mut bundle_txouts_size: u32 = 0;
     for aggregated in &aggregated_withdrawals {
-        if bundle_outputs.len() > MAX_BUNDLE_OUTPUTS {
+        let script_pubkey =
+            aggregated.main_address.assume_checked_ref().script_pubkey();
+        let Ok(n_outputs) = u32::try_from(bundle_outputs.len() + 1) else {
+            break;
+        };
+        let Ok(spk_size) = u32::try_from(script_pubkey.len()) else {
+            // This SPK is invalid, but others might be ok
+            continue;
+        };
+        let Some(txout_size) = WithdrawalBundle::txout_size(spk_size) else {
+            // This SPK is invalid, but others might be ok
+            continue;
+        };
+        if let Some(sum_txout_sizes) =
+            bundle_txouts_size.checked_add(txout_size)
+        {
+            bundle_txouts_size = sum_txout_sizes;
+        } else {
+            break;
+        };
+        if WithdrawalBundle::predict_weight(n_outputs, bundle_txouts_size)
+            .is_none()
+        {
             break;
         }
         let bundle_output = bitcoin::TxOut {
             value: aggregated.value,
-            script_pubkey: aggregated
-                .main_address
-                .assume_checked_ref()
-                .script_pubkey(),
+            script_pubkey,
         };
         spend_utxos.extend(aggregated.spend_utxos.clone());
         bundle_outputs.push(bundle_output);
@@ -1100,7 +1111,11 @@ pub fn disconnect(
 mod tests {
     use std::collections::BTreeMap;
 
-    use bitcoin::hashes::Hash as _;
+    use bitcoin::{
+        Network,
+        hashes::Hash as _,
+        secp256k1::{Secp256k1, SecretKey},
+    };
     use hashlink::LinkedHashMap;
 
     use crate::{
@@ -1108,7 +1123,8 @@ mod tests {
             State, WithdrawalBundleInfo,
             rollback::RollBack,
             two_way_peg_data::{
-                disconnect, disconnect_withdrawal_bundle_failed,
+                collect_withdrawal_bundle, disconnect,
+                disconnect_withdrawal_bundle_failed,
             },
         },
         types::{
@@ -1120,14 +1136,22 @@ mod tests {
         },
     };
 
-    // open a fresh state-backed env in a unique temp dir
-    fn temp_env() -> sneed::Env {
+    fn temp_env_path(test_name: &str) -> std::path::PathBuf {
         let mut path = std::env::temp_dir();
-        let unique = std::time::SystemTime::now()
+        let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        path.push(format!("photon-test-{}-{unique}", std::process::id()));
+        path.push(format!(
+            "photon-{test_name}-{}-{nanos}",
+            std::process::id()
+        ));
+        path
+    }
+
+    // open a fresh state-backed env in a unique temp dir
+    fn temp_env(test_name: &str) -> sneed::Env {
+        let path = temp_env_path(test_name);
         std::fs::create_dir_all(&path).unwrap();
         let mut opts = heed::EnvOpenOptions::new();
         opts.map_size(16 * 1024 * 1024).max_dbs(State::NUM_DBS);
@@ -1138,7 +1162,7 @@ mod tests {
     // the failure must spend them again
     #[test]
     fn disconnect_failed_bundle_spends_reinstated_utxo() {
-        let env = temp_env();
+        let env = temp_env("disconnect_failed_bundle_spends_reinstated_utxo");
         let state = State::new(&env).unwrap();
         let outpoint = OutPoint::Regular {
             txid: Txid::from([1; 32]),
@@ -1205,7 +1229,7 @@ mod tests {
     // happens to share the same sequence index
     #[test]
     fn disconnect_withdrawal_event_block_uses_correct_db() {
-        let env = temp_env();
+        let env = temp_env("disconnect_withdrawal_event_block_uses_correct_db");
         let state = State::new(&env).unwrap();
 
         let block_height = 5u32;
@@ -1268,5 +1292,115 @@ mod tests {
         );
         assert!(state.deposit_blocks.try_get(&rwtxn, &0).unwrap().is_some());
         rwtxn.commit().unwrap();
+    }
+
+    fn seeded_public_key(idx: u32) -> bitcoin::CompressedPublicKey {
+        let secp = Secp256k1::new();
+        let mut key_bytes = [0_u8; 32];
+        key_bytes[28..].copy_from_slice(&idx.to_be_bytes());
+        let secret_key = SecretKey::from_slice(&key_bytes)
+            .expect("small non-zero integers are valid secret keys");
+        let public_key =
+            bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
+        bitcoin::CompressedPublicKey(public_key)
+    }
+
+    fn regtest_p2wpkh_address(
+        idx: u32,
+    ) -> bitcoin::Address<bitcoin::address::NetworkUnchecked> {
+        let public_key = seeded_public_key(idx);
+        bitcoin::Address::p2wpkh(&public_key, Network::Regtest).into_unchecked()
+    }
+
+    fn with_state_with_withdrawals<R>(
+        test_name: &str,
+        count: u32,
+        main_address: fn(
+            u32,
+        ) -> bitcoin::Address<
+            bitcoin::address::NetworkUnchecked,
+        >,
+        f: impl FnOnce(&State, &mut sneed::RwTxn<'_>) -> R,
+    ) -> anyhow::Result<R> {
+        let env_path = temp_env_path(test_name);
+        std::fs::create_dir_all(&env_path)?;
+        let env = {
+            let mut env_open_options = heed::EnvOpenOptions::new();
+            env_open_options
+                .map_size(16 * 1024 * 1024)
+                .max_dbs(State::NUM_DBS);
+            unsafe { sneed::Env::open(&env_open_options, &env_path) }?
+        };
+        let state = State::new(&env)?;
+        let mut rwtxn = env.write_txn()?;
+        state.height.put(
+            &mut rwtxn,
+            &(),
+            &crate::state::WITHDRAWAL_BUNDLE_FAILURE_GAP,
+        )?;
+
+        for idx in 1..=count {
+            let mut txid_bytes = [0_u8; 32];
+            txid_bytes[28..].copy_from_slice(&idx.to_be_bytes());
+            let outpoint = OutPoint::Regular {
+                txid: txid_bytes.into(),
+                vout: 0,
+            };
+            let output = Output {
+                address: {
+                    let mut addr = [0u8; 20];
+                    let idx = idx.to_be_bytes();
+                    addr[..idx.len()].copy_from_slice(&idx);
+                    Address::from(addr)
+                },
+                content: OutputContent::Withdrawal {
+                    value: bitcoin::Amount::from_sat(1_000),
+                    main_fee: bitcoin::Amount::ZERO,
+                    main_address: main_address(idx),
+                },
+            };
+            state.utxos.put(
+                &mut rwtxn,
+                &OutPointKey::from(&outpoint),
+                &output,
+            )?;
+        }
+        let result = f(&state, &mut rwtxn);
+        drop(rwtxn);
+        drop(state);
+        drop(env);
+        drop(std::fs::remove_dir_all(&env_path));
+        Ok(result)
+    }
+
+    #[test]
+    fn collect_withdrawal_bundle_p2wpkh_off_by_one_does_not_exceed_weight()
+    -> anyhow::Result<()> {
+        const CLAIMED_MAX_BUNDLE_OUTPUTS: u32 = 3_222;
+
+        let bundle = with_state_with_withdrawals(
+            "collect_withdrawal_bundle_p2wpkh_off_by_one",
+            CLAIMED_MAX_BUNDLE_OUTPUTS + 1,
+            regtest_p2wpkh_address,
+            |state, rwtxn| collect_withdrawal_bundle(state, rwtxn, 42),
+        )?;
+        let bundle = match bundle {
+            Ok(Some(bundle)) => bundle,
+            Ok(None) => anyhow::bail!("expected a withdrawal bundle"),
+            Err(err) => anyhow::bail!("unexpected collection error: {err:?}"),
+        };
+        let output_count = bundle.tx().output.len();
+        let weight = bundle.tx().weight().to_wu();
+
+        anyhow::ensure!(
+            output_count == (CLAIMED_MAX_BUNDLE_OUTPUTS as usize + 2),
+            "expected {} tx outputs including metadata, got {output_count}",
+            CLAIMED_MAX_BUNDLE_OUTPUTS as usize + 2,
+        );
+        anyhow::ensure!(
+            weight <= bitcoin::policy::MAX_STANDARD_TX_WEIGHT as u64,
+            "unexpected overweight P2WPKH bundle: {weight} wu"
+        );
+        Ok(())
     }
 }

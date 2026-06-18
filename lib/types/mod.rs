@@ -204,6 +204,127 @@ pub struct WithdrawalBundle {
 }
 
 impl WithdrawalBundle {
+    /// Compute the size of a single txout
+    pub const fn txout_size(spk_size: u32) -> Option<u32> {
+        let Some(size) = (bitcoin::Amount::SIZE as u32)
+            .checked_add(bitcoin::VarInt(spk_size as u64).size() as u32)
+        else {
+            return None;
+        };
+        size.checked_add(spk_size)
+    }
+
+    /// Predict the weight of a withdrawal bundle, based on the number of
+    /// outputs (not including the commitment/treasury outputs) and the
+    /// sum of sizes of txouts (not including the commitment/treasury outputs).
+    /// Returns None if the predicted weight exceeds the maximum tx weight.
+    pub const fn predict_weight(
+        n_outputs: u32,
+        sum_txout_sizes: u32,
+    ) -> Option<bitcoin::Weight> {
+        use bitcoin::{VarInt, Weight};
+        const fn txin_base_size(script_sig_size: u32) -> Option<u32> {
+            const OUTPOINT_SIZE: u8 = 36;
+            const SEQUENCE_SIZE: u8 = 4;
+            let script_sig_len_size: u8 =
+                VarInt(script_sig_size as u64).size() as u8;
+            let Some(res) = ((OUTPOINT_SIZE + script_sig_len_size) as u32)
+                .checked_add(script_sig_size)
+            else {
+                return None;
+            };
+            res.checked_add(SEQUENCE_SIZE as u32)
+        }
+        const fn tx_base_size(
+            n_inputs: u32,
+            sum_txin_base_sizes: u32,
+            n_outputs: u32,
+            sum_txout_sizes: u32,
+        ) -> Option<u32> {
+            const VERSION_SIZE: u8 = 4;
+            const fn vin_base_size(
+                n_inputs: u32,
+                sum_txin_base_sizes: u32,
+            ) -> Option<u32> {
+                let len_size = VarInt(n_inputs as u64).size() as u8;
+                (len_size as u32).checked_add(sum_txin_base_sizes)
+            }
+            const fn vout_size(
+                n_outputs: u32,
+                sum_txout_sizes: u32,
+            ) -> Option<u32> {
+                let len_size = VarInt(n_outputs as u64).size() as u8;
+                (len_size as u32).checked_add(sum_txout_sizes)
+            }
+            const LOCKTIME_SIZE: u8 = bitcoin::absolute::LockTime::SIZE as u8;
+            let res = VERSION_SIZE as u32;
+            let Some(vin_base_size) =
+                vin_base_size(n_inputs, sum_txin_base_sizes)
+            else {
+                return None;
+            };
+            let Some(res) = res.checked_add(vin_base_size) else {
+                return None;
+            };
+            let Some(vout_size) = vout_size(n_outputs, sum_txout_sizes) else {
+                return None;
+            };
+            let Some(res) = res.checked_add(vout_size) else {
+                return None;
+            };
+            res.checked_add(LOCKTIME_SIZE as u32)
+        }
+        const N_INPUTS: u32 = 1;
+        const SUM_TXIN_BASE_SIZES: u32 = {
+            const TREASURY_TXIN_BASE_SIZE: u32 = {
+                const TREASURY_SCRIPT_SIG_SIZE: u32 = 0;
+                txin_base_size(TREASURY_SCRIPT_SIG_SIZE).unwrap()
+            };
+            TREASURY_TXIN_BASE_SIZE
+        };
+        let Some(n_outputs) = n_outputs.checked_add(2) else {
+            return None;
+        };
+        let Some(sum_txout_sizes) = ({
+            const INPUTS_COMMITMENT_TXOUT_SIZE: u32 = {
+                const INPUTS_COMMITMENT_OUTPUT_SPK_SIZE: u8 = 34;
+                WithdrawalBundle::txout_size(
+                    INPUTS_COMMITMENT_OUTPUT_SPK_SIZE as u32,
+                )
+                .unwrap()
+            };
+            const MAINCHAIN_FEE_COMMITMENT_TXOUT_SIZE: u32 = {
+                const MAINCHAIN_FEE_COMMITMENT_OUTPUT_SPK_SIZE: u8 = 10;
+                WithdrawalBundle::txout_size(
+                    MAINCHAIN_FEE_COMMITMENT_OUTPUT_SPK_SIZE as u32,
+                )
+                .unwrap()
+            };
+            (INPUTS_COMMITMENT_TXOUT_SIZE + MAINCHAIN_FEE_COMMITMENT_TXOUT_SIZE)
+                .checked_add(sum_txout_sizes)
+        }) else {
+            return None;
+        };
+        let Some(tx_base_size) = tx_base_size(
+            N_INPUTS,
+            SUM_TXIN_BASE_SIZES,
+            n_outputs,
+            sum_txout_sizes,
+        ) else {
+            return None;
+        };
+        let Some(tx_weight_wu) =
+            (tx_base_size as u64).checked_mul(Weight::WITNESS_SCALE_FACTOR)
+        else {
+            return None;
+        };
+        if tx_weight_wu <= bitcoin::Transaction::MAX_STANDARD_WEIGHT.to_wu() {
+            Some(Weight::from_wu(tx_weight_wu))
+        } else {
+            None
+        }
+    }
+
     pub fn new(
         block_height: u32,
         fee: bitcoin::Amount,
