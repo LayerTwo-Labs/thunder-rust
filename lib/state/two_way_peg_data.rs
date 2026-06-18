@@ -1142,10 +1142,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        path.push(format!(
-            "photon-{test_name}-{}-{nanos}",
-            std::process::id()
-        ));
+        path.push(format!("photon-{test_name}-{}-{nanos}", std::process::id()));
         path
     }
 

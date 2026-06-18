@@ -7,13 +7,23 @@ use l2l_openapi::open_api;
 use photon::{
     net::Peer,
     types::{
-        Address, MerkleRoot, OutPoint, Output, OutputContent, PointedOutput,
-        Txid, WithdrawalBundle, schema as photon_schema,
+        Address, BlockHash, MerkleRoot, OutPoint, Output, OutputContent,
+        PointedOutput, Transaction, Txid, WithdrawalBundle,
+        schema as photon_schema,
     },
     wallet::Balance,
 };
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 mod schema;
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct GetTransactionResponse {
+    pub tx: Transaction,
+    /// Block hash, if in the active chain
+    pub block_hash: Option<BlockHash>,
+}
 
 #[open_api(ref_schemas[
     Address, MerkleRoot, OutPoint, Output, OutputContent, Txid,
@@ -108,6 +118,13 @@ pub trait Rpc {
     /// Get a new address
     #[method(name = "get_new_address")]
     async fn get_new_address(&self) -> RpcResult<Address>;
+
+    /// Get transaction by txid
+    #[method(name = "get_transaction")]
+    async fn get_transaction(
+        &self,
+        txid: Txid,
+    ) -> RpcResult<Option<GetTransactionResponse>>;
 
     /// Get wallet addresses, sorted by base58 encoding
     #[method(name = "get_wallet_addresses")]
