@@ -174,6 +174,17 @@ pub enum Error {
     UtreexoRootsMismatch,
     #[error("utxo double spent")]
     UtxoDoubleSpent,
+    #[error(
+        "Computed Utxo hash ({}) for input ({}) does not match input hash ({})",
+        hex::encode(.computed),
+        .outpoint,
+        hex::encode(.input_hash),
+    )]
+    UtxoHashMismatch {
+        computed: crate::types::Hash,
+        outpoint: OutPoint,
+        input_hash: crate::types::Hash,
+    },
     #[error("too many sigops")]
     TooManySigops,
     #[error(

@@ -659,6 +659,14 @@ impl FilledTransaction {
             Ok(value_in - value_out)
         }
     }
+
+    pub fn inputs(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (&OutPoint, &Hash, &Output)> {
+        self.transaction.inputs.iter().zip(&self.spent_utxos).map(
+            |((outpoint, utxo_hash), output)| (outpoint, utxo_hash, output),
+        )
+    }
 }
 
 #[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize)]

@@ -619,3 +619,159 @@ pub fn disconnect_tip(
         .map_err(DbError::from)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod test {
+    use crate::state::test::{fresh_state, value_output};
+
+    #[test]
+    fn validation_rejects_outpoint_utxo_hash_mismatch() -> anyhow::Result<()> {
+        use bitcoin::hashes::Hash as _;
+        use rustreexo::accumulator::node_hash::BitcoinNodeHash;
+
+        use crate::{
+            authorization::{SigningKey, authorize, get_address},
+            types::{
+                Accumulator, AccumulatorDiff, Body, Header, OutPoint,
+                OutPointKey, PointedOutput, Transaction, hash,
+            },
+        };
+        let (env, state) =
+            fresh_state("validation_rejects_outpoint_utxo_hash_mismatch")?;
+
+        // Attacker key (owns A). Victim key (owns B).
+        let attacker = SigningKey::from_seeds(
+            &[0x11; fips205::slh_dsa_shake_256s::N],
+            &[0x11; fips205::slh_dsa_shake_256s::N],
+            &[0x11; fips205::slh_dsa_shake_256s::N],
+        );
+        let attacker_addr = get_address(&attacker.verifying_key());
+        let victim = SigningKey::from_seeds(
+            &[0x22; fips205::slh_dsa_shake_256s::N],
+            &[0x22; fips205::slh_dsa_shake_256s::N],
+            &[0x22; fips205::slh_dsa_shake_256s::N],
+        );
+        let victim_addr = get_address(&victim.verifying_key());
+
+        // UTXO A (attacker, 10_000) and victim UTXO B (20_000).
+        let outpoint_a = OutPoint::Deposit(bitcoin::OutPoint {
+            txid: bitcoin::Txid::from_byte_array([0xAA; 32]),
+            vout: 0,
+        });
+        let output_a = value_output(attacker_addr, 10_000);
+        let outpoint_b = OutPoint::Deposit(bitcoin::OutPoint {
+            txid: bitcoin::Txid::from_byte_array([0xBB; 32]),
+            vout: 0,
+        });
+        let output_b = value_output(victim_addr, 20_000);
+
+        // Leaf hashes for A and B (the Utreexo commitments).
+        let pointed_a = PointedOutput {
+            outpoint: outpoint_a,
+            output: output_a.clone(),
+        };
+        let pointed_b = PointedOutput {
+            outpoint: outpoint_b,
+            output: output_b.clone(),
+        };
+        let leaf_a: BitcoinNodeHash = (&pointed_a).into();
+        let leaf_b: BitcoinNodeHash = (&pointed_b).into();
+        let hash_b: crate::types::Hash = hash(&pointed_b); // input's utxo_hash
+
+        // Helper: build a fresh accumulator seeded with leaves A and B
+        // (Accumulator is not Clone, so re-seed when a fresh copy is needed).
+        let seeded_accumulator = || -> anyhow::Result<_> {
+            let mut acc = Accumulator::default();
+            let mut diff = AccumulatorDiff::default();
+            diff.insert(leaf_a);
+            diff.insert(leaf_b);
+            acc.apply_diff(diff)?;
+            Ok(acc)
+        };
+
+        // Seed UTXO DB with A and B; seed the accumulator with both leaves.
+        let pre_accumulator = seeded_accumulator()?;
+        {
+            let mut rwtxn = env.write_txn()?;
+            state.utxos.put(
+                &mut rwtxn,
+                &OutPointKey::from(&outpoint_a),
+                &output_a,
+            )?;
+            state.utxos.put(
+                &mut rwtxn,
+                &OutPointKey::from(&outpoint_b),
+                &output_b,
+            )?;
+            state
+                .utreexo_accumulator
+                .put(&mut rwtxn, &(), &pre_accumulator)?;
+            // tip stays unset (None) so validate's prev_side_hash check
+            // expects header.prev_side_hash == None.
+            rwtxn.commit()?;
+        }
+
+        // Build the malicious tx: input = (outpoint_A, hash_B) + proof for B;
+        // output C = 9_000 to the attacker.
+        let proof_for_b = pre_accumulator.prove(&[leaf_b])?;
+        let output_c = value_output(attacker_addr, 9_000);
+        let tx = Transaction {
+            inputs: vec![(outpoint_a, hash_b)],
+            proof: proof_for_b,
+            outputs: vec![output_c.clone()],
+        };
+        // Sign with A's key (the spender of outpoint A authorizes the tx).
+        let authorized = authorize(
+            &mut rand::thread_rng(),
+            &[(attacker_addr, &attacker)],
+            tx,
+        )?;
+
+        // Assemble body.
+        let body = Body::new(vec![authorized], Vec::new());
+
+        // Compute the header the validator expects:
+        //   merkle_root from the filled tx, roots = post-block accumulator
+        //   (B's leaf removed, C's leaf inserted) -- exactly the diff validate
+        //   builds from the SUPPLIED utxo_hash.
+        let filled = {
+            let rotxn = env.read_txn()?;
+            state.fill_transaction(&rotxn, &body.transactions[0])?
+        };
+
+        // tx validation REJECTS the outpoint/utxo_hash mismatch.
+        anyhow::ensure!(state.validate_filled_transaction(&filled).is_err());
+        let merkle_root =
+            Body::compute_merkle_root(body.coinbase.as_slice(), &[filled])?;
+        let mut post_accumulator = seeded_accumulator()?;
+        {
+            let mut diff = AccumulatorDiff::default();
+            // validate removes the SUPPLIED utxo_hash (B), inserts output C.
+            diff.remove(leaf_b);
+            let txid = body.transactions[0].txid();
+            let pointed_c = PointedOutput {
+                outpoint: OutPoint::Regular { txid, vout: 0 },
+                output: output_c.clone(),
+            };
+            diff.insert((&pointed_c).into());
+            post_accumulator.apply_diff(diff)?;
+        }
+        let header = Header {
+            merkle_root,
+            prev_side_hash: None,
+            prev_main_hash: bitcoin::BlockHash::from_byte_array([0u8; 32]),
+            roots: post_accumulator.get_roots(),
+        };
+
+        // block validation REJECTS the outpoint/utxo_hash mismatch.
+        {
+            let rotxn = env.read_txn()?;
+            anyhow::ensure!(
+                state.validate_block(&rotxn, &header, &body).is_err(),
+                "BUG: real validate_block accepts an input whose outpoint (A) \
+                and utxo_hash (B) refer to different UTXOs",
+            );
+        }
+        Ok(())
+    }
+}

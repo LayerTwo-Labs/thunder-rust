@@ -18,9 +18,9 @@ use crate::{
         Accumulator, Address, AmountOverflowError, AmountUnderflowError,
         Authorized, AuthorizedTransaction, BlockHash, Body, FilledTransaction,
         GetAddress, GetValue, Header, InPoint, M6id, MerkleRoot, OutPoint,
-        OutPointKey, Output, PointedOutput, SpentOutput, Transaction, VERSION,
-        Verify, Version, WithdrawalBundle, WithdrawalBundleStatus,
-        proto::mainchain::TwoWayPegData,
+        OutPointKey, Output, PointedOutput, PointedOutputRef, SpentOutput,
+        Transaction, VERSION, Verify, Version, WithdrawalBundle,
+        WithdrawalBundleStatus, proto::mainchain::TwoWayPegData,
     },
     util::Watchable,
 };
@@ -332,10 +332,30 @@ impl State {
         Ok(Some((bundle, height)))
     }
 
+    fn validate_utxo_hashes(
+        transaction: &FilledTransaction,
+    ) -> Result<(), Error> {
+        for (outpoint, utxo_hash, output) in transaction.inputs() {
+            let outpoint = *outpoint;
+            let utxo_hash = *utxo_hash;
+            let computed_utxo_hash =
+                crate::types::hash(&PointedOutputRef { outpoint, output });
+            if utxo_hash != computed_utxo_hash {
+                return Err(Error::UtxoHashMismatch {
+                    computed: computed_utxo_hash,
+                    outpoint,
+                    input_hash: utxo_hash,
+                });
+            }
+        }
+        Ok(())
+    }
+
     pub fn validate_filled_transaction(
         &self,
         transaction: &FilledTransaction,
     ) -> Result<bitcoin::Amount, Error> {
+        let () = Self::validate_utxo_hashes(transaction)?;
         let mut value_in = bitcoin::Amount::ZERO;
         let mut value_out = bitcoin::Amount::ZERO;
         for utxo in &transaction.spent_utxos {
@@ -579,32 +599,39 @@ mod test {
         },
     };
 
-    fn temp_env_path(test_name: &str) -> anyhow::Result<std::path::PathBuf> {
+    pub fn temp_env_path(
+        test_name: &str,
+    ) -> anyhow::Result<std::path::PathBuf> {
         let mut path = std::env::temp_dir();
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
-        path.push(format!(
-            "photon-{test_name}-{}-{nanos}",
-            std::process::id()
-        ));
+        path.push(format!("photon-{test_name}-{}-{nanos}", std::process::id()));
         Ok(path)
     }
 
     // open a fresh state-backed env in a unique temp dir
-    fn temp_env(test_name: &str) -> anyhow::Result<sneed::Env> {
+    pub fn temp_env(test_name: &str) -> anyhow::Result<sneed::Env> {
         let path = temp_env_path(test_name)?;
         std::fs::create_dir_all(&path)?;
         let mut opts = heed::EnvOpenOptions::new();
-        opts.map_size(16 * 1024 * 1024).max_dbs(State::NUM_DBS);
+        opts.map_size(64 * 1024 * 1024).max_dbs(State::NUM_DBS);
         let res = unsafe { sneed::Env::open(&opts, &path) }?;
         Ok(res)
     }
 
-    fn fresh_state(test_name: &str) -> anyhow::Result<(sneed::Env, State)> {
+    pub fn fresh_state(test_name: &str) -> anyhow::Result<(sneed::Env, State)> {
         let env = temp_env(test_name)?;
         let state = State::new(&env)?;
         Ok((env, state))
+    }
+
+    /// Create a value output
+    pub fn value_output(addr: Address, sats: u64) -> Output {
+        Output {
+            address: addr,
+            content: OutputContent::Value(bitcoin::Amount::from_sat(sats)),
+        }
     }
 
     #[test]
@@ -613,10 +640,6 @@ mod test {
 
         use bitcoin::hashes::Hash as _;
 
-        let value_output = |sats: u64| Output {
-            address: Address::ALL_ZEROS,
-            content: OutputContent::Value(bitcoin::Amount::from_sat(sats)),
-        };
         let (env, state) = fresh_state("sidechain-wealth")?;
         {
             let mut rwtxn = env.write_txn()?;
@@ -631,7 +654,7 @@ mod test {
             state.utxos.put(
                 &mut rwtxn,
                 &OutPointKey::from(&deposit_utxo_op),
-                &value_output(50),
+                &value_output(Address::ALL_ZEROS, 50),
             )?;
 
             // Two spent DEPOSIT STXOs: 100 + 100 sats.
@@ -641,7 +664,7 @@ mod test {
                     vout: 0,
                 });
                 let stxo = SpentOutput {
-                    output: value_output(sats),
+                    output: value_output(Address::ALL_ZEROS, sats),
                     inpoint: InPoint::Regular {
                         txid: [i; 32].into(),
                         vin: 0,
@@ -659,7 +682,7 @@ mod test {
                     vout: 0,
                 };
                 let stxo = SpentOutput {
-                    output: value_output(sats),
+                    output: value_output(Address::ALL_ZEROS, sats),
                     inpoint: InPoint::Withdrawal {
                         m6id: crate::types::M6id(
                             bitcoin::Txid::from_byte_array([i; 32]),

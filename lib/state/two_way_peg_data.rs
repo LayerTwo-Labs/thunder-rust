@@ -1108,8 +1108,8 @@ pub fn disconnect(
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
+mod test {
+    use std::{collections::BTreeMap, sync::Arc};
 
     use bitcoin::{
         Network,
@@ -1122,6 +1122,7 @@ mod tests {
         state::{
             State, WithdrawalBundleInfo,
             rollback::RollBack,
+            test::{fresh_state, value_output},
             two_way_peg_data::{
                 collect_withdrawal_bundle, disconnect,
                 disconnect_withdrawal_bundle_failed,
@@ -1136,39 +1137,17 @@ mod tests {
         },
     };
 
-    fn temp_env_path(test_name: &str) -> std::path::PathBuf {
-        let mut path = std::env::temp_dir();
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        path.push(format!("photon-{test_name}-{}-{nanos}", std::process::id()));
-        path
-    }
-
-    // open a fresh state-backed env in a unique temp dir
-    fn temp_env(test_name: &str) -> sneed::Env {
-        let path = temp_env_path(test_name);
-        std::fs::create_dir_all(&path).unwrap();
-        let mut opts = heed::EnvOpenOptions::new();
-        opts.map_size(16 * 1024 * 1024).max_dbs(State::NUM_DBS);
-        unsafe { sneed::Env::open(&opts, &path) }.unwrap()
-    }
-
     // a failed known bundle reinstates its utxos as spendable, so disconnecting
     // the failure must spend them again
     #[test]
-    fn disconnect_failed_bundle_spends_reinstated_utxo() {
-        let env = temp_env("disconnect_failed_bundle_spends_reinstated_utxo");
-        let state = State::new(&env).unwrap();
+    fn disconnect_failed_bundle_spends_reinstated_utxo() -> anyhow::Result<()> {
+        let (env, state) =
+            fresh_state("disconnect_failed_bundle_spends_reinstated_utxo")?;
         let outpoint = OutPoint::Regular {
             txid: Txid::from([1; 32]),
             vout: 0,
         };
-        let output = Output {
-            address: Address::ALL_ZEROS,
-            content: OutputContent::Value(bitcoin::Amount::from_sat(1000)),
-        };
+        let output = value_output(Address::ALL_ZEROS, 1000);
         let key = OutPointKey::from(&outpoint);
 
         let m6id = {
@@ -1179,34 +1158,31 @@ mod tests {
                 bitcoin::Amount::ZERO,
                 spend_utxos,
                 Vec::new(),
-            )
-            .unwrap();
+            )?;
             let m6id = bundle.compute_m6id();
             let mut bundle_status =
                 RollBack::new(WithdrawalBundleStatus::Submitted, 0);
             bundle_status
                 .push(WithdrawalBundleStatus::Failed, 1)
                 .unwrap();
-            let mut rwtxn = env.write_txn().unwrap();
-            state
-                .withdrawal_bundles
-                .put(
-                    &mut rwtxn,
-                    &m6id,
-                    &(WithdrawalBundleInfo::Known(bundle), bundle_status),
-                )
-                .unwrap();
-            state
-                .latest_failed_withdrawal_bundle
-                .put(&mut rwtxn, &(), &RollBack::new(m6id, 1))
-                .unwrap();
+            let mut rwtxn = env.write_txn()?;
+            state.withdrawal_bundles.put(
+                &mut rwtxn,
+                &m6id,
+                &(WithdrawalBundleInfo::Known(bundle), bundle_status),
+            )?;
+            state.latest_failed_withdrawal_bundle.put(
+                &mut rwtxn,
+                &(),
+                &RollBack::new(m6id, 1),
+            )?;
             // the failure reinstated the utxo
-            state.utxos.put(&mut rwtxn, &key, &output).unwrap();
-            rwtxn.commit().unwrap();
+            state.utxos.put(&mut rwtxn, &key, &output)?;
+            rwtxn.commit()?;
             m6id
         };
 
-        let mut rwtxn = env.write_txn().unwrap();
+        let mut rwtxn = env.write_txn()?;
         let mut accumulator_diff = AccumulatorDiff::default();
         disconnect_withdrawal_bundle_failed(
             &state,
@@ -1214,52 +1190,49 @@ mod tests {
             1,
             &mut accumulator_diff,
             m6id,
-        )
-        .unwrap();
-        assert!(state.utxos.try_get(&rwtxn, &key).unwrap().is_none());
-        let stxo = state.stxos.try_get(&rwtxn, &key).unwrap().unwrap();
-        assert_eq!(stxo.inpoint, InPoint::Withdrawal { m6id });
+        )?;
+        anyhow::ensure!(state.utxos.try_get(&rwtxn, &key)?.is_none());
+        let stxo = state.stxos.get(&rwtxn, &key)?;
+        anyhow::ensure!(stxo.inpoint == InPoint::Withdrawal { m6id });
+        Ok(())
     }
 
     // disconnecting a withdrawal bundle event must remove its
     // withdrawal_bundle_event_blocks record, not a deposit_blocks record that
     // happens to share the same sequence index
     #[test]
-    fn disconnect_withdrawal_event_block_uses_correct_db() {
-        let env = temp_env("disconnect_withdrawal_event_block_uses_correct_db");
-        let state = State::new(&env).unwrap();
+    fn disconnect_withdrawal_event_block_uses_correct_db() -> anyhow::Result<()>
+    {
+        let (env, state) =
+            fresh_state("disconnect_withdrawal_event_block_uses_correct_db")?;
 
         let block_height = 5u32;
         let m6id = M6id(bitcoin::Txid::from_byte_array([7; 32]));
         let event_block_hash = bitcoin::BlockHash::from_byte_array([9; 32]);
         let deposit_block_hash = bitcoin::BlockHash::from_byte_array([3; 32]);
 
-        let mut rwtxn = env.write_txn().unwrap();
-        state.height.put(&mut rwtxn, &(), &block_height).unwrap();
-        state
-            .withdrawal_bundles
-            .put(
-                &mut rwtxn,
-                &m6id,
-                &(
-                    WithdrawalBundleInfo::Unknown,
-                    RollBack::new(
-                        WithdrawalBundleStatus::Submitted,
-                        block_height,
-                    ),
-                ),
-            )
-            .unwrap();
-        state
-            .withdrawal_bundle_event_blocks
-            .put(&mut rwtxn, &0, &(event_block_hash, block_height))
-            .unwrap();
+        let mut rwtxn = env.write_txn()?;
+        state.height.put(&mut rwtxn, &(), &block_height)?;
+        state.withdrawal_bundles.put(
+            &mut rwtxn,
+            &m6id,
+            &(
+                WithdrawalBundleInfo::Unknown,
+                RollBack::new(WithdrawalBundleStatus::Submitted, block_height),
+            ),
+        )?;
+        state.withdrawal_bundle_event_blocks.put(
+            &mut rwtxn,
+            &0,
+            &(event_block_hash, block_height),
+        )?;
         // a deposit record at the same sequence index that must survive
-        state
-            .deposit_blocks
-            .put(&mut rwtxn, &0, &(deposit_block_hash, block_height))
-            .unwrap();
-        rwtxn.commit().unwrap();
+        state.deposit_blocks.put(
+            &mut rwtxn,
+            &0,
+            &(deposit_block_hash, block_height),
+        )?;
+        rwtxn.commit()?;
 
         let two_way_peg_data = {
             let mut block_info = LinkedHashMap::new();
@@ -1278,17 +1251,17 @@ mod tests {
             TwoWayPegData { block_info }
         };
 
-        let mut rwtxn = env.write_txn().unwrap();
-        disconnect(&state, &mut rwtxn, &two_way_peg_data).unwrap();
-        assert!(
+        let mut rwtxn = env.write_txn()?;
+        disconnect(&state, &mut rwtxn, &two_way_peg_data)?;
+        anyhow::ensure!(
             state
                 .withdrawal_bundle_event_blocks
-                .try_get(&rwtxn, &0)
-                .unwrap()
+                .try_get(&rwtxn, &0)?
                 .is_none()
         );
-        assert!(state.deposit_blocks.try_get(&rwtxn, &0).unwrap().is_some());
-        rwtxn.commit().unwrap();
+        anyhow::ensure!(state.deposit_blocks.try_get(&rwtxn, &0)?.is_some());
+        rwtxn.commit()?;
+        Ok(())
     }
 
     fn seeded_public_key(idx: u32) -> bitcoin::CompressedPublicKey {
@@ -1319,55 +1292,48 @@ mod tests {
         >,
         f: impl FnOnce(&State, &mut sneed::RwTxn<'_>) -> R,
     ) -> anyhow::Result<R> {
-        let env_path = temp_env_path(test_name);
-        std::fs::create_dir_all(&env_path)?;
-        let env = {
-            let mut env_open_options = heed::EnvOpenOptions::new();
-            env_open_options
-                .map_size(16 * 1024 * 1024)
-                .max_dbs(State::NUM_DBS);
-            unsafe { sneed::Env::open(&env_open_options, &env_path) }?
-        };
-        let state = State::new(&env)?;
-        let mut rwtxn = env.write_txn()?;
-        state.height.put(
-            &mut rwtxn,
-            &(),
-            &crate::state::WITHDRAWAL_BUNDLE_FAILURE_GAP,
-        )?;
-
-        for idx in 1..=count {
-            let mut txid_bytes = [0_u8; 32];
-            txid_bytes[28..].copy_from_slice(&idx.to_be_bytes());
-            let outpoint = OutPoint::Regular {
-                txid: txid_bytes.into(),
-                vout: 0,
-            };
-            let output = Output {
-                address: {
-                    let mut addr = [0u8; 20];
-                    let idx = idx.to_be_bytes();
-                    addr[..idx.len()].copy_from_slice(&idx);
-                    Address::from(addr)
-                },
-                content: OutputContent::Withdrawal {
-                    value: bitcoin::Amount::from_sat(1_000),
-                    main_fee: bitcoin::Amount::ZERO,
-                    main_address: main_address(idx),
-                },
-            };
-            state.utxos.put(
+        let (env, state) = fresh_state(test_name)?;
+        let res = {
+            let mut rwtxn = env.write_txn()?;
+            state.height.put(
                 &mut rwtxn,
-                &OutPointKey::from(&outpoint),
-                &output,
+                &(),
+                &crate::state::WITHDRAWAL_BUNDLE_FAILURE_GAP,
             )?;
-        }
-        let result = f(&state, &mut rwtxn);
-        drop(rwtxn);
+
+            for idx in 1..=count {
+                let mut txid_bytes = [0_u8; 32];
+                txid_bytes[28..].copy_from_slice(&idx.to_be_bytes());
+                let outpoint = OutPoint::Regular {
+                    txid: txid_bytes.into(),
+                    vout: 0,
+                };
+                let output = Output {
+                    address: {
+                        let mut addr = [0u8; 20];
+                        let idx = idx.to_be_bytes();
+                        addr[..idx.len()].copy_from_slice(&idx);
+                        Address::from(addr)
+                    },
+                    content: OutputContent::Withdrawal {
+                        value: bitcoin::Amount::from_sat(1_000),
+                        main_fee: bitcoin::Amount::ZERO,
+                        main_address: main_address(idx),
+                    },
+                };
+                state.utxos.put(
+                    &mut rwtxn,
+                    &OutPointKey::from(&outpoint),
+                    &output,
+                )?;
+            }
+            f(&state, &mut rwtxn)
+        };
         drop(state);
+        let env_path = Arc::clone(env.path());
         drop(env);
-        drop(std::fs::remove_dir_all(&env_path));
-        Ok(result)
+        drop(std::fs::remove_dir_all(env_path));
+        Ok(res)
     }
 
     #[test]
@@ -1403,20 +1369,19 @@ mod tests {
 
     // connecting a deposit then disconnecting it on a reorg must round-trip
     #[test]
-    fn deposit_reorg_round_trips() {
-        use crate::types::proto::mainchain::Deposit;
-        use crate::types::{Body, FilledTransaction, Header};
+    fn deposit_reorg_round_trips() -> anyhow::Result<()> {
+        use crate::types::{
+            Body, FilledTransaction, Header, proto::mainchain::Deposit,
+        };
 
-        let env = temp_env("deposit_reorg_round_trips");
-        let state = State::new(&env).unwrap();
-
+        let (env, state) = fresh_state("deposit_reorg_round_trips")?;
         let empty_body = Body {
             coinbase: Vec::new(),
             transactions: Vec::new(),
             authorizations: Vec::new(),
         };
         let no_txs: &[FilledTransaction] = &[];
-        let merkle_root = Body::compute_merkle_root(&[], no_txs).unwrap();
+        let merkle_root = Body::compute_merkle_root(&[], no_txs)?;
         let main0 = bitcoin::BlockHash::from_byte_array([10; 32]);
         let main1 = bitcoin::BlockHash::from_byte_array([11; 32]);
 
@@ -1427,14 +1392,13 @@ mod tests {
             roots: Vec::new(),
         };
         {
-            let mut rwtxn = env.write_txn().unwrap();
-            state
-                .apply_block(&mut rwtxn, &genesis, &empty_body)
-                .unwrap();
-            state
-                .connect_two_way_peg_data(&mut rwtxn, &TwoWayPegData::default())
-                .unwrap();
-            rwtxn.commit().unwrap();
+            let mut rwtxn = env.write_txn()?;
+            state.apply_block(&mut rwtxn, &genesis, &empty_body)?;
+            state.connect_two_way_peg_data(
+                &mut rwtxn,
+                &TwoWayPegData::default(),
+            )?;
+            rwtxn.commit()?;
         }
 
         let block1 = Header {
@@ -1458,40 +1422,33 @@ mod tests {
                     events: vec![BlockEvent::Deposit(Deposit {
                         tx_index: 0,
                         outpoint: deposit_outpoint,
-                        output: Output {
-                            address: Address::ALL_ZEROS,
-                            content: OutputContent::Value(
-                                bitcoin::Amount::from_sat(1000),
-                            ),
-                        },
+                        output: value_output(Address::ALL_ZEROS, 1000),
                     })],
                 },
             );
             TwoWayPegData { block_info }
         };
         {
-            let mut rwtxn = env.write_txn().unwrap();
-            state.apply_block(&mut rwtxn, &block1, &empty_body).unwrap();
-            state
-                .connect_two_way_peg_data(&mut rwtxn, &deposit_twpd)
-                .unwrap();
-            assert!(
-                state.utxos.try_get(&rwtxn, &deposit_key).unwrap().is_some()
+            let mut rwtxn = env.write_txn()?;
+            state.apply_block(&mut rwtxn, &block1, &empty_body)?;
+            state.connect_two_way_peg_data(&mut rwtxn, &deposit_twpd)?;
+            anyhow::ensure!(
+                state.utxos.try_get(&rwtxn, &deposit_key)?.is_some()
             );
-            assert!(state.deposit_blocks.last(&rwtxn).unwrap().is_some());
-            rwtxn.commit().unwrap();
+            anyhow::ensure!(state.deposit_blocks.last(&rwtxn)?.is_some());
+            rwtxn.commit()?;
         }
 
         {
-            let mut rwtxn = env.write_txn().unwrap();
-            state
-                .disconnect_two_way_peg_data(&mut rwtxn, &deposit_twpd)
-                .unwrap();
-            assert!(
-                state.utxos.try_get(&rwtxn, &deposit_key).unwrap().is_none()
+            let mut rwtxn = env.write_txn()?;
+            state.disconnect_two_way_peg_data(&mut rwtxn, &deposit_twpd)?;
+            anyhow::ensure!(
+                state.utxos.try_get(&rwtxn, &deposit_key)?.is_none()
             );
-            assert!(state.deposit_blocks.last(&rwtxn).unwrap().is_none());
-            rwtxn.commit().unwrap();
+            anyhow::ensure!(state.deposit_blocks.last(&rwtxn)?.is_none());
+            rwtxn.commit()?;
         }
+
+        Ok(())
     }
 }
