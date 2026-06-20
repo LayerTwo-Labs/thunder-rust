@@ -467,7 +467,7 @@ impl State {
                         .ok_or(AmountOverflowError)?;
                 }
                 if let InPoint::Withdrawal { .. } = spent_output.inpoint {
-                    total_withdrawal_stxo_value = total_deposit_stxo_value
+                    total_withdrawal_stxo_value = total_withdrawal_stxo_value
                         .checked_add(spent_output.output.get_value())
                         .ok_or(AmountOverflowError)?;
                 }
@@ -566,5 +566,126 @@ impl Watchable<()> for State {
     /// Get a signal that notifies whenever the tip changes
     fn watch(&self) -> Self::WatchStream {
         tokio_stream::wrappers::WatchStream::new(self.tip.watch().clone())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::{
+        state::State,
+        types::{
+            Address, InPoint, OutPoint, OutPointKey, Output, OutputContent,
+            SpentOutput,
+        },
+    };
+
+    fn temp_env_path(test_name: &str) -> anyhow::Result<std::path::PathBuf> {
+        let mut path = std::env::temp_dir();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        path.push(format!(
+            "photon-{test_name}-{}-{nanos}",
+            std::process::id()
+        ));
+        Ok(path)
+    }
+
+    // open a fresh state-backed env in a unique temp dir
+    fn temp_env(test_name: &str) -> anyhow::Result<sneed::Env> {
+        let path = temp_env_path(test_name)?;
+        std::fs::create_dir_all(&path)?;
+        let mut opts = heed::EnvOpenOptions::new();
+        opts.map_size(16 * 1024 * 1024).max_dbs(State::NUM_DBS);
+        let res = unsafe { sneed::Env::open(&opts, &path) }?;
+        Ok(res)
+    }
+
+    fn fresh_state(test_name: &str) -> anyhow::Result<(sneed::Env, State)> {
+        let env = temp_env(test_name)?;
+        let state = State::new(&env)?;
+        Ok((env, state))
+    }
+
+    #[test]
+    fn sidechain_wealth() -> anyhow::Result<()> {
+        use std::str::FromStr;
+
+        use bitcoin::hashes::Hash as _;
+
+        let value_output = |sats: u64| Output {
+            address: Address::ALL_ZEROS,
+            content: OutputContent::Value(bitcoin::Amount::from_sat(sats)),
+        };
+        let (env, state) = fresh_state("sidechain-wealth")?;
+        {
+            let mut rwtxn = env.write_txn()?;
+
+            // One unspent DEPOSIT UTXO: 50 sats.
+            let deposit_utxo_op = OutPoint::Deposit(bitcoin::OutPoint {
+                txid: bitcoin::Txid::from_str(
+                    "0000000000000000000000000000000000000000000000000000000000000001",
+                )?,
+                vout: 0,
+            });
+            state.utxos.put(
+                &mut rwtxn,
+                &OutPointKey::from(&deposit_utxo_op),
+                &value_output(50),
+            )?;
+
+            // Two spent DEPOSIT STXOs: 100 + 100 sats.
+            for (i, sats) in [(2u8, 100u64), (3u8, 100u64)] {
+                let op = OutPoint::Deposit(bitcoin::OutPoint {
+                    txid: bitcoin::Txid::from_byte_array([i; 32]),
+                    vout: 0,
+                });
+                let stxo = SpentOutput {
+                    output: value_output(sats),
+                    inpoint: InPoint::Regular {
+                        txid: [i; 32].into(),
+                        vin: 0,
+                    },
+                };
+                state
+                    .stxos
+                    .put(&mut rwtxn, &OutPointKey::from(&op), &stxo)?;
+            }
+
+            // Two WITHDRAWAL STXOs: 10 + 10 sats
+            for (i, sats) in [(4u8, 10u64), (5u8, 10u64)] {
+                let op = OutPoint::Regular {
+                    txid: [i; 32].into(),
+                    vout: 0,
+                };
+                let stxo = SpentOutput {
+                    output: value_output(sats),
+                    inpoint: InPoint::Withdrawal {
+                        m6id: crate::types::M6id(
+                            bitcoin::Txid::from_byte_array([i; 32]),
+                        ),
+                    },
+                };
+                state
+                    .stxos
+                    .put(&mut rwtxn, &OutPointKey::from(&op), &stxo)?;
+            }
+
+            rwtxn.commit()?;
+        }
+
+        let rotxn = env.read_txn()?;
+        let sidechain_wealth = state.sidechain_wealth(&rotxn)?;
+
+        // Correct value: deposit UTXO 50 + deposit STXOs 200 - withdrawal
+        // STXOs 20 = 230 sats.
+        let expected_sidechain_wealth = bitcoin::Amount::from_sat(230);
+        anyhow::ensure!(
+            sidechain_wealth == expected_sidechain_wealth,
+            "Expected sidechain wealth ({}), but computed ({})",
+            expected_sidechain_wealth,
+            sidechain_wealth,
+        );
+        Ok(())
     }
 }
