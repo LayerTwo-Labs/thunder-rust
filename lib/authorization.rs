@@ -105,6 +105,14 @@ pub fn get_address(verifying_key: &VerifyingKey) -> Address {
 pub fn verify_authorized_transaction(
     transaction: &AuthorizedTransaction,
 ) -> Result<(), Error> {
+    let verifications_required = &transaction.transaction.inputs.len();
+    match transaction.authorizations.len().cmp(verifications_required) {
+        std::cmp::Ordering::Less => return Err(Error::NotEnoughAuthorizations),
+        std::cmp::Ordering::Equal => (),
+        std::cmp::Ordering::Greater => {
+            return Err(Error::TooManyAuthorizations);
+        }
+    }
     let tx_bytes_canonical = borsh::to_vec(&transaction.transaction)?;
     let messages: Vec<_> = std::iter::repeat_n(
         tx_bytes_canonical.as_slice(),
