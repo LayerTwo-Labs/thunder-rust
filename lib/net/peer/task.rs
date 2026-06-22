@@ -317,7 +317,7 @@ impl ConnectionTask {
                         peer_state_id: Some(peer_state_id),
                     };
                     let _: bool = request_queue.send_request(request.into())?;
-                    return Ok(Some(true));
+                    return Ok(Some(false));
                 }
                 let main_ancestor = ctxt.archive.last_common_main_ancestor(
                     &rotxn,
