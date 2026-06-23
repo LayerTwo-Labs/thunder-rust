@@ -9,7 +9,8 @@ use crate::{
     types::{
         AccumulatorDiff, AmountOverflowError, Body, FilledTransaction,
         GetAddress as _, GetValue as _, Header, InPoint, MerkleRoot, OutPoint,
-        OutPointKey, PointedOutput, SpentOutput, Verify as _,
+        OutPointKey, PointedOutput, PointedOutputRef, SpentOutput, Verify as _,
+        hash,
     },
 };
 
@@ -71,6 +72,16 @@ pub fn prevalidate(
                 state.utxos.try_get(rotxn, &key)?.ok_or(error::NoUtxo {
                     outpoint: *outpoint,
                 })?;
+            // The input hash must commit to the output being spent
+            let expected = hash(&PointedOutputRef {
+                outpoint: *outpoint,
+                output: &spent_output,
+            });
+            if expected != *utxo_hash {
+                return Err(Error::UtxoHashMismatch {
+                    outpoint: *outpoint,
+                });
+            }
             all_input_keys.push(OutPointKey::from(outpoint));
             spent_utxos.push(spent_output);
             spent_utxo_hashes.push(utxo_hash.into());
@@ -346,7 +357,22 @@ pub fn validate(
         let mut spent_utxo_hashes = Vec::<BitcoinNodeHash>::with_capacity(
             filled_transaction.transaction.inputs.len(),
         );
-        for (outpoint, utxo_hash) in &filled_transaction.transaction.inputs {
+        for ((outpoint, utxo_hash), spent_output) in filled_transaction
+            .transaction
+            .inputs
+            .iter()
+            .zip(&filled_transaction.spent_utxos)
+        {
+            // The input hash must commit to the output being spent
+            let expected = hash(&PointedOutputRef {
+                outpoint: *outpoint,
+                output: spent_output,
+            });
+            if expected != *utxo_hash {
+                return Err(Error::UtxoHashMismatch {
+                    outpoint: *outpoint,
+                });
+            }
             all_input_keys.push(OutPointKey::from(outpoint));
             spent_utxo_hashes.push(utxo_hash.into());
             accumulator_diff.remove(utxo_hash.into());

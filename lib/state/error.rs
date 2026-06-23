@@ -174,6 +174,8 @@ pub enum Error {
     UtreexoRootsMismatch,
     #[error("utxo double spent")]
     UtxoDoubleSpent,
+    #[error("utxo hash for {outpoint} does not match the spent output")]
+    UtxoHashMismatch { outpoint: OutPoint },
     #[error("too many sigops")]
     TooManySigops,
     #[error(
