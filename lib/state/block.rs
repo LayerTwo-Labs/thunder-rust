@@ -649,3 +649,105 @@ pub fn disconnect_tip(
         .map_err(DbError::from)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use bitcoin::{Amount, hashes::Hash as _};
+
+    use super::*;
+    use crate::types::{
+        Accumulator, AccumulatorDiff, Address, Output, OutputContent,
+        Transaction, Txid,
+    };
+
+    fn temp_env(name: &str) -> sneed::Env {
+        let mut path = std::env::temp_dir();
+        path.push(format!("thunder-block-test-{name}"));
+        std::fs::remove_dir_all(&path).ok();
+        std::fs::create_dir_all(&path).unwrap();
+        let mut opts = heed::EnvOpenOptions::new();
+        opts.map_size(16 * 1024 * 1024).max_dbs(State::NUM_DBS);
+        unsafe { sneed::Env::open(&opts, &path) }.unwrap()
+    }
+
+    fn value_output(n: u8) -> (OutPoint, Output) {
+        let outpoint = OutPoint::Regular {
+            txid: Txid::from([n; 32]),
+            vout: 0,
+        };
+        let output = Output {
+            address: Address::ALL_ZEROS,
+            content: OutputContent::Value(Amount::from_sat(1000)),
+        };
+        (outpoint, output)
+    }
+
+    // An input commits to (outpoint, utxo_hash). Spending one outpoint while
+    // supplying a different (but provable) leaf hash must be rejected.
+    #[test]
+    fn rejects_input_hash_not_matching_spent_output() {
+        let env = temp_env("rejects_input_hash_not_matching_spent_output");
+        let state = State::new(&env).unwrap();
+
+        let (outpoint_a, output_a) = value_output(1);
+        let (outpoint_b, output_b) = value_output(2);
+        let hash_b = hash(&PointedOutput {
+            outpoint: outpoint_b,
+            output: output_b.clone(),
+        });
+
+        let mut accumulator = Accumulator::default();
+        let mut diff = AccumulatorDiff::default();
+        diff.insert(
+            hash(&PointedOutput {
+                outpoint: outpoint_a,
+                output: output_a.clone(),
+            })
+            .into(),
+        );
+        diff.insert(hash_b.into());
+        accumulator.apply_diff(diff).unwrap();
+        let proof = accumulator.prove(&[hash_b.into()]).unwrap();
+
+        let mut rwtxn = env.write_txn().unwrap();
+        state
+            .utxos
+            .put(&mut rwtxn, &OutPointKey::from(&outpoint_a), &output_a)
+            .unwrap();
+        state
+            .utxos
+            .put(&mut rwtxn, &OutPointKey::from(&outpoint_b), &output_b)
+            .unwrap();
+        state
+            .utreexo_accumulator
+            .put(&mut rwtxn, &(), &accumulator)
+            .unwrap();
+        rwtxn.commit().unwrap();
+
+        // Spend outpoint_a but claim outpoint_b's leaf hash + a valid proof
+        let tx = Transaction {
+            inputs: vec![(outpoint_a, hash_b)],
+            proof,
+            outputs: vec![output_a],
+        };
+        let body = Body {
+            coinbase: vec![],
+            transactions: vec![tx],
+            authorizations: vec![],
+        };
+        let header = Header {
+            merkle_root: [0u8; 32].into(),
+            prev_side_hash: None,
+            prev_main_hash: bitcoin::BlockHash::all_zeros(),
+            roots: vec![],
+        };
+
+        let rotxn = env.read_txn().unwrap();
+        let result = prevalidate(&state, &rotxn, &header, &body);
+        eprintln!("prevalidate result: {result:?}");
+        assert!(
+            matches!(result, Err(Error::UtxoHashMismatch { outpoint }) if outpoint == outpoint_a),
+            "expected UtxoHashMismatch, got {result:?}"
+        );
+    }
+}
