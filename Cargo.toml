@@ -25,7 +25,7 @@ clap = "4.5.4"
 dirs = "5.0.1"
 dotenvy = "0.15.7"
 educe = { version = "0.6.0", default-features = false }
-eframe = "0.31.0"
+eframe = "0.34.0"
 error-fatality = "0.1.2"
 fallible-iterator = "0.3.0"
 fips205 = "0.4.1"

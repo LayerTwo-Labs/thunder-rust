@@ -289,8 +289,8 @@ pub(super) struct Transfer {
 
 impl Transfer {
     pub fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
-        egui::SidePanel::left("deposit")
-            .exact_width(ui.available_width() / 2.)
+        egui::Panel::left("deposit")
+            .exact_size(ui.available_width() / 2.)
             .resizable(false)
             .show_inside(ui, |ui| {
                 ui.vertical_centered(|ui| {

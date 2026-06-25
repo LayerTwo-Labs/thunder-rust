@@ -118,7 +118,7 @@ exceptions = [
     { allow = ["CDLA-Permissive-2.0"], name = "webpki-root-certs", version = "0.26.11" },
     { allow = ["CDLA-Permissive-2.0"], name = "webpki-root-certs", version = "1.0.5" },
     { allow = ["CDLA-Permissive-2.0"], name = "webpki-roots", version = "1.0.5" },
-    { allow = ["LicenseRef-UFL-1.0", "OFL-1.1", "Ubuntu-font-1.0"], name = "epaint_default_fonts", version = "0.31.0" },
+    { allow = ["LicenseRef-UFL-1.0", "OFL-1.1", "Ubuntu-font-1.0"], name = "epaint_default_fonts", version = "0.34.3" },
     { allow = ["MPL-2.0"], name = "bitmaps", version = "3.2.1" },
     { allow = ["MPL-2.0"], name = "imbl", version = "7.0.0" },
     { allow = ["MPL-2.0"], name = "imbl-sized-chunks", version = "0.1.3" },

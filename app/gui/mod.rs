@@ -221,18 +221,18 @@ impl EguiApp {
 }
 
 impl eframe::App for EguiApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        ctx.request_repaint();
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        ui.request_repaint();
         if let Some(app) = self.app.as_ref()
             && !app.wallet.has_seed().unwrap_or(false)
         {
-            egui::CentralPanel::default().show(ctx, |_ui| {
-                egui::Window::new("Set Seed").show(ctx, |ui| {
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                egui::Window::new("Set Seed").show(ui, |ui| {
                     self.set_seed.show(app, ui);
                 });
             });
         } else {
-            egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
+            egui::Panel::top("tabs").show_inside(ui, |ui| {
                 ui.horizontal(|ui| {
                     Tab::iter().for_each(|tab_variant| {
                         let tab_name = tab_variant.to_string();
@@ -244,26 +244,29 @@ impl eframe::App for EguiApp {
                     })
                 });
             });
-            egui::TopBottomPanel::bottom("bottom_panel")
-                .show(ctx, |ui| self.bottom_panel.show(&mut self.miner, ui));
-            egui::CentralPanel::default().show(ctx, |ui| match self.tab {
-                Tab::ParentChain => {
-                    self.parent_chain.show(self.app.as_ref(), ui)
-                }
-                Tab::Coins => {
-                    self.coins.show(self.app.as_ref(), ui);
-                }
-                Tab::MemPoolExplorer => {
-                    self.mempool_explorer.show(self.app.as_ref(), ui);
-                }
-                Tab::BlockExplorer => {
-                    self.block_explorer.show(self.app.as_ref(), ui);
-                }
-                Tab::Withdrawals => {
-                    self.withdrawals.show(self.app.as_ref(), ui);
-                }
-                Tab::ConsoleLogs => {
-                    self.console_logs.show(self.app.as_ref(), ui);
+            egui::Panel::bottom("bottom_panel").show_inside(ui, |ui| {
+                self.bottom_panel.show(&mut self.miner, ui)
+            });
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                match self.tab {
+                    Tab::ParentChain => {
+                        self.parent_chain.show(self.app.as_ref(), ui)
+                    }
+                    Tab::Coins => {
+                        self.coins.show(self.app.as_ref(), ui);
+                    }
+                    Tab::MemPoolExplorer => {
+                        self.mempool_explorer.show(self.app.as_ref(), ui);
+                    }
+                    Tab::BlockExplorer => {
+                        self.block_explorer.show(self.app.as_ref(), ui);
+                    }
+                    Tab::Withdrawals => {
+                        self.withdrawals.show(self.app.as_ref(), ui);
+                    }
+                    Tab::ConsoleLogs => {
+                        self.console_logs.show(self.app.as_ref(), ui);
+                    }
                 }
             });
         }
