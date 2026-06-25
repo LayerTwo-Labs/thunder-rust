@@ -6,7 +6,7 @@ use std::sync::{
 use clap::Parser;
 use eframe::egui::{
     self, Key, KeyboardShortcut, Modifiers, ScrollArea, TextEdit, TextStyle,
-    TopBottomPanel, Widget as _,
+    Widget as _,
 };
 
 use crate::{
@@ -89,7 +89,7 @@ impl ConsoleLogs {
     }
 
     pub fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
-        TopBottomPanel::bottom("command_input").show_inside(ui, |ui| {
+        egui::Panel::bottom("command_input").show_inside(ui, |ui| {
             let command_input = TextEdit::multiline(&mut self.command_input)
                 .font(TextStyle::Monospace)
                 .desired_width(f32::INFINITY)
