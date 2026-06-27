@@ -1259,3 +1259,22 @@ impl Drop for NetTaskHandle {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Error, is_fatal_reorg_error};
+    use crate::state;
+
+    // a peer's invalid block (value out > value in) must not be fatal
+    #[test]
+    fn invalid_peer_block_is_not_fatal() {
+        let err = Error::State(state::Error::NotEnoughValueIn);
+        assert!(!is_fatal_reorg_error(&err));
+    }
+
+    // local infrastructure errors stay fatal
+    #[test]
+    fn infrastructure_error_is_fatal() {
+        assert!(is_fatal_reorg_error(&Error::PeerInfoRxClosed));
+    }
+}
