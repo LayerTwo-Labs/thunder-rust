@@ -251,6 +251,11 @@ fn disconnect_tip_(
 /// The new tip block and all ancestor blocks must exist in the node's archive.
 /// A result of `Ok(true)` indicates a successful re-org.
 /// A result of `Ok(false)` indicates that no re-org was attempted.
+// a state error means a peer sent an invalid block; it must not be fatal
+fn is_fatal_reorg_error(err: &Error) -> bool {
+    !matches!(err, Error::State(_))
+}
+
 fn reorg_to_tip(
     env: &sneed::Env,
     archive: &Archive,
@@ -997,8 +1002,8 @@ impl NetTask {
                         }
                     }
                 }
-                MailboxItem::NewTipReady(new_tip, _addr, resp_tx) => {
-                    let reorg_applied = task::block_in_place(|| {
+                MailboxItem::NewTipReady(new_tip, addr, resp_tx) => {
+                    let reorg_result = task::block_in_place(|| {
                         reorg_to_tip(
                             &self.ctxt.env,
                             &self.ctxt.archive,
@@ -1006,7 +1011,27 @@ impl NetTask {
                             &self.ctxt.state,
                             new_tip,
                         )
-                    })?;
+                    });
+                    let reorg_applied = match reorg_result {
+                        Ok(applied) => applied,
+                        Err(err) if is_fatal_reorg_error(&err) => {
+                            return Err(err);
+                        }
+                        // an invalid block must not kill the net task; drop the
+                        // peer and keep running
+                        Err(err) => {
+                            tracing::warn!(
+                                ?new_tip,
+                                ?addr,
+                                err = format!("{err:#}"),
+                                "rejecting invalid tip from peer"
+                            );
+                            if let Some(addr) = addr {
+                                self.ctxt.net.remove_active_peer(addr);
+                            }
+                            false
+                        }
+                    };
                     if let Some(resp_tx) = resp_tx {
                         let () = resp_tx
                             .send(reorg_applied)
@@ -1232,5 +1257,24 @@ impl Drop for NetTaskHandle {
             tracing::debug!("dropping net task handle, aborting task");
             task.abort()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Error, is_fatal_reorg_error};
+    use crate::state;
+
+    // a peer's invalid block (value out > value in) must not be fatal
+    #[test]
+    fn invalid_peer_block_is_not_fatal() {
+        let err = Error::State(state::Error::NotEnoughValueIn);
+        assert!(!is_fatal_reorg_error(&err));
+    }
+
+    // local infrastructure errors stay fatal
+    #[test]
+    fn infrastructure_error_is_fatal() {
+        assert!(is_fatal_reorg_error(&Error::PeerInfoRxClosed));
     }
 }
