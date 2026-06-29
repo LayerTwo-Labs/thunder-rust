@@ -358,7 +358,14 @@ impl State {
         let () = Self::validate_utxo_hashes(transaction)?;
         let mut value_in = bitcoin::Amount::ZERO;
         let mut value_out = bitcoin::Amount::ZERO;
-        for utxo in &transaction.spent_utxos {
+        for (outpoint, _, utxo) in transaction.inputs() {
+            // a withdrawal output is committed to a bundle and can only be
+            // spent by the bundle, never by a transaction
+            if utxo.content.is_withdrawal() {
+                return Err(Error::SpendWithdrawalOutput {
+                    outpoint: *outpoint,
+                });
+            }
             value_in = value_in
                 .checked_add(utxo.get_value())
                 .ok_or(AmountOverflowError)?;
