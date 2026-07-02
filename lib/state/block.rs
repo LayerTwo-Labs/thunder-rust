@@ -640,7 +640,7 @@ mod test {
                 OutPointKey, PointedOutput, Transaction, hash,
             },
         };
-        let (env, state) =
+        let (_temp_dir, env, state) =
             fresh_state("validation_rejects_outpoint_utxo_hash_mismatch")?;
 
         // Attacker key (owns A). Victim key (owns B).

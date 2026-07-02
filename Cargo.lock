@@ -7166,6 +7166,7 @@ dependencies = [
  "smallvec",
  "sneed 0.0.11",
  "strum 0.27.2",
+ "temp-dir",
  "thiserror 2.0.18",
  "tiny-bip39",
  "tokio",

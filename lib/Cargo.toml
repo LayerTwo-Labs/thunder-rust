@@ -61,6 +61,9 @@ tracing = { workspace = true }
 transitive = { workspace = true }
 utoipa = { workspace = true, features = ["macros", "non_strict_integers"] }
 
+[dev-dependencies]
+temp-dir = { workspace = true }
+
 [features]
 clap = ["dep:clap"]
 

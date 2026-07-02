@@ -601,34 +601,34 @@ mod test {
         },
     };
 
-    pub fn temp_env_path(
-        test_name: &str,
-    ) -> anyhow::Result<std::path::PathBuf> {
-        let mut path = std::env::temp_dir();
+    fn temp_dir(test_name: &str) -> anyhow::Result<temp_dir::TempDir> {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
-        path.push(format!(
+        let res = temp_dir::TempDir::with_prefix(format!(
             "thunder-{test_name}-{}-{nanos}",
             std::process::id()
-        ));
-        Ok(path)
-    }
-
-    // open a fresh state-backed env in a unique temp dir
-    pub fn temp_env(test_name: &str) -> anyhow::Result<sneed::Env> {
-        let path = temp_env_path(test_name)?;
-        std::fs::create_dir_all(&path)?;
-        let mut opts = heed::EnvOpenOptions::new();
-        opts.map_size(64 * 1024 * 1024).max_dbs(State::NUM_DBS);
-        let res = unsafe { sneed::Env::open(&opts, &path) }?;
+        ))?;
         Ok(res)
     }
 
-    pub fn fresh_state(test_name: &str) -> anyhow::Result<(sneed::Env, State)> {
-        let env = temp_env(test_name)?;
+    // open a fresh state-backed env in a unique temp dir
+    pub fn temp_env(
+        test_name: &str,
+    ) -> anyhow::Result<(temp_dir::TempDir, sneed::Env)> {
+        let temp_dir = temp_dir(test_name)?;
+        let mut opts = heed::EnvOpenOptions::new();
+        opts.map_size(64 * 1024 * 1024).max_dbs(State::NUM_DBS);
+        let env = unsafe { sneed::Env::open(&opts, temp_dir.path()) }?;
+        Ok((temp_dir, env))
+    }
+
+    pub fn fresh_state(
+        test_name: &str,
+    ) -> anyhow::Result<(temp_dir::TempDir, sneed::Env, State)> {
+        let (temp_dir, env) = temp_env(test_name)?;
         let state = State::new(&env)?;
-        Ok((env, state))
+        Ok((temp_dir, env, state))
     }
 
     /// Create a value output
@@ -645,7 +645,7 @@ mod test {
 
         use bitcoin::hashes::Hash as _;
 
-        let (env, state) = fresh_state("sidechain-wealth")?;
+        let (_temp_dir, env, state) = fresh_state("sidechain-wealth")?;
         {
             let mut rwtxn = env.write_txn()?;
 
