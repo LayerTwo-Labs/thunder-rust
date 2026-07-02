@@ -1118,7 +1118,7 @@ pub fn disconnect(
 
 #[cfg(test)]
 mod test {
-    use std::{collections::BTreeMap, sync::Arc};
+    use std::collections::BTreeMap;
 
     use bitcoin::{
         Network,
@@ -1150,7 +1150,7 @@ mod test {
     // the failure must spend them again
     #[test]
     fn disconnect_failed_bundle_spends_reinstated_utxo() -> anyhow::Result<()> {
-        let (env, state) =
+        let (_temp_dir, env, state) =
             fresh_state("disconnect_failed_bundle_spends_reinstated_utxo")?;
         let outpoint = OutPoint::Regular {
             txid: Txid::from([1; 32]),
@@ -1212,7 +1212,7 @@ mod test {
     #[test]
     fn disconnect_withdrawal_event_block_uses_correct_db() -> anyhow::Result<()>
     {
-        let (env, state) =
+        let (_temp_dir, env, state) =
             fresh_state("disconnect_withdrawal_event_block_uses_correct_db")?;
 
         let block_height = 5u32;
@@ -1301,7 +1301,7 @@ mod test {
         >,
         f: impl FnOnce(&State, &mut sneed::RwTxn<'_>) -> R,
     ) -> anyhow::Result<R> {
-        let (env, state) = fresh_state(test_name)?;
+        let (_temp_dir, env, state) = fresh_state(test_name)?;
         let res = {
             let mut rwtxn = env.write_txn()?;
             state.height.put(
@@ -1338,10 +1338,6 @@ mod test {
             }
             f(&state, &mut rwtxn)
         };
-        drop(state);
-        let env_path = Arc::clone(env.path());
-        drop(env);
-        drop(std::fs::remove_dir_all(env_path));
         Ok(res)
     }
 
@@ -1383,7 +1379,7 @@ mod test {
             Body, FilledTransaction, Header, proto::mainchain::Deposit,
         };
 
-        let (env, state) = fresh_state("deposit_reorg_round_trips")?;
+        let (_temp_dir, env, state) = fresh_state("deposit_reorg_round_trips")?;
         let empty_body = Body {
             coinbase: Vec::new(),
             transactions: Vec::new(),
