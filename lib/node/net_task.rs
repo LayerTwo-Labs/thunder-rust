@@ -293,6 +293,24 @@ fn reorg_to_tip(
             );
             return Ok(false);
         }
+    } else if let Some(best_main_tip) = archive.try_get_best_main_tip(&rwtxn)?
+        && !archive.is_main_descendant(
+            &rwtxn,
+            new_tip.main_block_hash,
+            best_main_tip,
+        )?
+    {
+        // The local sidechain state is empty, so there is no current tip to
+        // compare against. Still refuse to adopt a tip whose BMM commitment
+        // lives on a stale mainchain branch: its `main_block_hash` must be on
+        // the active (greatest-work) mainchain, ie. an ancestor of the best
+        // known mainchain tip.
+        tracing::debug!(
+            ?new_tip,
+            %best_main_tip,
+            "New tip is BMMed on a stale mainchain branch; not reorging"
+        );
+        return Ok(false);
     }
     let common_ancestor = if let Some(tip) = tip {
         archive.last_common_ancestor(

@@ -555,6 +555,24 @@ impl Archive {
             .ok_or(Error::NoBmmResult(block_hash))
     }
 
+    /// Get the known mainchain block with the greatest total work, ie. the tip
+    /// of the active mainchain, if any mainchain headers are known.
+    /// Since total work strictly increases along a chain, this is the tip of
+    /// the highest-work branch.
+    pub fn try_get_best_main_tip(
+        &self,
+        rotxn: &RoTxn,
+    ) -> Result<Option<bitcoin::BlockHash>, Error> {
+        let best_main_tip = self
+            .total_work
+            .iter(rotxn)
+            .map_err(DbError::from)?
+            .max_by_key(|(_, total_work)| Ok(*total_work))
+            .map_err(DbError::from)?
+            .map(|(block_hash, _)| block_hash);
+        Ok(best_main_tip)
+    }
+
     pub fn get_nth_ancestor(
         &self,
         rotxn: &RoTxn,
@@ -1635,5 +1653,106 @@ impl FallibleIterator for AncestorsRev<'_, '_> {
         } else {
             Ok(None)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bitcoin::hashes::Hash as _;
+
+    use super::Archive;
+    use crate::types::proto::mainchain::BlockHeaderInfo;
+
+    fn temp_env() -> sneed::Env {
+        let mut path = std::env::temp_dir();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        path.push(format!(
+            "thunder-archive-test-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        let mut opts = heed::EnvOpenOptions::new();
+        opts.map_size(64 * 1024 * 1024).max_dbs(Archive::NUM_DBS);
+        unsafe { sneed::Env::open(&opts, &path) }.unwrap()
+    }
+
+    fn main_hash(byte: u8) -> bitcoin::BlockHash {
+        bitcoin::BlockHash::from_byte_array([byte; 32])
+    }
+
+    fn work(units: u8) -> bitcoin::Work {
+        let mut bytes = [0u8; 32];
+        bytes[0] = units;
+        bitcoin::Work::from_le_bytes(bytes)
+    }
+
+    fn header_info(
+        block_hash: bitcoin::BlockHash,
+        prev_block_hash: bitcoin::BlockHash,
+        height: u32,
+        work_units: u8,
+    ) -> BlockHeaderInfo {
+        BlockHeaderInfo {
+            block_hash,
+            prev_block_hash,
+            height,
+            work: work(work_units),
+        }
+    }
+
+    // A side tip whose BMM commitment lives on a stale (lower-work) mainchain
+    // branch must not be treated as part of the active mainchain, even though
+    // the stale branch's own headers are archived. The active mainchain is the
+    // highest total work branch.
+    #[test]
+    fn best_main_tip_follows_highest_work_branch() {
+        let env = temp_env();
+        let archive = Archive::new(&env).unwrap();
+        let genesis = main_hash(1);
+        let active = main_hash(2);
+        let stale = main_hash(3);
+        {
+            let mut rwtxn = env.write_txn().unwrap();
+            // genesis -> {active, stale}, where active has more work than stale
+            archive
+                .put_main_header_info(
+                    &mut rwtxn,
+                    &header_info(
+                        genesis,
+                        bitcoin::BlockHash::all_zeros(),
+                        1,
+                        1,
+                    ),
+                )
+                .unwrap();
+            archive
+                .put_main_header_info(
+                    &mut rwtxn,
+                    &header_info(active, genesis, 2, 10),
+                )
+                .unwrap();
+            archive
+                .put_main_header_info(
+                    &mut rwtxn,
+                    &header_info(stale, genesis, 2, 3),
+                )
+                .unwrap();
+            rwtxn.commit().unwrap();
+        }
+        let rotxn = env.read_txn().unwrap();
+        // The active branch tip has the greatest total work.
+        assert_eq!(
+            archive.try_get_best_main_tip(&rotxn).unwrap(),
+            Some(active)
+        );
+        // The active tip and its ancestors are on the active mainchain.
+        assert!(archive.is_main_descendant(&rotxn, active, active).unwrap());
+        assert!(archive.is_main_descendant(&rotxn, genesis, active).unwrap());
+        // The stale branch tip is NOT on the active mainchain, so a peer tip
+        // BMMed on it would be rejected.
+        assert!(!archive.is_main_descendant(&rotxn, stale, active).unwrap());
     }
 }
