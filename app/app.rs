@@ -315,6 +315,21 @@ impl App {
     const EMPTY_BLOCK_BMM_BRIBE: bitcoin::Amount =
         bitcoin::Amount::from_sat(1000);
 
+    /// The Utreexo accumulator that seeds a newly mined block's roots
+    /// must be keyed on the parent the block is built on
+    /// (`prev_side_hash`), not the current best side tip (`tip_hash`).
+    /// After a mainchain reorg the miner recovers by building an empty
+    /// block on an older side ancestor, so the parent and tip diverge;
+    /// seeding from the orphaned tip would yield stale roots that the
+    /// miner's own node then rejects. When no reorg is in progress the
+    /// two coincide.
+    fn block_accumulator_parent(
+        prev_side_hash: Option<types::BlockHash>,
+        _tip_hash: Option<types::BlockHash>,
+    ) -> Option<types::BlockHash> {
+        prev_side_hash
+    }
+
     pub async fn mine(
         &self,
         fee: Option<bitcoin::Amount>,
@@ -449,7 +464,11 @@ impl App {
         } else {
             let coinbase = Vec::new();
             let (merkle_root, roots) = {
-                let mut accumulator = if let Some(tip_hash) = tip_hash {
+                // Seed the accumulator from `prev_side_hash` (the parent
+                // being built on), not `tip_hash`; on a reorg they diverge.
+                let parent =
+                    Self::block_accumulator_parent(prev_side_hash, tip_hash);
+                let mut accumulator = if let Some(parent) = parent {
                     let rotxn = self
                         .node
                         .env()
@@ -457,7 +476,7 @@ impl App {
                         .map_err(node::Error::from)?;
                     self.node
                         .archive()
-                        .get_accumulator(&rotxn, tip_hash)
+                        .get_accumulator(&rotxn, parent)
                         .map_err(node::Error::from)?
                 } else {
                     types::Accumulator::default()
@@ -561,5 +580,28 @@ impl App {
 impl Drop for App {
     fn drop(&mut self) {
         self.task.abort()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{App, types};
+
+    /// Regression: after a mainchain reorg the miner recovers by mining
+    /// an empty block on `prev_side_hash` (an older side ancestor),
+    /// which diverges from the best side tip `tip_hash`. The block's
+    /// Utreexo accumulator, and hence its `roots`, must be seeded from
+    /// that parent and not the orphaned tip, otherwise the roots
+    /// mismatch and the miner's own node rejects the recovery block.
+    #[test]
+    fn block_accumulator_keyed_on_parent_not_tip() {
+        let parent = types::BlockHash([1u8; 32]);
+        let tip = types::BlockHash([2u8; 32]);
+        assert_ne!(parent, tip);
+        assert_eq!(
+            App::block_accumulator_parent(Some(parent), Some(tip)),
+            Some(parent),
+        );
+        assert_eq!(App::block_accumulator_parent(None, None), None);
     }
 }
