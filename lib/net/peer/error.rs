@@ -81,6 +81,8 @@ pub(in crate::net::peer) mod connection {
         ReadMagic(#[source] quinn::ReadExactError),
         #[error("read to end error")]
         ReadToEnd(#[from] quinn::ReadToEndError),
+        #[error("timed out waiting for response")]
+        Timeout,
     }
 
     #[derive(Debug, Error)]

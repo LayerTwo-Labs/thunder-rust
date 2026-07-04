@@ -151,8 +151,32 @@ impl Connection {
 
     pub const HEARTBEAT_TIMEOUT_INTERVAL: Duration = Duration::from_secs(5);
 
+    /// Base allowance added to every response read timeout, covering round-trip
+    /// latency and the peer's processing time before it begins streaming the
+    /// response body.
+    const RESPONSE_READ_TIMEOUT_BASE: Duration = Duration::from_secs(5);
+
+    /// Minimum sustained throughput, in bytes per second, that a peer streaming
+    /// a response body is expected to achieve. Used to scale the response read
+    /// timeout to `read_response_limit`, so a large (up to 10MB) block response
+    /// is given proportionally more time. Deliberately conservative so a slow
+    /// or congested link is not aborted; a peer that stops making progress
+    /// entirely still hits the timeout.
+    const RESPONSE_READ_MIN_THROUGHPUT: u64 = 64 * 1024;
+
     pub fn addr(&self) -> SocketAddr {
         self.inner.remote_address()
+    }
+
+    /// Timeout for reading a full response from a peer, scaled to the maximum
+    /// permitted response size. Bounds the wait for an unresponsive peer while
+    /// leaving ample time for a large but steadily-progressing response.
+    fn response_read_timeout(read_response_limit: NonZeroUsize) -> Duration {
+        let body_allowance = Duration::from_secs(
+            read_response_limit.get() as u64
+                / Self::RESPONSE_READ_MIN_THROUGHPUT,
+        );
+        Self::RESPONSE_READ_TIMEOUT_BASE + body_allowance
     }
 
     pub fn new(connection: quinn::Connection, network: Network) -> Self {
@@ -271,10 +295,20 @@ impl Connection {
             }
         })?;
         send.finish()?;
-        Ok(
-            Self::receive_response(self.network, recv, read_response_limit)
-                .await,
+        // Bound the wait for a response so an unresponsive peer that holds the
+        // bi-stream open cannot pin the outbound request channel indefinitely.
+        // The timeout scales with the maximum response size, so a large (up to
+        // 10MB) block response on a slow or congested link is not aborted.
+        let response = match tokio::time::timeout(
+            Self::response_read_timeout(read_response_limit),
+            Self::receive_response(self.network, recv, read_response_limit),
         )
+        .await
+        {
+            Ok(response) => response,
+            Err(_elapsed) => Err(error::connection::Receive::Timeout.into()),
+        };
+        Ok(response)
     }
 
     // Send a pre-serialized response, where the response does not include
@@ -508,4 +542,43 @@ pub struct Peer {
     #[schema(value_type = schema::SocketAddr)]
     pub address: SocketAddr,
     pub status: PeerConnectionStatus,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroUsize;
+
+    use super::Connection;
+    use crate::{net::peer::message::GetBlockRequest, types::BlockHash};
+
+    /// A large (up to 10MB) block response must be granted substantially more
+    /// time than the heartbeat timeout, so that a slow but steadily-progressing
+    /// response over a congested link is not spuriously aborted (which would
+    /// stall IBD).
+    #[test]
+    fn large_response_read_timeout_leaves_headroom() {
+        let get_block = GetBlockRequest {
+            block_hash: BlockHash([0u8; 32]),
+            descendant_tip: None,
+            ancestor: None,
+            peer_state_id: None,
+        };
+        let timeout =
+            Connection::response_read_timeout(get_block.read_response_limit());
+        assert!(
+            timeout > Connection::HEARTBEAT_TIMEOUT_INTERVAL,
+            "10MB block response timeout {timeout:?} must exceed the heartbeat \
+             timeout {:?}",
+            Connection::HEARTBEAT_TIMEOUT_INTERVAL,
+        );
+    }
+
+    /// A tiny response is still bounded, but never below the base allowance
+    /// covering round-trip latency.
+    #[test]
+    fn small_response_read_timeout_at_least_base() {
+        let limit = NonZeroUsize::new(256).unwrap();
+        let timeout = Connection::response_read_timeout(limit);
+        assert_eq!(timeout, Connection::RESPONSE_READ_TIMEOUT_BASE);
+    }
 }
