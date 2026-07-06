@@ -38,7 +38,7 @@ use crate::{
         BmmResult, Body, Header, MerkleRoot, Tip,
         proto::{self, mainchain},
     },
-    util::join_set,
+    util::{ErrorChain, join_set},
 };
 
 #[allow(clippy::duplicated_attributes)]
@@ -1023,7 +1023,7 @@ impl NetTask {
                             tracing::warn!(
                                 ?new_tip,
                                 ?addr,
-                                err = format!("{err:#}"),
+                                err = format!("{:#}", ErrorChain::new(&err)),
                                 "rejecting invalid tip from peer"
                             );
                             if let Some(addr) = addr {
@@ -1261,9 +1261,11 @@ impl Drop for NetTaskHandle {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{Error, is_fatal_reorg_error};
-    use crate::state;
+mod test {
+    use crate::{
+        node::net_task::{Error, is_fatal_reorg_error},
+        state,
+    };
 
     // a peer's invalid block (value out > value in) must not be fatal
     #[test]
