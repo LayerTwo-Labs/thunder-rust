@@ -74,11 +74,13 @@ ignore = [
     #{ id = "RUSTSEC-0000-0000", reason = "you can specify a reason the advisory is ignored" },
     #"a-crate-that-is-yanked@0.1.1", # you can also ignore yanked crate versions if you wish
     #{ crate = "a-crate-that-is-yanked@0.1.1", reason = "you can specify why you are ignoring the yanked crate" },
-    { id = "RUSTSEC-2024-0370", reason = "Temporary ignore until the ouroboros branch gets updated"},
+    { id = "RUSTSEC-2024-0370", reason = "Temporary ignore until the ouroboros branch gets updated" },
     # paste (via aws-lc-rs) is unmaintained
     # https://github.com/aws/aws-lc-rs/issues/722
-    { id = "RUSTSEC-2024-0436", reason = "Temporary ignore until aws-lc-rs and rustls-webpki get updated"},
-    { id = "RUSTSEC-2025-0141", reason = "Temporary ignore until heed migrates to wincode"},
+    { id = "RUSTSEC-2024-0436", reason = "Temporary ignore until aws-lc-rs and rustls-webpki get updated" },
+    { id = "RUSTSEC-2025-0141", reason = "Temporary ignore until heed migrates to wincode" },
+    # ttf-parser (via egui) is unmaintained
+    { id = "RUSTSEC-2026-0192", reason = "Temporary ignore until ttf-parser is replaced by skrifa etc." },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
@@ -241,7 +243,6 @@ skip-tree = [
     { crate = "hex-conservative@0.1.2" },
     { crate = "itertools@0.11.0" },
     { crate = "litrs@0.2.3" },
-    { crate = "quick-xml@0.30.0" },
     { crate = "redox_syscall@0.4.1" },
     { crate = "regex-automata@0.1.10" },
     { crate = "regex-syntax@0.6.29" },
@@ -272,7 +273,6 @@ unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # List of URLs for allowed Git repositories
 allow-git = [
-    "https://github.com/Ash-L2L/bip300301.git",
     "https://github.com/Ash-L2L/l2l-openapi.git",
     "https://gitlab.com/A-Manning/leonhard-llc-ops",
     "https://github.com/erikjohnston/ouroboros.git?rev=ea82b33947f60c511dac6eb3815b6af3f6c3f555",

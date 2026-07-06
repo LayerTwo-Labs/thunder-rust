@@ -7,6 +7,19 @@ on:
     tags:
       - '*'
   workflow_dispatch:
+    inputs:
+      base_branch:
+        description: "Base branch to diff against (only used when cargo_deny_check=auto)"
+        type: string
+        default: master
+      cargo_deny_check:
+        description: "Run or skip the `cargo deny` step"
+        type: choice
+        options:
+          - auto
+          - force-run
+          - force-skip
+        default: auto
 
 name: Check, Lint, Build
 
@@ -43,7 +56,22 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --all-features
       
+      - name: Check changed files
+        id: changed-files
+        if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.cargo_deny_check == 'auto')
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            cargo_lock:
+              - 'Cargo.lock'
+            deny_toml:
+              - 'deny.toml'
+
       - name: Deny
+        if: >-
+          (github.event_name == 'pull_request' && (steps.changed-files.outputs.cargo_lock == 'true' || steps.changed-files.outputs.deny_toml == 'true')) ||
+          (github.event_name == 'workflow_dispatch' && inputs.cargo_deny_check == 'force-run') ||
+          (github.event_name == 'workflow_dispatch' && inputs.cargo_deny_check == 'auto' && (steps.changed-files.outputs.cargo_lock == 'true' || steps.changed-files.outputs.deny_toml == 'true'))
         uses: EmbarkStudios/cargo-deny-action@v2
 
   integration-test:
