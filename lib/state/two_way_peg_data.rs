@@ -1133,7 +1133,7 @@ mod test {
             rollback::RollBack,
             test::{fresh_state, value_output},
             two_way_peg_data::{
-                collect_withdrawal_bundle, disconnect,
+                collect_withdrawal_bundle, connect, disconnect,
                 disconnect_withdrawal_bundle_failed,
             },
         },
@@ -1142,7 +1142,7 @@ mod test {
             Output, OutputContent, Txid, WithdrawalBundle,
             WithdrawalBundleEvent, WithdrawalBundleEventStatus,
             WithdrawalBundleStatus,
-            proto::mainchain::{BlockEvent, BlockInfo, TwoWayPegData},
+            proto::mainchain::{BlockEvent, BlockInfo, Deposit, TwoWayPegData},
         },
     };
 
@@ -1454,6 +1454,56 @@ mod test {
             rwtxn.commit()?;
         }
 
+        Ok(())
+    }
+
+    // A single two-way-peg batch can span multiple mainchain blocks. Connecting
+    // deposits from two distinct blocks then disconnecting the batch must
+    // restore the prior state. Before the fix, disconnect recomputed the latest
+    // deposit block hash by reverse iteration (yielding the oldest block) and
+    // panicked on the consistency assert against the newest hash connect stored.
+    #[test]
+    fn disconnect_two_deposit_blocks_restores_state() -> anyhow::Result<()> {
+        fn deposit_block(salt: u8) -> (bitcoin::BlockHash, BlockInfo) {
+            let dep = Deposit {
+                tx_index: 0,
+                outpoint: bitcoin::OutPoint {
+                    txid: bitcoin::Txid::from_byte_array([salt; 32]),
+                    vout: 0,
+                },
+                output: Output {
+                    address: Address([salt; 20]),
+                    content: OutputContent::Value(bitcoin::Amount::from_sat(
+                        1000,
+                    )),
+                },
+            };
+            (
+                bitcoin::BlockHash::from_byte_array([salt; 32]),
+                BlockInfo {
+                    bmm_commitment: None,
+                    events: vec![BlockEvent::Deposit(dep)],
+                },
+            )
+        }
+        let (_temp_dir, env, state) =
+            fresh_state("disconnect_two_deposit_blocks_restores_state")?;
+        let mut rwtxn = env.write_txn()?;
+        state.height.put(&mut rwtxn, &(), &10)?;
+
+        let mut block_info = LinkedHashMap::new();
+        let (h1, b1) = deposit_block(1);
+        let (h2, b2) = deposit_block(2);
+        block_info.insert(h1, b1);
+        block_info.insert(h2, b2);
+        let tdp = TwoWayPegData { block_info };
+
+        let () = connect(&state, &mut rwtxn, &tdp)?;
+        anyhow::ensure!(state.utxos.len(&rwtxn)? == 2);
+        disconnect(&state, &mut rwtxn, &tdp)?;
+
+        anyhow::ensure!(state.utxos.len(&rwtxn)? == 0);
+        anyhow::ensure!(state.deposit_blocks.len(&rwtxn)? == 0);
         Ok(())
     }
 }
