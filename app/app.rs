@@ -449,19 +449,20 @@ impl App {
         } else {
             let coinbase = Vec::new();
             let (merkle_root, roots) = {
-                let mut accumulator = if let Some(tip_hash) = tip_hash {
-                    let rotxn = self
-                        .node
-                        .env()
-                        .read_txn()
-                        .map_err(node::Error::from)?;
-                    self.node
-                        .archive()
-                        .get_accumulator(&rotxn, tip_hash)
-                        .map_err(node::Error::from)?
-                } else {
-                    types::Accumulator::default()
-                };
+                let mut accumulator =
+                    if let Some(prev_side_hash) = prev_side_hash {
+                        let rotxn = self
+                            .node
+                            .env()
+                            .read_txn()
+                            .map_err(node::Error::from)?;
+                        self.node
+                            .archive()
+                            .get_accumulator(&rotxn, prev_side_hash)
+                            .map_err(node::Error::from)?
+                    } else {
+                        types::Accumulator::default()
+                    };
                 let merkle_root = thunder::types::Body::modify_memforest::<
                     FilledTransaction,
                 >(
