@@ -151,32 +151,32 @@ impl Connection {
 
     pub const HEARTBEAT_TIMEOUT_INTERVAL: Duration = Duration::from_secs(5);
 
-    /// Base allowance added to every response read timeout, covering round-trip
-    /// latency and the peer's processing time before it begins streaming the
-    /// response body.
-    const RESPONSE_READ_TIMEOUT_BASE: Duration = Duration::from_secs(5);
-
-    /// Minimum sustained throughput, in bytes per second, that a peer streaming
-    /// a response body is expected to achieve. Used to scale the response read
-    /// timeout to `read_response_limit`, so a large (up to 10MB) block response
-    /// is given proportionally more time. Deliberately conservative so a slow
-    /// or congested link is not aborted; a peer that stops making progress
-    /// entirely still hits the timeout.
-    const RESPONSE_READ_MIN_THROUGHPUT: u64 = 64 * 1024;
+    pub const MIN_READ_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 
     pub fn addr(&self) -> SocketAddr {
         self.inner.remote_address()
     }
 
     /// Timeout for reading a full response from a peer, scaled to the maximum
-    /// permitted response size. Bounds the wait for an unresponsive peer while
-    /// leaving ample time for a large but steadily-progressing response.
-    fn response_read_timeout(read_response_limit: NonZeroUsize) -> Duration {
+    /// permitted response size.
+    /// Bounds the wait for an unresponsive peer while leaving ample time for a
+    /// large but steadily-progressing response.
+    const fn response_read_timeout(
+        read_response_limit: NonZeroUsize,
+    ) -> Duration {
+        // Minimum sustained throughput, in bytes per second, that a peer
+        // streaming a response body is expected to achieve.
+        // Used to scale the response read timeout to `read_response_limit`, so
+        // a large (up to 10MB) block response is given proportionally more
+        // time. Deliberately conservative so a slow or congested link is not
+        // aborted; a peer that stops making progress entirely still hits the
+        // timeout.
+        const MIN_READ_RESPONSE_THROUGHPUT: u64 = 64 * 1024;
+
         let body_allowance = Duration::from_secs(
-            read_response_limit.get() as u64
-                / Self::RESPONSE_READ_MIN_THROUGHPUT,
+            read_response_limit.get() as u64 / MIN_READ_RESPONSE_THROUGHPUT,
         );
-        Self::RESPONSE_READ_TIMEOUT_BASE + body_allowance
+        Self::MIN_READ_RESPONSE_TIMEOUT.saturating_add(body_allowance)
     }
 
     pub fn new(connection: quinn::Connection, network: Network) -> Self {
@@ -545,11 +545,13 @@ pub struct Peer {
 }
 
 #[cfg(test)]
-mod tests {
+mod test {
     use std::num::NonZeroUsize;
 
-    use super::Connection;
-    use crate::{net::peer::message::GetBlockRequest, types::BlockHash};
+    use crate::{
+        net::peer::{Connection, message::GetBlockRequest},
+        types::BlockHash,
+    };
 
     /// A large (up to 10MB) block response must be granted substantially more
     /// time than the heartbeat timeout, so that a slow but steadily-progressing
@@ -579,6 +581,6 @@ mod tests {
     fn small_response_read_timeout_at_least_base() {
         let limit = NonZeroUsize::new(256).unwrap();
         let timeout = Connection::response_read_timeout(limit);
-        assert_eq!(timeout, Connection::RESPONSE_READ_TIMEOUT_BASE);
+        assert_eq!(timeout, Connection::MIN_READ_RESPONSE_TIMEOUT);
     }
 }
