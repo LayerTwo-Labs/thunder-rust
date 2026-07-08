@@ -41,6 +41,35 @@ pub enum AcceptConnection {
     ServerEndpointClosed,
 }
 
+pub(in crate::net) mod configure_client {
+    use thiserror::Error;
+
+    #[derive(Debug, Error)]
+    pub(in crate::net) enum Inner {
+        #[error(transparent)]
+        NoInitialCipherSuite(
+            #[from] quinn::crypto::rustls::NoInitialCipherSuite,
+        ),
+        #[error("rustls error")]
+        Rustls(#[source] rustls::Error),
+    }
+
+    #[derive(Debug, Error)]
+    #[error("failed to configure p2p client")]
+    #[repr(transparent)]
+    pub struct Error(#[source] Inner);
+
+    impl<E> From<E> for Error
+    where
+        Inner: From<E>,
+    {
+        fn from(err: E) -> Self {
+            Self(err.into())
+        }
+    }
+}
+pub use configure_client::Error as ConfigureClient;
+
 #[allow(clippy::duplicated_attributes)]
 #[derive(Debug, Error, Transitive)]
 #[transitive(from(db::error::Put, db::Error))]
@@ -58,6 +87,8 @@ pub enum Error {
     AlreadyConnected(#[from] AlreadyConnected),
     #[error("bincode error")]
     Bincode(#[from] bincode::Error),
+    #[error(transparent)]
+    ConfigureClient(#[from] ConfigureClient),
     #[error("connect error")]
     Connect(#[from] quinn::ConnectError),
     #[error(transparent)]
@@ -74,8 +105,6 @@ pub enum Error {
     /// `0.0.0.0` is one example of an "unspecified" IP.
     #[error("unspecified peer ip address (cannot connect to '{0}')")]
     UnspecfiedPeerIP(IpAddr),
-    #[error(transparent)]
-    NoInitialCipherSuite(#[from] quinn::crypto::rustls::NoInitialCipherSuite),
     #[error("peer connection")]
     PeerConnection(#[source] Box<PeerConnectionError>),
     #[error("quinn rustls error")]
