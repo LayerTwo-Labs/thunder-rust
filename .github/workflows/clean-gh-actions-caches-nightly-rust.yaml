@@ -1,0 +1,31 @@
+name: Evict stale nightly Rust caches
+on:
+  schedule:
+    # every 12 hours
+    - cron: "0 */12 * * *"
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    permissions:
+      actions: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete nightly Rust caches older than 48h
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          CUTOFF=$(date -u -d '48 hours ago' +%s)
+
+          CACHE_IDS=$(gh cache list --repo "$REPO" --limit 500 \
+            --json id,key,createdAt |
+            jq -r --argjson cutoff "$CUTOFF" \
+              '.[] | select(.key | startswith("v0-rust-nightly"))
+                   | select((.createdAt | sub("\\.[0-9]+"; "") | fromdateiso8601) < $cutoff)
+                   | .id')
+
+          for CACHE_ID in $CACHE_IDS; do
+            echo "Deleting cache $CACHE_ID"
+            gh cache delete "$CACHE_ID" --repo "$REPO"
+          done
