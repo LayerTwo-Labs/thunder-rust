@@ -1,0 +1,31 @@
+name: Evict GitHub actions caches for closed/merged PR branches
+on:
+  pull_request:
+    types:
+      - closed
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    permissions:
+      actions: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cleanup
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: refs/pull/${{ github.event.pull_request.number }}/merge
+        run: |
+          echo "Fetching list of cache keys"
+          BRANCH_CACHE_KEYS=$(gh cache list --ref $BRANCH --json id --jq '.[].id')
+
+          ## Setting this to not fail the workflow while deleting cache keys.
+          set +e
+          echo "Deleting caches..."
+          for CACHE_KEY in $BRANCH_CACHE_KEYS
+          do
+              echo "Deleting cache ${CACHE_KEY}"
+              gh cache delete $CACHE_KEY
+          done
+          echo "Done"
