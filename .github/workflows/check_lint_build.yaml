@@ -25,6 +25,7 @@ name: Check, Lint, Build
 
 env:
   CARGO_TERM_COLOR: always
+  ELECTRS_VERSION: v3.2.0
 
 jobs:
   check-lint:
@@ -41,11 +42,23 @@ jobs:
           toolchain: nightly
           components: rustfmt, clippy
 
-      - name: Rust Cache
+      - name: Restore Rust cache
+        id: restore-rust-cache
         uses: Swatinem/rust-cache@v2.9.1
         with:
-          cache-bin: false
-          shared-key: x86_64-unknown-linux-gnu
+          cache-all-crates: "true"
+          prefix-key: "v0-rust-nightly"
+          save-if: "false"
+          shared-key: debug-x86_64-unknown-linux-gnu
+
+      - name: Save Rust cache
+        if: steps.restore-rust-cache.outputs.cache-hit != 'true'
+        uses: Swatinem/rust-cache@v2.9.1
+        with:
+          cache-all-crates: "true"
+          lookup-only: "true"
+          prefix-key: "v0-rust-nightly"
+          shared-key: debug-x86_64-unknown-linux-gnu
 
       - name: Rustfmt
         run: cargo fmt --all -- --check
@@ -74,10 +87,38 @@ jobs:
           (github.event_name == 'workflow_dispatch' && inputs.cargo_deny_check == 'auto' && (steps.changed-files.outputs.cargo_lock == 'true' || steps.changed-files.outputs.deny_toml == 'true'))
         uses: EmbarkStudios/cargo-deny-action@v2
 
+  cache-electrs:
+    name: Build electrs if not cached
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check cache
+        id: check-cache
+        uses: actions/cache/restore@v6
+        with:
+          lookup-only: true
+          path: ${{ runner.temp }}/electrs/target/release/electrs
+          key: electrs-${{ env.ELECTRS_VERSION }}
+
+      - name: Build electrs
+        if: steps.check-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --branch ${{ env.ELECTRS_VERSION }} --depth 1 https://github.com/mempool/electrs.git ${{ runner.temp }}/electrs
+          pushd ${{ runner.temp }}/electrs
+          cargo build --locked --release
+          popd
+
+      - name: Save cache
+        if: steps.check-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/electrs/target/release/electrs
+          key: electrs-${{ env.ELECTRS_VERSION }}
+
+
   integration-test:
     name: Integration test
     runs-on: ubuntu-latest
-    needs: [check-lint]
+    needs: [cache-electrs, check-lint]
     steps:
       - name: Download latest bitcoin-patched
         run: |
@@ -111,43 +152,31 @@ jobs:
           chmod +x bip300301-enforcer
           popd
 
-      - name: Checkout electrs
-        run: |
-          pushd ..
-          git clone https://github.com/mempool/electrs.git
-          popd
-
-      - name: Install latest nightly toolchain
-        uses: dtolnay/rust-toolchain@master
+      - name: Restore electrs from cache
+        uses: actions/cache/restore@v6
         with:
-          toolchain: nightly
-          target: x86_64-pc-windows-gnu
-
-      - name: Rust Cache (electrs)
-        uses: Swatinem/rust-cache@v2.9.1
-        with:
-          cache-bin: false
-          prefix-key: "v0-rust-electrs"
-          workspaces: ../electrs -> target
-
-      - name: Install electrs
-        run: |
-          pushd ../electrs
-          cargo build --locked --release
-          popd
+          fail-on-cache-miss: true
+          path: ${{ runner.temp }}/electrs/target/release/electrs
+          key: electrs-${{ env.ELECTRS_VERSION }}
 
       - uses: actions/checkout@v6
         with:
           submodules: "recursive"
 
+      - name: Install latest nightly toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2.9.1
         with:
-          cache-bin: false
-          shared-key: x86_64-unknown-linux-gnu
+          cache-all-crates: "true"
+          prefix-key: "v0-rust-nightly"
+          shared-key: debug-x86_64-unknown-linux-gnu
 
       - name: Build (debug)
-        run: cargo build
+        run: cargo build --bin thunder_app --example integration_tests
 
       - name: Run integration tests
         id: runIntegrationTests
@@ -156,9 +185,9 @@ jobs:
           export BITCOIND='../bitcoin-patched-bins/bitcoind'
           export BITCOIND_UNPATCHED='../bitcoin-unpatched-bins/bitcoind'
           export BITCOIN_CLI='../bitcoin-patched-bins/bitcoin-cli'
-          export ELECTRS='../electrs/target/release/electrs'
+          export ELECTRS='${{ runner.temp }}/electrs/target/release/electrs'
           export THUNDER_APP='target/debug/thunder_app'
-          cargo run --example integration_tests
+          target/debug/examples/integration_tests
 
   test-build-release:
     strategy:
@@ -187,6 +216,10 @@ jobs:
       contents: write
     timeout-minutes: 20
     steps:
+      - name: Install windows-specific deps
+        run: sudo apt install mingw-w64
+        if: ${{ matrix.name == 'x86_64-pc-windows-gnu' }}
+
       - uses: actions/checkout@v6
         with:
           submodules: recursive
@@ -200,12 +233,9 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2.9.1
         with:
-          cache-bin: false
-          key: ${{ matrix.name }}
-
-      - name: Install windows-specific deps
-        run: sudo apt install mingw-w64
-        if: ${{ matrix.name == 'x86_64-pc-windows-gnu' }}
+          cache-all-crates: "true"
+          prefix-key: "v0-rust-nightly"
+          shared-key: ${{ matrix.name }}
 
       - name: Test
         run: cargo test --tests
