@@ -100,9 +100,11 @@ impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
     }
 }
 
-fn configure_client()
--> Result<ClientConfig, quinn::crypto::rustls::NoInitialCipherSuite> {
-    let crypto = rustls::ClientConfig::builder()
+fn configure_client() -> Result<ClientConfig, error::ConfigureClient> {
+    let crypto_provider = Arc::new(rustls::crypto::ring::default_provider());
+    let crypto = rustls::ClientConfig::builder_with_provider(crypto_provider)
+        .with_safe_default_protocol_versions()
+        .map_err(error::configure_client::Inner::Rustls)?
         .dangerous()
         .with_custom_certificate_verifier(SkipServerVerification::new())
         .with_no_client_auth();
