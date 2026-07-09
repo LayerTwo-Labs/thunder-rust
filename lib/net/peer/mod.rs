@@ -365,7 +365,7 @@ impl Connection {
 }
 
 pub struct ConnectionContext {
-    pub env: sneed::Env,
+    pub env: sneed::Env<heed::WithoutTls>,
     pub archive: Archive,
     pub network: Network,
     pub state: State,

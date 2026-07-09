@@ -71,7 +71,7 @@ enum Error {
 }
 
 struct MainchainTask<Transport = tonic::transport::Channel> {
-    env: sneed::Env,
+    env: sneed::Env<heed::WithoutTls>,
     archive: Archive,
     mainchain: proto::mainchain::ValidatorClient<Transport>,
     // receive a request, and optional oneshot sender to send the result to
@@ -88,7 +88,7 @@ where
     /// including the specified header.
     /// Returns `false` if the specified block was not available.
     async fn request_ancestor_infos(
-        env: &sneed::Env,
+        env: &sneed::Env<heed::WithoutTls>,
         archive: &Archive,
         cusf_mainchain: &mut proto::mainchain::ValidatorClient<Transport>,
         block_hash: bitcoin::BlockHash,
@@ -213,7 +213,7 @@ pub(super) struct MainchainTaskHandle {
 
 impl MainchainTaskHandle {
     pub fn new<Transport>(
-        env: sneed::Env,
+        env: sneed::Env<heed::WithoutTls>,
         archive: Archive,
         mainchain: mainchain::ValidatorClient<Transport>,
     ) -> (Self, mpsc::UnboundedReceiver<Response>)

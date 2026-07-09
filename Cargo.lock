@@ -762,7 +762,7 @@ dependencies = [
  "dotenvy",
  "either",
  "futures",
- "hex 0.4.3",
+ "hex",
  "http",
  "indicatif",
  "jsonrpsee 0.26.0",
@@ -809,9 +809,9 @@ dependencies = [
  "fallible-iterator",
  "futures",
  "hashlink 0.12.0",
- "heed 0.22.0",
+ "heed",
  "heed-types",
- "hex 0.4.3",
+ "hex",
  "http-body",
  "jiff",
  "jsonrpsee 0.26.0",
@@ -828,7 +828,7 @@ dependencies = [
  "rusty-leveldb",
  "serde",
  "serde_json",
- "sneed 0.0.22",
+ "sneed",
  "thiserror 2.0.18",
  "tokio",
  "tokio-rusqlite",
@@ -922,7 +922,7 @@ dependencies = [
  "bitcoin",
  "educe",
  "hashlink 0.11.0",
- "hex 0.4.3",
+ "hex",
  "http",
  "jsonrpsee 0.26.0",
  "monostate",
@@ -3078,15 +3078,6 @@ dependencies = [
 
 [[package]]
 name = "heck"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d621efb26863f0e9924c6ac577e8275e5e6b77455db64ffa6c65c904e9e132c"
-dependencies = [
- "unicode-segmentation",
-]
-
-[[package]]
-name = "heck"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95505c38b4572b2d910cecb0281560f54b440a19336cbbcb27bf6ce6adc6f5a8"
@@ -3096,25 +3087,6 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
-
-[[package]]
-name = "heed"
-version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd54745cfacb7b97dee45e8fdb91814b62bccddb481debb7de0f9ee6b7bf5b43"
-dependencies = [
- "bitflags 2.10.0",
- "byteorder",
- "heed-traits",
- "heed-types",
- "libc",
- "lmdb-master-sys",
- "once_cell",
- "page_size",
- "serde",
- "synchronoise",
- "url",
-]
 
 [[package]]
 name = "heed"
@@ -3159,12 +3131,6 @@ name = "hermit-abi"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
-
-[[package]]
-name = "hex"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "805026a5d0141ffc30abb3be3173848ad46a1b1664fe632428479619a3644d77"
 
 [[package]]
 name = "hex"
@@ -6604,7 +6570,7 @@ checksum = "4fa237f2807440d238e0364a218270b98f767a00d3dada77b1c53ae88940e2e7"
 dependencies = [
  "base64 0.22.1",
  "chrono",
- "hex 0.4.3",
+ "hex",
  "indexmap 1.9.3",
  "indexmap 2.14.0",
  "schemars 0.9.0",
@@ -6816,23 +6782,6 @@ checksum = "1b6b67fb9a61334225b5b790716f609cd58395f895b3fe8b328786812a40bc3b"
 
 [[package]]
 name = "sneed"
-version = "0.0.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e88f2debe4df0b76d3ab56e33e642a09177559148527d4fff3590976de13e08"
-dependencies = [
- "educe",
- "enum-ordinalize",
- "fallible-iterator",
- "heed 0.21.0",
- "hex 0.3.2",
- "strum 0.20.0",
- "syn 1.0.109",
- "thiserror 1.0.69",
- "tokio",
-]
-
-[[package]]
-name = "sneed"
 version = "0.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee7a0c2e3943d649a50f22cd21198aac5355b3eee046277f0f000c465efd6d78"
@@ -6840,8 +6789,8 @@ dependencies = [
  "educe",
  "enum-ordinalize",
  "fallible-iterator",
- "heed 0.22.0",
- "hex 0.4.3",
+ "heed",
+ "hex",
  "strum 0.27.2",
  "syn 1.0.109",
  "thiserror 2.0.18",
@@ -6928,15 +6877,6 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "strum"
-version = "0.20.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7318c509b5ba57f18533982607f24070a55d353e90d4cae30c467cdb2ad5ac5c"
-dependencies = [
- "strum_macros 0.20.1",
-]
-
-[[package]]
-name = "strum"
 version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
@@ -6951,18 +6891,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9628de9b8791db39ceda2b119bbe13134770b56c138ec1d3af810d045c04f9bd"
 dependencies = [
  "strum_macros 0.28.0",
-]
-
-[[package]]
-name = "strum_macros"
-version = "0.20.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee8bc6b87a5112aeeab1f4a9f7ab634fe6cbefc4850006df31267f4cfb9e3149"
-dependencies = [
- "heck 0.3.3",
- "proc-macro2",
- "quote",
- "syn 1.0.109",
 ]
 
 [[package]]
@@ -7143,8 +7071,8 @@ dependencies = [
  "futures",
  "governor",
  "hashlink 0.10.0",
- "heed 0.21.0",
- "hex 0.4.3",
+ "heed",
+ "hex",
  "jsonrpsee 0.25.1",
  "merkle-cbt",
  "nonempty 0.11.0",
@@ -7163,7 +7091,7 @@ dependencies = [
  "serde_json",
  "serde_with",
  "smallvec",
- "sneed 0.0.11",
+ "sneed",
  "strum 0.27.2",
  "temp-dir",
  "thiserror 2.0.18",
@@ -9160,7 +9088,7 @@ dependencies = [
  "event-listener",
  "futures-core",
  "futures-lite",
- "hex 0.4.3",
+ "hex",
  "libc",
  "ordered-stream",
  "rustix 1.1.3",
