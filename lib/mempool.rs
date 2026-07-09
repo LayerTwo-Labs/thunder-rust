@@ -38,7 +38,7 @@ pub struct MemPool {
 impl MemPool {
     pub const NUM_DBS: u32 = 3;
 
-    pub fn new(env: &sneed::Env) -> Result<Self, Error> {
+    pub fn new<Tls>(env: &sneed::Env<Tls>) -> Result<Self, Error> {
         let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
         let transactions =
             DatabaseUnique::create(env, &mut rwtxn, "transactions")

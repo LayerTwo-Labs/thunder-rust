@@ -263,8 +263,8 @@ fn is_fatal_reorg_error(err: &Error) -> bool {
     !matches!(err, Error::State(_))
 }
 
-fn reorg_to_tip(
-    env: &sneed::Env,
+fn reorg_to_tip<ThreadLocalStorage>(
+    env: &sneed::Env<ThreadLocalStorage>,
     archive: &Archive,
     mempool: &MemPool,
     state: &State,
@@ -447,7 +447,7 @@ fn reorg_to_tip(
 
 #[derive(Clone)]
 struct NetTaskContext {
-    env: sneed::Env,
+    env: sneed::Env<heed::WithoutTls>,
     archive: Archive,
     mainchain_task: MainchainTaskHandle,
     mempool: MemPool,
@@ -1213,7 +1213,7 @@ impl NetTaskHandle {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         runtime: &tokio::runtime::Runtime,
-        env: sneed::Env,
+        env: sneed::Env<heed::WithoutTls>,
         archive: Archive,
         mainchain_task: MainchainTaskHandle,
         mainchain_task_response_rx: UnboundedReceiver<mainchain_task::Response>,

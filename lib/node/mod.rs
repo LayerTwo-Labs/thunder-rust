@@ -104,7 +104,7 @@ pub struct Node<MainchainTransport = Channel> {
     cusf_mainchain: Arc<Mutex<mainchain::ValidatorClient<MainchainTransport>>>,
     cusf_mainchain_wallet:
         Option<Arc<Mutex<mainchain::WalletClient<MainchainTransport>>>>,
-    env: sneed::Env,
+    env: sneed::Env<heed::WithoutTls>,
     mainchain_task: MainchainTaskHandle,
     mempool: MemPool,
     net: Net,
@@ -138,7 +138,8 @@ where
         std::fs::create_dir_all(&env_path)?;
         let env = {
             use heed::EnvFlags;
-            let mut env_open_opts = heed::EnvOpenOptions::new();
+            let mut env_open_opts =
+                heed::EnvOpenOptions::new().read_txn_without_tls();
             env_open_opts
                 .map_size(128 * 1024 * 1024 * 1024) // 128 GB
                 .max_dbs(
@@ -166,8 +167,7 @@ where
                 | EnvFlags::MAP_ASYNC
                 | EnvFlags::NO_SYNC
                 | EnvFlags::NO_META_SYNC
-                | EnvFlags::NO_READ_AHEAD
-                | EnvFlags::NO_TLS;
+                | EnvFlags::NO_READ_AHEAD;
             unsafe { env_open_opts.flags(fast_flags) };
             unsafe { Env::open(&env_open_opts, &env_path) }
                 .map_err(EnvError::from)?
@@ -210,7 +210,7 @@ where
         })
     }
 
-    pub fn env(&self) -> &Env {
+    pub fn env(&self) -> &Env<heed::WithoutTls> {
         &self.env
     }
 
