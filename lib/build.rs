@@ -29,12 +29,14 @@ where
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    const COMMON_PROTO: &str = "../proto/proto/cusf/common/v1/common.proto";
+    const COMMON_PROTO: &str =
+        "../bip300301_enforcer/proto/cusf/common/v1/common.proto";
     const VALIDATOR_PROTO: &str =
-        "../proto/proto/cusf/mainchain/v1/validator.proto";
-    const WALLET_PROTO: &str = "../proto/proto/cusf/mainchain/v1/wallet.proto";
+        "../bip300301_enforcer/proto/cusf/mainchain/v1/validator.proto";
+    const WALLET_PROTO: &str =
+        "../bip300301_enforcer/proto/cusf/mainchain/v1/wallet.proto";
     const ALL_PROTOS: &[&str] = &[COMMON_PROTO, VALIDATOR_PROTO, WALLET_PROTO];
-    const INCLUDES: &[&str] = &["../proto/proto"];
+    const INCLUDES: &[&str] = &["../bip300301_enforcer/proto"];
     let file_descriptors = protox::compile(ALL_PROTOS, INCLUDES)?;
     let file_descriptor_path = PathBuf::from(
         env::var("OUT_DIR").expect("OUT_DIR environment variable not set"),
