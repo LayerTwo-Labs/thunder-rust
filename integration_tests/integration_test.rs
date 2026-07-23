@@ -55,7 +55,7 @@ pub async fn deposit_withdraw_roundtrip_task(
     tracing::info!("Deposited to sidechain successfully");
     // Wait for mempool to catch up before attempting second deposit
     tracing::debug!("Waiting for wallet sync...");
-    let () = wait_for_wallet_sync().await?;
+    let () = wait_for_wallet_sync(post_setup).await?;
     tracing::info!("Attempting second deposit");
     let () = deposit(
         post_setup,
