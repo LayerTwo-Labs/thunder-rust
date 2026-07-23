@@ -151,13 +151,13 @@ impl TransferReceive {
         egui::Panel::left("transfer")
             .exact_size(ui.available_width() / 2.)
             .resizable(false)
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.heading("Transfer");
                     self.transfer.show(app, ui);
                 })
             });
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.heading("Receive");
                 self.receive.show(app, ui);

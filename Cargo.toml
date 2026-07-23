@@ -27,7 +27,7 @@ dotenvy = "0.15.7"
 ed25519-dalek = "2.1.1"
 ed25519-dalek-bip32 = "0.3.0"
 educe = { version = "0.6.0", default-features = false }
-eframe = "0.34.0"
+eframe = { version = "0.35.0", default-features = false }
 error-fatality = "0.1.2"
 fallible-iterator = "0.3.0"
 futures = { version = "0.3.30", default-features = false }
