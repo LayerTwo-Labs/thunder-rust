@@ -515,7 +515,7 @@ impl Net {
     pub fn push_tx(
         &self,
         exclude: HashSet<SocketAddr>,
-        tx: AuthorizedTransaction,
+        tx: &AuthorizedTransaction,
     ) {
         self.active_peers
             .read()

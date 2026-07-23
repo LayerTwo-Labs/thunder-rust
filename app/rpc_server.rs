@@ -62,6 +62,50 @@ impl RpcServer for RpcServerImpl {
         .unwrap()
     }
 
+    async fn create_transfer(
+        &self,
+        dest: Address,
+        value_sats: u64,
+        fee_sats: u64,
+    ) -> RpcResult<thunder::types::Transaction> {
+        let accumulator =
+            self.app.node.get_tip_accumulator().map_err(custom_err)?;
+        let tx = self
+            .app
+            .wallet
+            .create_transaction(
+                &accumulator,
+                dest,
+                Amount::from_sat(value_sats),
+                Amount::from_sat(fee_sats),
+            )
+            .map_err(custom_err)?;
+        Ok(tx)
+    }
+
+    async fn create_withdrawal(
+        &self,
+        mainchain_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
+        amount_sats: u64,
+        fee_sats: u64,
+        mainchain_fee_sats: u64,
+    ) -> RpcResult<thunder::types::Transaction> {
+        let accumulator =
+            self.app.node.get_tip_accumulator().map_err(custom_err)?;
+        let tx = self
+            .app
+            .wallet
+            .create_withdrawal(
+                &accumulator,
+                mainchain_address,
+                Amount::from_sat(amount_sats),
+                Amount::from_sat(mainchain_fee_sats),
+                Amount::from_sat(fee_sats),
+            )
+            .map_err(custom_err)?;
+        Ok(tx)
+    }
+
     async fn connect_peer(&self, addr: SocketAddr) -> RpcResult<()> {
         self.app.node.connect_peer(addr).map_err(custom_err)
     }
@@ -250,56 +294,35 @@ impl RpcServer for RpcServerImpl {
         Ok(sidechain_wealth.to_sat())
     }
 
+    async fn sign_transaction(
+        &self,
+        transaction: thunder::types::Transaction,
+        broadcast: Option<bool>,
+    ) -> RpcResult<thunder::types::AuthorizedTransaction> {
+        let authorized =
+            self.app.wallet.authorize(transaction).map_err(custom_err)?;
+        if let Some(true) = broadcast {
+            let () = self
+                .app
+                .submit_transaction(&authorized)
+                .map_err(custom_err)?;
+        }
+        Ok(authorized)
+    }
+
+    async fn submit_transaction(
+        &self,
+        transaction: thunder::types::AuthorizedTransaction,
+    ) -> RpcResult<Txid> {
+        let () = self
+            .app
+            .submit_transaction(&transaction)
+            .map_err(custom_err)?;
+        Ok(transaction.transaction.txid())
+    }
+
     async fn stop(&self) {
         std::process::exit(0);
-    }
-
-    async fn transfer(
-        &self,
-        dest: Address,
-        value_sats: u64,
-        fee_sats: u64,
-    ) -> RpcResult<Txid> {
-        let accumulator =
-            self.app.node.get_tip_accumulator().map_err(custom_err)?;
-        let tx = self
-            .app
-            .wallet
-            .create_transaction(
-                &accumulator,
-                dest,
-                Amount::from_sat(value_sats),
-                Amount::from_sat(fee_sats),
-            )
-            .map_err(custom_err)?;
-        let txid = tx.txid();
-        self.app.sign_and_send(tx).map_err(custom_err)?;
-        Ok(txid)
-    }
-
-    async fn withdraw(
-        &self,
-        mainchain_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
-        amount_sats: u64,
-        fee_sats: u64,
-        mainchain_fee_sats: u64,
-    ) -> RpcResult<Txid> {
-        let accumulator =
-            self.app.node.get_tip_accumulator().map_err(custom_err)?;
-        let tx = self
-            .app
-            .wallet
-            .create_withdrawal(
-                &accumulator,
-                mainchain_address,
-                Amount::from_sat(amount_sats),
-                Amount::from_sat(mainchain_fee_sats),
-                Amount::from_sat(fee_sats),
-            )
-            .map_err(custom_err)?;
-        let txid = tx.txid();
-        self.app.sign_and_send(tx).map_err(custom_err)?;
-        Ok(txid)
     }
 }
 

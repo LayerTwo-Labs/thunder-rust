@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use thunder::{
     net::Peer,
     types::{
-        Address, BlockHash, MerkleRoot, OutPoint, Output, OutputContent,
-        PointedOutput, Transaction, Txid, WithdrawalBundle,
+        Address, Authorized, BlockHash, MerkleRoot, OutPoint, Output,
+        OutputContent, PointedOutput, Transaction, Txid, WithdrawalBundle,
         schema as thunder_schema,
     },
     wallet::Balance,
@@ -57,6 +57,32 @@ pub trait Rpc {
         value_sats: u64,
         fee_sats: u64,
     ) -> RpcResult<bitcoin::Txid>;
+
+    /// Create a tx that transfers funds to the specified address,
+    /// without signing it
+    #[method(name = "create_transfer")]
+    async fn create_transfer(
+        &self,
+        dest: Address,
+        value_sats: u64,
+        fee_sats: u64,
+    ) -> RpcResult<Transaction>;
+
+    /// Creates a tx that initiates a withdrawal to the specified mainchain
+    /// address, without signing it
+    #[method(name = "create_withdrawal")]
+    async fn create_withdrawal(
+        &self,
+        #[open_api_method_arg(schema(
+            PartialSchema = "thunder::types::schema::BitcoinAddr"
+        ))]
+        mainchain_address: bitcoin::Address<
+            bitcoin::address::NetworkUnchecked,
+        >,
+        amount_sats: u64,
+        fee_sats: u64,
+        mainchain_fee_sats: u64,
+    ) -> RpcResult<Transaction>;
 
     /// Format a deposit address
     #[method(name = "format_deposit_address")]
@@ -183,31 +209,22 @@ pub trait Rpc {
     #[method(name = "sidechain_wealth")]
     async fn sidechain_wealth_sats(&self) -> RpcResult<u64>;
 
+    /// Sign a transaction, and optionally broadcast it.
+    #[method(name = "sign_transaction")]
+    async fn sign_transaction(
+        &self,
+        transaction: Transaction,
+        broadcast: Option<bool>,
+    ) -> RpcResult<Authorized<Transaction>>;
+
+    /// Verify and broadcast a transaction
+    #[method(name = "submit_transaction")]
+    async fn submit_transaction(
+        &self,
+        transaction: Authorized<Transaction>,
+    ) -> RpcResult<Txid>;
+
     /// Stop the node
     #[method(name = "stop")]
     async fn stop(&self);
-
-    /// Transfer funds to the specified address
-    #[method(name = "transfer")]
-    async fn transfer(
-        &self,
-        dest: Address,
-        value_sats: u64,
-        fee_sats: u64,
-    ) -> RpcResult<Txid>;
-
-    /// Initiate a withdrawal to the specified mainchain address
-    #[method(name = "withdraw")]
-    async fn withdraw(
-        &self,
-        #[open_api_method_arg(schema(
-            PartialSchema = "thunder::types::schema::BitcoinAddr"
-        ))]
-        mainchain_address: bitcoin::Address<
-            bitcoin::address::NetworkUnchecked,
-        >,
-        amount_sats: u64,
-        fee_sats: u64,
-        mainchain_fee_sats: u64,
-    ) -> RpcResult<Txid>;
 }

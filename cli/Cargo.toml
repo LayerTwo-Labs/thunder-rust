@@ -12,7 +12,9 @@ bitcoin = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["derive"] }
 http = { workspace = true }
 jsonrpsee = { workspace = true, features = ["http-client"] }
+serde = { workspace = true }
 serde_json = { workspace = true }
+serde_path_to_error = { workspace = true }
 thunder = { path = "../lib" }
 thunder_app_rpc_api = { path = "../rpc-api" }
 tokio = { workspace = true }
