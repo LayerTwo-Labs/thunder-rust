@@ -280,11 +280,18 @@ impl App {
         update(self.node.as_ref(), &mut self.utxos.write(), &self.wallet)
     }
 
-    pub fn sign_and_send(&self, tx: Transaction) -> Result<(), Error> {
-        let authorized_transaction = self.wallet.authorize(tx)?;
-        self.node.submit_transaction(authorized_transaction)?;
+    pub fn submit_transaction(
+        &self,
+        tx: &thunder::types::AuthorizedTransaction,
+    ) -> Result<(), Error> {
+        self.node.submit_transaction(tx)?;
         let () = self.update()?;
         Ok(())
+    }
+
+    pub fn sign_and_send(&self, tx: Transaction) -> Result<(), Error> {
+        let authorized_transaction = self.wallet.authorize(tx)?;
+        self.submit_transaction(&authorized_transaction)
     }
 
     pub async fn get_new_main_address(

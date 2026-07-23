@@ -245,12 +245,12 @@ where
 
     pub fn submit_transaction(
         &self,
-        transaction: AuthorizedTransaction,
+        transaction: &AuthorizedTransaction,
     ) -> Result<(), Error> {
         {
             let mut rotxn = self.env.write_txn().map_err(EnvError::from)?;
-            self.state.validate_transaction(&rotxn, &transaction)?;
-            self.mempool.put(&mut rotxn, &transaction)?;
+            self.state.validate_transaction(&rotxn, transaction)?;
+            self.mempool.put(&mut rotxn, transaction)?;
             rotxn.commit().map_err(RwTxnError::from)?;
         }
         self.net.push_tx(Default::default(), transaction);
