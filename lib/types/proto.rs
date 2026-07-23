@@ -835,6 +835,7 @@ pub mod mainchain {
                 prev_block_hash,
                 height,
                 work,
+                timestamp: _,
             } = header_info;
             let block_hash = block_hash
                 .as_ref()
@@ -1103,8 +1104,10 @@ pub mod mainchain {
             &mut self,
         ) -> Result<ChainInfo, super::Error> {
             let request = generated::GetChainInfoRequest {};
-            let generated::GetChainInfoResponse { network } =
-                self.0.get_chain_info(request).await?.into_inner();
+            let generated::GetChainInfoResponse {
+                network,
+                bip300_constants: _,
+            } = self.0.get_chain_info(request).await?.into_inner();
             let network = generated::Network::try_from(network)
                 .map_err(|_| super::Error::UnknownEnumTag {
                     field_name: "network".to_owned(),

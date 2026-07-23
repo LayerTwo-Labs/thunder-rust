@@ -1,3 +1,6 @@
 [submodule "proto"]
 	path = proto
 	url = https://github.com/LayerTwo-Labs/cusf_sidechain_proto.git
+[submodule "bip300301_enforcer"]
+	path = bip300301_enforcer
+	url = https://github.com/LayerTwo-Labs/bip300301_enforcer.git
