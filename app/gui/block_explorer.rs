@@ -35,7 +35,7 @@ impl BlockExplorer {
                 None
             }
         };
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             ui.heading("Block");
             ui.horizontal(|ui| {
                 if ui.button("<").clicked() && self.height > 0 {

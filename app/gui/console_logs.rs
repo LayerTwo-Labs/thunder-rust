@@ -89,7 +89,7 @@ impl ConsoleLogs {
     }
 
     pub fn show(&mut self, app: Option<&App>, ui: &mut egui::Ui) {
-        egui::Panel::bottom("command_input").show_inside(ui, |ui| {
+        egui::Panel::bottom("command_input").show(ui, |ui| {
             let command_input = TextEdit::multiline(&mut self.command_input)
                 .font(TextStyle::Monospace)
                 .desired_width(f32::INFINITY)
