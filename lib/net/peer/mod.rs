@@ -18,7 +18,10 @@ use tokio::{spawn, task::JoinHandle, time::Duration};
 use crate::{
     archive::Archive,
     state::State,
-    types::{AuthorizedTransaction, Hash, Network, Tip, Version, hash, schema},
+    types::{
+        AuthorizedTransaction, Hash, Network, Tip, Version, hash,
+        net::PeerConnectionStatus,
+    },
 };
 
 mod channel_pool;
@@ -371,39 +374,56 @@ pub struct ConnectionContext {
     pub state: State,
 }
 
-#[derive(
-    Clone,
-    Copy,
-    Eq,
-    PartialEq,
-    serde::Serialize,
-    serde::Deserialize,
-    strum::Display,
-    utoipa::ToSchema,
-)]
-pub enum PeerConnectionStatus {
-    /// We're still in the process of initializing the peer connection
-    Connecting,
-    /// The connection is successfully established
-    Connected,
-}
+/// Used to make `bool` representation explicit and unique
+#[repr(transparent)]
+struct StatusRepr(bool);
 
-impl PeerConnectionStatus {
-    /// Convert from boolean representation
-    // Should remain private to this module
-    fn from_repr(repr: bool) -> Self {
+impl From<StatusRepr> for PeerConnectionStatus {
+    fn from(repr: StatusRepr) -> Self {
+        let StatusRepr(repr) = repr;
         match repr {
             false => Self::Connecting,
             true => Self::Connected,
         }
     }
+}
 
-    /// Convert to boolean representation
-    // Should remain private to this module
-    fn as_repr(self) -> bool {
-        match self {
-            Self::Connecting => false,
-            Self::Connected => true,
+impl From<PeerConnectionStatus> for StatusRepr {
+    fn from(status: PeerConnectionStatus) -> Self {
+        match status {
+            PeerConnectionStatus::Connecting => Self(false),
+            PeerConnectionStatus::Connected => Self(true),
+        }
+    }
+}
+
+/// Atomic representation of [`PeerConnectionStatus`]
+#[repr(transparent)]
+pub(in crate::net) struct AtomicStatus {
+    atomic_repr: AtomicBool,
+}
+
+impl AtomicStatus {
+    #[inline(always)]
+    fn load(&self, ordering: atomic::Ordering) -> StatusRepr {
+        StatusRepr(self.atomic_repr.load(ordering))
+    }
+
+    #[inline(always)]
+    fn store(&self, repr: StatusRepr, ordering: atomic::Ordering) {
+        self.atomic_repr.store(repr.0, ordering)
+    }
+}
+
+impl<T> From<T> for AtomicStatus
+where
+    StatusRepr: From<T>,
+{
+    #[inline(always)]
+    fn from(value: T) -> Self {
+        let StatusRepr(repr) = value.into();
+        Self {
+            atomic_repr: AtomicBool::new(repr),
         }
     }
 }
@@ -413,17 +433,15 @@ pub struct ConnectionHandle {
     task: JoinHandle<()>,
     /// Indicates that at least one message has been received successfully
     pub(in crate::net) received_msg_successfully: Arc<AtomicBool>,
-    /// Representation of [`PeerConnectionStatus`]
-    pub(in crate::net) status_repr: Arc<AtomicBool>,
+    /// Atomic representation of [`PeerConnectionStatus`]
+    pub(in crate::net) status: Arc<AtomicStatus>,
     /// Push messages from connection task / net task / node
     pub internal_message_tx: mpsc::UnboundedSender<InternalMessage>,
 }
 
 impl ConnectionHandle {
     pub fn connection_status(&self) -> PeerConnectionStatus {
-        PeerConnectionStatus::from_repr(
-            self.status_repr.load(atomic::Ordering::SeqCst),
-        )
+        self.status.load(atomic::Ordering::SeqCst).into()
     }
 
     /// Indicates that at least one message has been received successfully
@@ -480,7 +498,7 @@ pub fn handle(
     let connection_handle = ConnectionHandle {
         task,
         received_msg_successfully,
-        status_repr: Arc::new(AtomicBool::new(status.as_repr())),
+        status: Arc::new(AtomicStatus::from(status)),
         internal_message_tx,
     };
     (connection_handle, info_rx)
@@ -491,20 +509,20 @@ pub fn connect(
     ctxt: ConnectionContext,
 ) -> (ConnectionHandle, mpsc::UnboundedReceiver<Info>) {
     let connection_status = PeerConnectionStatus::Connecting;
-    let status_repr = Arc::new(AtomicBool::new(connection_status.as_repr()));
+    let status = Arc::new(AtomicStatus::from(connection_status));
     let received_msg_successfully = Arc::new(AtomicBool::new(false));
     let (info_tx, info_rx) = mpsc::unbounded();
     let (mailbox_tx, mailbox_rx) = mailbox::new();
     let internal_message_tx = mailbox_tx.internal_message_tx.clone();
     let connection_task = {
         let received_msg_successfully = received_msg_successfully.clone();
-        let status_repr = status_repr.clone();
+        let status = status.clone();
         let info_tx = info_tx.clone();
         move || async move {
             let connection =
                 Connection::from_connecting(connecting, ctxt.network).await?;
-            status_repr.store(
-                PeerConnectionStatus::Connected.as_repr(),
+            status.store(
+                PeerConnectionStatus::Connected.into(),
                 atomic::Ordering::SeqCst,
             );
 
@@ -530,18 +548,10 @@ pub fn connect(
     let connection_handle = ConnectionHandle {
         task,
         received_msg_successfully,
-        status_repr,
+        status,
         internal_message_tx,
     };
     (connection_handle, info_rx)
-}
-
-// RPC output representation for peer + state
-#[derive(Clone, serde::Deserialize, serde::Serialize, utoipa::ToSchema)]
-pub struct Peer {
-    #[schema(value_type = schema::SocketAddr)]
-    pub address: SocketAddr,
-    pub status: PeerConnectionStatus,
 }
 
 #[cfg(test)]

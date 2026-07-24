@@ -3,44 +3,26 @@ use std::{
     path::Path,
 };
 
-use bitcoin::Amount;
 use byteorder::{BigEndian, ByteOrder};
 use ed25519_dalek_bip32::{ChildIndex, DerivationPath, ExtendedSigningKey};
 use fallible_iterator::FallibleIterator as _;
 use futures::{Stream, StreamExt};
 use heed::types::{Bytes, SerdeBincode, U8};
-use rustreexo::accumulator::node_hash::BitcoinNodeHash;
-use serde::{Deserialize, Serialize};
 use sneed::{Env, EnvError, RwTxnError, UnitKey, db::error::Error as DbError};
 use tokio_stream::{StreamMap, wrappers::WatchStream};
 
-pub use crate::{
-    authorization::{Authorization, get_address},
-    types::{
-        Address, AuthorizedTransaction, GetValue, InPoint, OutPoint,
-        OutPointKey, Output, OutputContent, SpentOutput, Transaction,
-    },
-};
 use crate::{
     types::{
-        Accumulator, AmountOverflowError, AmountUnderflowError, PointedOutput,
-        UtreexoError, VERSION, Version, hash,
+        Accumulator, Address, AmountOverflowError, AmountUnderflowError,
+        AuthorizedTransaction, GetValue, InPoint, OutPoint, OutPointKey,
+        Output, OutputContent, PointedOutput, SpentOutput, Transaction,
+        UtreexoError, UtreexoNodeHash, VERSION, Version,
+        authorization::{Authorization, get_address},
+        hash,
+        wallet::Balance,
     },
     util::Watchable,
 };
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize, utoipa::ToSchema)]
-pub struct Balance {
-    #[serde(rename = "total_sats", with = "bitcoin::amount::serde::as_sat")]
-    #[schema(value_type = u64)]
-    pub total: Amount,
-    #[serde(
-        rename = "available_sats",
-        with = "bitcoin::amount::serde::as_sat"
-    )]
-    #[schema(value_type = u64)]
-    pub available: Amount,
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -51,7 +33,7 @@ pub enum Error {
     #[error(transparent)]
     AmountUnderflow(#[from] AmountUnderflowError),
     #[error("authorization error")]
-    Authorization(#[from] crate::authorization::Error),
+    Authorization(#[from] crate::types::error::Authorization),
     #[error("bip32 error")]
     Bip32(#[from] ed25519_dalek_bip32::Error),
     #[error(transparent)]
@@ -262,7 +244,7 @@ impl Wallet {
                 (outpoint, utxo_hash)
             })
             .collect();
-        let input_utxo_hashes: Vec<BitcoinNodeHash> =
+        let input_utxo_hashes: Vec<UtreexoNodeHash> =
             inputs.iter().map(|(_, hash)| hash.into()).collect();
         let proof = accumulator.prove(&input_utxo_hashes)?;
         let outputs = vec![
@@ -303,7 +285,7 @@ impl Wallet {
                 (outpoint, utxo_hash)
             })
             .collect();
-        let input_utxo_hashes: Vec<BitcoinNodeHash> =
+        let input_utxo_hashes: Vec<UtreexoNodeHash> =
             inputs.iter().map(|(_, hash)| hash.into()).collect();
         let proof = accumulator.prove(&input_utxo_hashes)?;
         let outputs = vec![
@@ -479,7 +461,7 @@ impl Wallet {
             let index = BigEndian::read_u32(&index);
             let signing_key = self.get_signing_key(&txn, index)?;
             let signature =
-                crate::authorization::sign(&signing_key, &transaction)?;
+                crate::types::authorization::sign(&signing_key, &transaction)?;
             authorizations.push(Authorization {
                 verifying_key: signing_key.verifying_key(),
                 signature,

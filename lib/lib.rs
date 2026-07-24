@@ -2,7 +2,6 @@
 #![feature(trait_alias)]
 
 pub mod archive;
-pub mod authorization;
 pub mod mempool;
 pub mod miner;
 pub mod net;

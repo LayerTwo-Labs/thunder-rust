@@ -5,14 +5,10 @@ use std::net::SocketAddr;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use l2l_openapi::open_api;
 use serde::{Deserialize, Serialize};
-use thunder::{
-    net::Peer,
-    types::{
-        Address, Authorized, BlockHash, MerkleRoot, OutPoint, Output,
-        OutputContent, PointedOutput, Transaction, Txid, WithdrawalBundle,
-        schema as thunder_schema,
-    },
-    wallet::Balance,
+use thunder_types::{
+    Address, Authorized, BlockHash, MerkleRoot, OutPoint, Output,
+    OutputContent, PointedOutput, Transaction, Txid, WithdrawalBundle,
+    net::Peer, schema as thunder_schema, wallet::Balance,
 };
 use utoipa::ToSchema;
 
@@ -74,7 +70,7 @@ pub trait Rpc {
     async fn create_withdrawal(
         &self,
         #[open_api_method_arg(schema(
-            PartialSchema = "thunder::types::schema::BitcoinAddr"
+            PartialSchema = "thunder_schema::BitcoinAddr"
         ))]
         mainchain_address: bitcoin::Address<
             bitcoin::address::NetworkUnchecked,
@@ -110,8 +106,8 @@ pub trait Rpc {
     #[method(name = "get_block")]
     async fn get_block(
         &self,
-        block_hash: thunder::types::BlockHash,
-    ) -> RpcResult<Option<thunder::types::Block>>;
+        block_hash: thunder_types::BlockHash,
+    ) -> RpcResult<Option<thunder_types::Block>>;
 
     /// Get mainchain blocks that commit to a specified block hash
     #[open_api_method(output_schema(
@@ -120,7 +116,7 @@ pub trait Rpc {
     #[method(name = "get_bmm_inclusions")]
     async fn get_bmm_inclusions(
         &self,
-        block_hash: thunder::types::BlockHash,
+        block_hash: thunder_types::BlockHash,
     ) -> RpcResult<Vec<bitcoin::BlockHash>>;
 
     /// Get the best mainchain block hash known by Thunder
@@ -134,12 +130,12 @@ pub trait Rpc {
 
     /// Get the best sidechain block hash known by Thunder
     #[open_api_method(output_schema(
-        PartialSchema = "schema::Optional<thunder::types::BlockHash>"
+        PartialSchema = "schema::Optional<thunder_types::BlockHash>"
     ))]
     #[method(name = "get_best_sidechain_block_hash")]
     async fn get_best_sidechain_block_hash(
         &self,
-    ) -> RpcResult<Option<thunder::types::BlockHash>>;
+    ) -> RpcResult<Option<thunder_types::BlockHash>>;
 
     /// Get a new address
     #[method(name = "get_new_address")]
