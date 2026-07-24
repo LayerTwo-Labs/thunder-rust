@@ -71,7 +71,7 @@ pub(in crate::net::peer) mod connection {
 
     #[derive(Debug, Error)]
     pub enum Receive {
-        #[error("received incorrect magic: {}", hex::encode(.0))]
+        #[error("received incorrect magic: {}", const_hex::encode(.0))]
         BadMagic(crate::net::peer::message::MagicBytes),
         #[error("bincode error")]
         Bincode(#[from] bincode::Error),
