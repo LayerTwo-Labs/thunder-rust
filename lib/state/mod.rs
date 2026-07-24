@@ -3,7 +3,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use fallible_iterator::FallibleIterator as _;
 use futures::Stream;
 use heed::types::SerdeBincode;
-use rustreexo::accumulator::{node_hash::BitcoinNodeHash, proof::Proof};
 use serde::{Deserialize, Serialize};
 use sneed::{
     DatabaseUnique, RoTxn, RwTxn, UnitKey,
@@ -13,13 +12,13 @@ use sneed::{
 };
 
 use crate::{
-    authorization::Authorization,
     types::{
         Accumulator, Address, AmountOverflowError, AmountUnderflowError,
-        Authorized, AuthorizedTransaction, BlockHash, Body, FilledTransaction,
-        GetAddress, GetValue, Header, InPoint, M6id, MerkleRoot, OutPoint,
-        OutPointKey, Output, PointedOutput, PointedOutputRef, SpentOutput,
-        Transaction, VERSION, Verify, Version, WithdrawalBundle,
+        Authorization, Authorized, AuthorizedTransaction, BlockHash, Body,
+        FilledTransaction, GetAddress, GetValue, Header, InPoint, M6id,
+        MerkleRoot, OutPoint, OutPointKey, Output, PointedOutput,
+        PointedOutputRef, SpentOutput, Transaction, UtreexoNodeHash,
+        UtreexoProof, VERSION, Verify, Version, WithdrawalBundle,
         WithdrawalBundleStatus, proto::mainchain::TwoWayPegData,
     },
     util::Watchable,
@@ -265,13 +264,13 @@ impl State {
         &self,
         rotxn: &RoTxn,
         utxos: Utxos,
-    ) -> Result<Proof, Error>
+    ) -> Result<UtreexoProof, Error>
     where
         Utxos: IntoIterator<Item = &'a PointedOutput>,
     {
         let accumulator = self.get_accumulator(rotxn)?;
-        let targets: Vec<BitcoinNodeHash> =
-            utxos.into_iter().map(BitcoinNodeHash::from).collect();
+        let targets: Vec<UtreexoNodeHash> =
+            utxos.into_iter().map(UtreexoNodeHash::from).collect();
         let proof = accumulator.prove(&targets)?;
         Ok(proof)
     }

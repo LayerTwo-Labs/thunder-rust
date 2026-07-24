@@ -6,10 +6,8 @@ use jsonrpsee::{
     server::Server,
     types::ErrorObject,
 };
-use thunder::{
-    net::Peer,
-    types::{Address, PointedOutput, Txid, WithdrawalBundle},
-    wallet::Balance,
+use thunder::types::{
+    Address, PointedOutput, Txid, WithdrawalBundle, net::Peer, wallet::Balance,
 };
 use thunder_app_rpc_api::{GetTransactionResponse, RpcServer};
 use tower_http::{

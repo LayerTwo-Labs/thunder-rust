@@ -2,17 +2,16 @@ use std::{borrow::Borrow, io::Cursor};
 
 use bitcoin::amount::CheckedSum;
 use borsh::{self, BorshDeserialize, BorshSerialize};
+#[cfg(feature = "heed")]
 use heed::{BoxedError, BytesDecode, BytesEncode};
-use rustreexo::accumulator::{node_hash::BitcoinNodeHash, proof::Proof};
+use rustreexo::accumulator::proof::Proof as UtreexoProof;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 use utoipa::ToSchema;
 
-use super::{
-    Address, AmountOverflowError, Hash, M6id, MerkleRoot, Txid, hash,
-    hash_with_scratch_buffer,
+use crate::{
+    Address, AmountOverflowError, Authorization, ComputeFeeError, Hash, M6id,
+    MerkleRoot, Txid, UtreexoNodeHash, hash, hash_with_scratch_buffer, schema,
 };
-use crate::authorization::Authorization;
 
 pub trait GetAddress {
     fn get_address(&self) -> Address;
@@ -82,7 +81,7 @@ pub enum OutPoint {
         vout: u32,
     },
     // Created by mainchain deposits.
-    #[schema(value_type = crate::types::schema::BitcoinOutPoint)]
+    #[schema(value_type = schema::BitcoinOutPoint)]
     Deposit(
         #[borsh(
             deserialize_with = "borsh_deserialize_bitcoin_outpoint",
@@ -176,7 +175,7 @@ impl AsRef<[u8]> for OutPointKey {
     }
 }
 
-// Database key encoding traits for direct LMDB usage
+#[cfg(feature = "heed")]
 impl<'a> BytesEncode<'a> for OutPointKey {
     type EItem = OutPointKey;
 
@@ -188,6 +187,7 @@ impl<'a> BytesEncode<'a> for OutPointKey {
     }
 }
 
+#[cfg(feature = "heed")]
 impl<'a> BytesDecode<'a> for OutPointKey {
     type DItem = OutPointKey;
 
@@ -206,9 +206,10 @@ impl<'a> BytesDecode<'a> for OutPointKey {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{OUTPOINT_KEY_SIZE, OutPoint, OutPointKey};
-    use bitcoin::hashes::Hash as BitcoinHash;
+mod test {
+    use bitcoin::hashes::Hash as _;
+
+    use crate::transaction::{OUTPOINT_KEY_SIZE, OutPoint, OutPointKey};
 
     #[test]
     fn check_outpoint_key_size() -> anyhow::Result<()> {
@@ -246,10 +247,12 @@ mod tests {
     // fee, since both leave the treasury
     #[test]
     fn withdrawal_value_includes_main_fee() {
-        use super::{
-            Content, FilledTransaction, GetValue, Output, Transaction,
+        use crate::{
+            Address,
+            transaction::{
+                Content, FilledTransaction, GetValue, Output, Transaction,
+            },
         };
-        use crate::types::Address;
 
         let value = bitcoin::Amount::from_sat(1000);
         let main_fee = bitcoin::Amount::from_sat(300);
@@ -332,6 +335,8 @@ mod content {
     use serde::{Deserialize, Serialize};
     use utoipa::{PartialSchema, ToSchema};
 
+    use crate::{GetValue, schema};
+
     /// Default representation for Serde
     #[derive(Deserialize, Serialize)]
     enum DefaultRepr {
@@ -360,7 +365,7 @@ mod content {
             #[serde(rename = "main_fee_sats")]
             #[schema(value_type = u64)]
             main_fee: bitcoin::Amount,
-            #[schema(value_type = crate::types::schema::BitcoinAddr)]
+            #[schema(value_type = schema::BitcoinAddr)]
             main_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         },
     }
@@ -394,12 +399,12 @@ mod content {
             matches!(self, Self::Withdrawal { .. })
         }
 
-        pub(in crate::types) fn schema_ref() -> utoipa::openapi::Ref {
+        pub(crate) fn schema_ref() -> utoipa::openapi::Ref {
             utoipa::openapi::Ref::new("OutputContent")
         }
     }
 
-    impl crate::types::GetValue for Content {
+    impl GetValue for Content {
         #[inline(always)]
         fn get_value(&self) -> bitcoin::Amount {
             match self {
@@ -558,7 +563,7 @@ pub struct PointedOutput {
     pub output: Output,
 }
 
-impl From<&PointedOutput> for BitcoinNodeHash {
+impl From<&PointedOutput> for UtreexoNodeHash {
     fn from(pointed_output: &PointedOutput) -> Self {
         Self::new(hash(pointed_output))
     }
@@ -572,7 +577,7 @@ pub struct PointedOutputRef<'a> {
     pub output: &'a Output,
 }
 
-impl From<PointedOutputRef<'_>> for BitcoinNodeHash {
+impl From<PointedOutputRef<'_>> for UtreexoNodeHash {
     fn from(pointed_output: PointedOutputRef) -> Self {
         Self::new(hash(&pointed_output))
     }
@@ -586,8 +591,8 @@ pub struct Transaction {
     pub inputs: Vec<(OutPoint, Hash)>,
     /// Utreexo proof for inputs
     #[borsh(skip)]
-    #[schema(value_type = crate::types::schema::UtreexoProof)]
-    pub proof: Proof,
+    #[schema(value_type = schema::UtreexoProof)]
+    pub proof: UtreexoProof,
     pub outputs: Vec<Output>,
 }
 
@@ -608,16 +613,6 @@ impl Transaction {
 pub struct SpentOutput {
     pub output: Output,
     pub inpoint: InPoint,
-}
-
-#[derive(Debug, Error)]
-pub enum ComputeFeeError {
-    #[error("underfunded (value in < value out)")]
-    Underfunded,
-    #[error("value in overflow")]
-    ValueInOverflow(#[source] AmountOverflowError),
-    #[error("value out overflow")]
-    ValueOutOverflow(#[source] AmountOverflowError),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
