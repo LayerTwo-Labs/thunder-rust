@@ -1,6 +1,6 @@
 [workspace]
 exclude = ["bip300301_enforcer"]
-members = ["app", "cli", "integration_tests", "lib", "rpc-api"]
+members = ["app", "cli", "integration_tests", "lib", "rpc-api", "types"]
 resolver = "2"
 
 [workspace.package]

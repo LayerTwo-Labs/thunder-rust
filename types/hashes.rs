@@ -5,11 +5,13 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use hex::FromHex;
 use serde::{Deserialize, Serialize};
 
-use super::serde_hexstr_human_readable;
+use crate::util::serde::hexstr_human_readable;
 
 const BLAKE3_LENGTH: usize = 32;
 
 pub type Hash = [u8; BLAKE3_LENGTH];
+
+pub type UtreexoNodeHash = rustreexo::accumulator::node_hash::BitcoinNodeHash;
 
 #[derive(
     BorshSerialize,
@@ -24,7 +26,7 @@ pub type Hash = [u8; BLAKE3_LENGTH];
     PartialOrd,
     Serialize,
 )]
-pub struct BlockHash(#[serde(with = "serde_hexstr_human_readable")] pub Hash);
+pub struct BlockHash(#[serde(with = "hexstr_human_readable")] pub Hash);
 
 impl From<Hash> for BlockHash {
     fn from(other: Hash) -> Self {
@@ -98,7 +100,7 @@ impl utoipa::ToSchema for BlockHash {
     PartialOrd,
     Serialize,
 )]
-pub struct MerkleRoot(#[serde(with = "serde_hexstr_human_readable")] Hash);
+pub struct MerkleRoot(#[serde(with = "hexstr_human_readable")] Hash);
 
 impl From<Hash> for MerkleRoot {
     fn from(other: Hash) -> Self {
@@ -154,7 +156,7 @@ impl utoipa::ToSchema for MerkleRoot {
 )]
 #[repr(transparent)]
 #[serde(transparent)]
-pub struct Txid(#[serde(with = "serde_hexstr_human_readable")] pub Hash);
+pub struct Txid(#[serde(with = "hexstr_human_readable")] pub Hash);
 
 impl Txid {
     pub fn as_slice(&self) -> &[u8] {
