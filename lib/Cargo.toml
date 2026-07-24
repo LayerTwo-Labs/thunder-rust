@@ -20,6 +20,7 @@ bitcoin = { workspace = true }
 borsh = { workspace = true }
 byteorder = { workspace = true }
 bytes = { workspace = true }
+const-hex = { workspace = true }
 ed25519-dalek = { workspace = true }
 ed25519-dalek-bip32 = { workspace = true }
 educe = { workspace = true, features = ["Clone", "Debug"] }
@@ -29,7 +30,6 @@ futures = { workspace = true, features = ["alloc"] }
 governor = { workspace = true, features = ["quanta", "std"] }
 hashlink = { workspace = true, features = ["serde_impl"] }
 heed = { workspace = true }
-hex = { workspace = true }
 jsonrpsee = { workspace = true }
 nonempty = { workspace = true, features = ["serialize"] }
 parking_lot = { workspace = true }

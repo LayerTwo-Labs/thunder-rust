@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use bitcoin::hashes::Hash as _;
 use borsh::{BorshDeserialize, BorshSerialize};
-use hex::FromHex;
+use const_hex::FromHex;
 use serde::{Deserialize, Serialize};
 
 use crate::util::serde::hexstr_human_readable;
@@ -55,18 +55,18 @@ impl From<BlockHash> for bitcoin::BlockHash {
 
 impl std::fmt::Display for BlockHash {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", hex::encode(self.0))
+        write!(f, "{}", const_hex::encode(self.0))
     }
 }
 
 impl std::fmt::Debug for BlockHash {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", hex::encode(self.0))
+        write!(f, "{}", const_hex::encode(self.0))
     }
 }
 
 impl FromStr for BlockHash {
-    type Err = hex::FromHexError;
+    type Err = const_hex::FromHexError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Hash::from_hex(s).map(Self)
     }
@@ -116,13 +116,13 @@ impl From<MerkleRoot> for Hash {
 
 impl std::fmt::Display for MerkleRoot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", hex::encode(self.0))
+        write!(f, "{}", const_hex::encode(self.0))
     }
 }
 
 impl std::fmt::Debug for MerkleRoot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", hex::encode(self.0))
+        write!(f, "{}", const_hex::encode(self.0))
     }
 }
 
@@ -184,18 +184,18 @@ impl<'a> From<&'a Txid> for &'a Hash {
 
 impl std::fmt::Display for Txid {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", hex::encode(self.0))
+        write!(f, "{}", const_hex::encode(self.0))
     }
 }
 
 impl std::fmt::Debug for Txid {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", hex::encode(self.0))
+        write!(f, "{}", const_hex::encode(self.0))
     }
 }
 
 impl FromStr for Txid {
-    type Err = hex::FromHexError;
+    type Err = const_hex::FromHexError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Hash::from_hex(s).map(Self)
     }
