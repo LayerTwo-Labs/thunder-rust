@@ -15,7 +15,6 @@ rustreexo = { workspace = true, features = ["with-serde"] }
 semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_with = { workspace = true }
-smallvec = { workspace = true, features = ["write"] }
 strum = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
