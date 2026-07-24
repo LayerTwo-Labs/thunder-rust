@@ -87,13 +87,13 @@ impl From<&PeerState> for PeerStateId {
 
 impl std::fmt::Debug for PeerStateId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        hex::encode(self.0).fmt(f)
+        const_hex::encode(self.0).fmt(f)
     }
 }
 
 impl std::fmt::Display for PeerStateId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        hex::encode(self.0).fmt(f)
+        const_hex::encode(self.0).fmt(f)
     }
 }
 

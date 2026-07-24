@@ -5,10 +5,10 @@ bitcoin = { workspace = true, features = ["serde"] }
 blake3 = { workspace = true }
 borsh = { workspace = true, features = ["derive"] }
 clap = { workspace = true, features = ["derive"], optional = true }
+const-hex = { workspace = true, features = ["serde"] }
 ed25519-dalek = { workspace = true, features = ["batch", "serde"] }
 hashlink = { workspace = true, features = ["serde_impl"] }
 heed = { workspace = true, optional = true }
-hex = { workspace = true, features = ["serde"] }
 merkle-cbt = { workspace = true }
 rayon = { workspace = true }
 rustreexo = { workspace = true, features = ["with-serde"] }

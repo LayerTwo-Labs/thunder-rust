@@ -78,7 +78,7 @@ pub(crate) mod serde {
     /// (de)serialize as hex strings for human-readable forms like json,
     /// and default serialization for non human-readable formats like bincode
     pub mod hexstr_human_readable {
-        use hex::{FromHex, ToHex};
+        use const_hex::{FromHex, ToHexExt};
         use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
         pub fn serialize<S, T>(
@@ -87,10 +87,10 @@ pub(crate) mod serde {
         ) -> Result<S::Ok, S::Error>
         where
             S: Serializer,
-            T: Serialize + ToHex,
+            T: Serialize + ToHexExt,
         {
             if serializer.is_human_readable() {
-                hex::serde::serialize(data, serializer)
+                data.encode_hex().serialize(serializer)
             } else {
                 data.serialize(serializer)
             }
@@ -103,7 +103,7 @@ pub(crate) mod serde {
             <T as FromHex>::Error: std::fmt::Display,
         {
             if deserializer.is_human_readable() {
-                hex::serde::deserialize(deserializer)
+                const_hex::serde::deserialize(deserializer)
             } else {
                 T::deserialize(deserializer)
             }
