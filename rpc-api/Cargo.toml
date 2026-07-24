@@ -12,7 +12,7 @@ jsonrpsee = { workspace = true, features = ["client", "macros", "server"] }
 l2l-openapi = { workspace = true }
 serde = {workspace = true }
 serde_json = { workspace = true }
-thunder = { path = "../lib" }
+thunder_types = { path = "../types" }
 utoipa = { workspace = true }
 
 [lints]

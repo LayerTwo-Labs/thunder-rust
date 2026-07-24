@@ -4,15 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeAs, DisplayFromStr};
 use utoipa::ToSchema;
 
-use crate::types::THIS_SIDECHAIN;
-
-#[derive(Debug, thiserror::Error)]
-pub enum AddressParseError {
-    #[error("bs58 error")]
-    Bs58(#[from] bitcoin::base58::InvalidCharacterError),
-    #[error("wrong address length {0} != 20")]
-    WrongLength(usize),
-}
+use crate::{THIS_SIDECHAIN, error::ParseAddress as ParseAddressError};
 
 #[derive(
     BorshDeserialize, BorshSerialize, Clone, Copy, Eq, Hash, PartialEq, ToSchema,
@@ -55,11 +47,11 @@ impl From<[u8; 20]> for Address {
 }
 
 impl std::str::FromStr for Address {
-    type Err = AddressParseError;
+    type Err = ParseAddressError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let address = bitcoin::base58::decode(s)?;
         Ok(Address(address.try_into().map_err(
-            |address: Vec<u8>| AddressParseError::WrongLength(address.len()),
+            |address: Vec<u8>| ParseAddressError::WrongLength(address.len()),
         )?))
     }
 }

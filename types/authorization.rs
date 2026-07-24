@@ -6,53 +6,16 @@ use rayon::{
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::types::{
+use crate::{
     Address, AuthorizedTransaction, Body, GetAddress, Transaction, Verify,
+    error::Authorization as Error, util::borsh::serialize as borsh_serialize,
 };
 
-pub use ed25519_dalek::{
-    Signature, SignatureError, Signer, SigningKey, Verifier, VerifyingKey,
-};
+pub use ed25519_dalek::{Signer, Verifier};
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("borsh serialization error")]
-    BorshSerialize(#[from] borsh::io::Error),
-    #[error("ed25519_dalek error")]
-    Dalek(#[from] SignatureError),
-    #[error("not enough authorizations")]
-    NotEnoughAuthorizations,
-    #[error("too many authorizations")]
-    TooManyAuthorizations,
-    #[error(
-        "wrong key for address: address = {address},
-             hash(verifying_key) = {hash_verifying_key}"
-    )]
-    WrongKeyForAddress {
-        address: Address,
-        hash_verifying_key: Address,
-    },
-}
-
-fn borsh_serialize_verifying_key<W>(
-    vk: &VerifyingKey,
-    writer: &mut W,
-) -> borsh::io::Result<()>
-where
-    W: borsh::io::Write,
-{
-    borsh::BorshSerialize::serialize(&vk.to_bytes(), writer)
-}
-
-fn borsh_serialize_signature<W>(
-    sig: &Signature,
-    writer: &mut W,
-) -> borsh::io::Result<()>
-where
-    W: borsh::io::Write,
-{
-    borsh::BorshSerialize::serialize(&sig.to_bytes(), writer)
-}
+pub type Signature = ed25519_dalek::Signature;
+pub type SigningKey = ed25519_dalek::SigningKey;
+pub type VerifyingKey = ed25519_dalek::VerifyingKey;
 
 #[derive(
     BorshSerialize,
@@ -65,10 +28,10 @@ where
     ToSchema,
 )]
 pub struct Authorization {
-    #[borsh(serialize_with = "borsh_serialize_verifying_key")]
+    #[borsh(serialize_with = "borsh_serialize::verifying_key")]
     #[schema(value_type = String)]
     pub verifying_key: VerifyingKey,
-    #[borsh(serialize_with = "borsh_serialize_signature")]
+    #[borsh(serialize_with = "borsh_serialize::signature")]
     #[schema(value_type = String)]
     pub signature: Signature,
 }

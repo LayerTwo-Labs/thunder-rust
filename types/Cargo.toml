@@ -1,0 +1,45 @@
+[build-dependencies]
+
+[dependencies]
+bitcoin = { workspace = true, features = ["serde"] }
+blake3 = { workspace = true }
+borsh = { workspace = true, features = ["derive"] }
+clap = { workspace = true, features = ["derive"], optional = true }
+ed25519-dalek = { workspace = true, features = ["batch", "serde"] }
+hashlink = { workspace = true, features = ["serde_impl"] }
+heed = { workspace = true, optional = true }
+hex = { workspace = true, features = ["serde"] }
+merkle-cbt = { workspace = true }
+rayon = { workspace = true }
+rustreexo = { workspace = true, features = ["with-serde"] }
+semver = { workspace = true, features = ["serde"] }
+serde = { workspace = true, features = ["derive"] }
+serde_with = { workspace = true }
+smallvec = { workspace = true, features = ["write"] }
+strum = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+utoipa = { workspace = true, features = ["macros", "non_strict_integers"] }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+
+[features]
+clap = ["dep:clap"]
+default = []
+heed = ["dep:heed"]
+
+[lib]
+name = "thunder_types"
+path = "lib.rs"
+
+[lints]
+workspace = true
+
+[package]
+name = "thunder_types"
+authors.workspace = true
+edition.workspace = true
+license-file.workspace = true
+publish.workspace = true
+version.workspace = true
