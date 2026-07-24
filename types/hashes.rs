@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
 use bitcoin::hashes::Hash as _;
+use blake3::Hasher;
 use borsh::{BorshDeserialize, BorshSerialize};
 use const_hex::FromHex;
 use serde::{Deserialize, Serialize};
@@ -231,9 +232,10 @@ pub fn hash<T>(data: &T) -> Hash
 where
     T: BorshSerialize + ?Sized,
 {
-    let data_serialized = borsh::to_vec(data)
+    let mut hasher = blake3::Hasher::new();
+    let () = borsh::to_writer(&mut hasher, data)
         .expect("failed to serialize with borsh to compute a hash");
-    blake3::hash(&data_serialized).into()
+    hasher.finalize().into()
 }
 
 /// Optimized hash function that reuses a thread-local scratch buffer
@@ -243,22 +245,16 @@ pub fn hash_with_scratch_buffer<T>(data: &T) -> Hash
 where
     T: BorshSerialize + ?Sized,
 {
-    use smallvec::SmallVec;
-
     thread_local! {
-        // Thread-local scratch buffer that starts with 256 bytes on the stack
-        // and grows as needed. This avoids heap allocations for most hashes.
-        static SCRATCH_BUFFER: std::cell::RefCell<SmallVec<[u8; 256]>> =
-            std::cell::RefCell::new(SmallVec::new());
+        static HASHER: std::cell::RefCell<blake3::Hasher> =
+            std::cell::RefCell::new(Hasher::new());
     }
 
-    SCRATCH_BUFFER.with(|buffer| {
-        let mut buffer = buffer.borrow_mut();
-        buffer.clear();
-
-        borsh::to_writer(&mut *buffer, data)
+    HASHER.with(|hasher| {
+        let mut hasher = hasher.borrow_mut();
+        hasher.reset();
+        borsh::to_writer(&mut *hasher, data)
             .expect("failed to serialize with borsh to compute a hash");
-
-        blake3::hash(&buffer).into()
+        hasher.finalize().into()
     })
 }
