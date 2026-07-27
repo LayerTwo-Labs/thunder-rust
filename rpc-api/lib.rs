@@ -1,14 +1,14 @@
 //! RPC API
 
-use std::net::SocketAddr;
+use std::{collections::HashSet, net::SocketAddr};
 
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use l2l_openapi::open_api;
 use serde::{Deserialize, Serialize};
 use thunder_types::{
     Address, Authorized, BlockHash, MerkleRoot, OutPoint, Output,
-    OutputContent, PointedOutput, Transaction, Txid, WithdrawalBundle,
-    net::Peer, schema as thunder_schema, wallet::Balance,
+    OutputContent, Pointed, PointedOutput, SpentOutput, Transaction, Txid,
+    WithdrawalBundle, net::Peer, schema as thunder_schema, wallet::Balance,
 };
 use utoipa::ToSchema;
 
@@ -140,12 +140,26 @@ pub trait Rpc {
     #[method(name = "get_new_address")]
     async fn get_new_address(&self) -> RpcResult<Address>;
 
+    /// Get stxos for addresses
+    #[method(name = "get_stxos")]
+    async fn get_stxos(
+        &self,
+        addresses: HashSet<Address>,
+    ) -> RpcResult<Vec<Pointed<SpentOutput>>>;
+
     /// Get transaction by txid
     #[method(name = "get_transaction")]
     async fn get_transaction(
         &self,
         txid: Txid,
     ) -> RpcResult<Option<GetTransactionResponse>>;
+
+    /// Get utxos for addresses
+    #[method(name = "get_utxos")]
+    async fn get_utxos(
+        &self,
+        addresses: HashSet<Address>,
+    ) -> RpcResult<Vec<PointedOutput>>;
 
     /// Get wallet addresses, sorted by base58 encoding
     #[method(name = "get_wallet_addresses")]

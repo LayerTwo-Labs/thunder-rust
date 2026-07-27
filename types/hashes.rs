@@ -5,6 +5,7 @@ use blake3::Hasher;
 use borsh::{BorshDeserialize, BorshSerialize};
 use const_hex::FromHex;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::util::serde::hexstr_human_readable;
 
@@ -216,8 +217,11 @@ impl utoipa::ToSchema for Txid {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize, ToSchema,
+)]
 #[repr(transparent)]
+#[schema(value_type = crate::schema::BitcoinOutPoint)]
 #[serde(transparent)]
 pub struct M6id(pub bitcoin::Txid);
 
