@@ -259,7 +259,7 @@ pub mod mainchain {
         self, BlockHash, Network, OutPoint, Transaction, Txid, Work,
         hashes::Hash as _,
     };
-    use futures::{StreamExt as _, TryStreamExt as _, stream::BoxStream};
+    use futures::{StreamExt as _, stream::BoxStream};
     use hashlink::LinkedHashMap;
     use nonempty::NonEmpty;
     use serde::{Deserialize, Serialize};
@@ -969,6 +969,39 @@ pub mod mainchain {
 
     #[derive(Clone, Debug)]
     #[repr(transparent)]
+    pub struct MiningClient<T>(
+        pub generated::mining_service_client::MiningServiceClient<T>,
+    );
+
+    impl<T> MiningClient<T>
+    where
+        T: super::Transport,
+    {
+        pub fn new(inner: T) -> Self {
+            Self(
+                generated::mining_service_client::MiningServiceClient::<T>::new(
+                    inner,
+                ),
+            )
+        }
+
+        pub async fn generate_to_address(
+            &mut self,
+            blocks: u32,
+            address: &bitcoin::Address<bitcoin::address::NetworkUnchecked>,
+        ) -> Result<(), super::Error> {
+            let request = generated::GenerateToAddressRequest {
+                blocks: Some(blocks),
+                address: address.assume_checked_ref().to_string(),
+            };
+            let _resp: generated::GenerateToAddressResponse =
+                self.0.generate_to_address(request).await?.into_inner();
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    #[repr(transparent)]
     pub struct ValidatorClient<T>(
         pub generated::validator_service_client::ValidatorServiceClient<T>,
     );
@@ -1276,24 +1309,6 @@ pub mod mainchain {
                 >("address", &address)
             })?;
             Ok(address)
-        }
-
-        pub async fn generate_blocks(
-            &mut self,
-            blocks: u32,
-        ) -> Result<(), super::Error> {
-            let request = generated::GenerateBlocksRequest {
-                blocks: Some(blocks),
-                ack_all_proposals: true,
-            };
-            let _resp: Vec<generated::GenerateBlocksResponse> = self
-                .0
-                .generate_blocks(request)
-                .await?
-                .into_inner()
-                .try_collect()
-                .await?;
-            Ok(())
         }
     }
 }
