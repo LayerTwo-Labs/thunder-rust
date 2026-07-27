@@ -11,11 +11,15 @@ pub enum Error {
     CusfMainchain(#[from] proto::Error),
     #[error("invalid json: {json}")]
     InvalidJson { json: serde_json::Value },
+    #[error("No CUSF mainchain mining client")]
+    NoCusfMainchainMiningClient,
 }
 
 #[derive(Clone)]
 pub struct Miner<MainchainTransport = tonic::transport::Channel> {
     pub cusf_mainchain: mainchain::ValidatorClient<MainchainTransport>,
+    pub cusf_mainchain_miner:
+        Option<mainchain::MiningClient<MainchainTransport>>,
     pub cusf_mainchain_wallet: mainchain::WalletClient<MainchainTransport>,
     block: Option<(Header, Body)>,
 }
@@ -23,10 +27,14 @@ pub struct Miner<MainchainTransport = tonic::transport::Channel> {
 impl<MainchainTransport> Miner<MainchainTransport> {
     pub fn new(
         cusf_mainchain: mainchain::ValidatorClient<MainchainTransport>,
+        cusf_mainchain_miner: Option<
+            mainchain::MiningClient<MainchainTransport>,
+        >,
         cusf_mainchain_wallet: mainchain::WalletClient<MainchainTransport>,
     ) -> Result<Self, Error> {
         Ok(Self {
             cusf_mainchain,
+            cusf_mainchain_miner,
             cusf_mainchain_wallet,
             block: None,
         })
@@ -38,7 +46,14 @@ where
     MainchainTransport: proto::Transport,
 {
     pub async fn generate(&mut self) -> Result<(), Error> {
-        let () = self.cusf_mainchain_wallet.generate_blocks(1).await?;
+        let Some(cusf_mainchain_miner) = self.cusf_mainchain_miner.as_mut()
+        else {
+            return Err(Error::NoCusfMainchainMiningClient);
+        };
+        let address = self.cusf_mainchain_wallet.create_new_address().await?;
+        let () = cusf_mainchain_miner
+            .generate_to_address(1, &address)
+            .await?;
         Ok(())
     }
 
