@@ -1,4 +1,5 @@
 use std::{
+    borrow::BorrowMut,
     collections::{HashMap, HashSet},
     fmt::Debug,
     net::SocketAddr,
@@ -244,17 +245,26 @@ where
         Ok(self.state.try_get_tip(&rotxn)?)
     }
 
-    pub fn submit_transaction(
+    /// Regenerate proofs and submit transaction
+    pub fn submit_transaction<Tx>(
         &self,
-        transaction: &AuthorizedTransaction,
-    ) -> Result<(), Error> {
+        mut transaction: Tx,
+    ) -> Result<(), Error>
+    where
+        Tx: BorrowMut<AuthorizedTransaction>,
+    {
         {
             let mut rotxn = self.env.write_txn().map_err(EnvError::from)?;
-            self.state.validate_transaction(&rotxn, transaction)?;
-            self.mempool.put(&mut rotxn, transaction)?;
+            self.state.regenerate_proof(
+                &rotxn,
+                &mut transaction.borrow_mut().transaction,
+            )?;
+            self.state
+                .validate_transaction(&rotxn, transaction.borrow())?;
+            self.mempool.put(&mut rotxn, transaction.borrow())?;
             rotxn.commit().map_err(RwTxnError::from)?;
         }
-        self.net.push_tx(Default::default(), transaction);
+        self.net.push_tx(Default::default(), transaction.borrow());
         Ok(())
     }
 
