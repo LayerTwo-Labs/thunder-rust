@@ -297,6 +297,18 @@ where
         Ok(spent)
     }
 
+    pub fn get_stxos_by_addresses(
+        &self,
+        addresses: &HashSet<Address>,
+    ) -> Result<HashMap<OutPoint, SpentOutput>, Error> {
+        let rotxn = self.env.read_txn()?;
+        let stxos = self
+            .state
+            .get_stxos_by_addresses(&rotxn, addresses)
+            .map_err(DbError::from)?;
+        Ok(stxos)
+    }
+
     pub fn get_utxos_by_addresses(
         &self,
         addresses: &HashSet<Address>,

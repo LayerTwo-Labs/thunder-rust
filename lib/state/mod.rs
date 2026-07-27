@@ -175,6 +175,25 @@ impl State {
         Ok(height)
     }
 
+    pub fn get_stxos_by_addresses(
+        &self,
+        rotxn: &RoTxn,
+        addresses: &HashSet<Address>,
+    ) -> Result<HashMap<OutPoint, SpentOutput>, db_error::Iter> {
+        let stxos: HashMap<OutPoint, _> = self
+            .stxos
+            .iter(rotxn)?
+            .filter_map(|(key, output)| {
+                if addresses.contains(&output.output.address) {
+                    Ok(Some((key.into(), output)))
+                } else {
+                    Ok(None)
+                }
+            })
+            .collect()?;
+        Ok(stxos)
+    }
+
     pub fn get_utxos(
         &self,
         rotxn: &RoTxn,
