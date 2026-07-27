@@ -77,8 +77,18 @@ pub enum Command {
     },
     /// Get a new address
     GetNewAddress,
+    /// Get stxos for addresses
+    GetStxos {
+        #[arg(required = true)]
+        addresses: Vec<Address>,
+    },
     /// Get transaction by txid
     GetTransaction { txid: Txid },
+    /// Get utxos for addresses
+    GetUtxos {
+        #[arg(required = true)]
+        addresses: Vec<Address>,
+    },
     /// Get wallet addresses, sorted by base58 encoding
     GetWalletAddresses,
     /// Get wallet UTXOs
@@ -224,9 +234,19 @@ where
             let address = rpc_client.get_new_address().await?;
             format!("{address}")
         }
+        Command::GetStxos { addresses } => {
+            let addresses = addresses.into_iter().collect();
+            let stxos = rpc_client.get_stxos(addresses).await?;
+            serde_json::to_string_pretty(&stxos)?
+        }
         Command::GetTransaction { txid } => {
             let tx_info = rpc_client.get_transaction(txid).await?;
             serde_json::to_string_pretty(&tx_info)?
+        }
+        Command::GetUtxos { addresses } => {
+            let addresses = addresses.into_iter().collect();
+            let utxos = rpc_client.get_utxos(addresses).await?;
+            serde_json::to_string_pretty(&utxos)?
         }
         Command::GetWalletAddresses => {
             let addresses = rpc_client.get_wallet_addresses().await?;
