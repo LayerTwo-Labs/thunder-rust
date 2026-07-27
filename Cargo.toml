@@ -34,7 +34,7 @@ error-fatality = "0.1.2"
 fallible-iterator = "0.3.0"
 futures = { version = "0.3.30", default-features = false }
 governor = { version = "0.8.1", default-features = false }
-hashlink = "0.10.0"
+hashlink = "0.12.1"
 heed = "0.22.0"
 http = "1.2.0"
 human-size = "0.4.3"
