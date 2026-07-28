@@ -54,18 +54,17 @@ pub trait Rpc {
         fee_sats: u64,
     ) -> RpcResult<bitcoin::Txid>;
 
-    /// Create a tx that transfers funds to the specified address,
-    /// without signing it
+    /// Create a tx that transfers funds to the specified address
     #[method(name = "create_transfer")]
     async fn create_transfer(
         &self,
         dest: Address,
         value_sats: u64,
         fee_sats: u64,
-    ) -> RpcResult<Transaction>;
+    ) -> RpcResult<Txid>;
 
     /// Creates a tx that initiates a withdrawal to the specified mainchain
-    /// address, without signing it
+    /// address
     #[method(name = "create_withdrawal")]
     async fn create_withdrawal(
         &self,
@@ -78,7 +77,7 @@ pub trait Rpc {
         amount_sats: u64,
         fee_sats: u64,
         mainchain_fee_sats: u64,
-    ) -> RpcResult<Transaction>;
+    ) -> RpcResult<Txid>;
 
     /// Format a deposit address
     #[method(name = "format_deposit_address")]
