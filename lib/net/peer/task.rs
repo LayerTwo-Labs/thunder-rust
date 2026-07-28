@@ -26,7 +26,7 @@ use crate::{
     types::{
         AuthorizedTransaction, BlockHash, BmmResult, Header, Tip, VERSION,
     },
-    util::join_set,
+    util::{ErrorChain, join_set},
 };
 
 pub(in crate::net::peer) struct ConnectionTask {
@@ -789,12 +789,16 @@ impl ConnectionTask {
                     .map_err(|_| Error::SendBlockingTask)?;
             }
             InternalMessage::BmmVerificationError(err) => {
-                let err: anyhow::Error = err;
-                tracing::error!("Error attempting BMM verification: {err:#}");
+                tracing::error!(
+                    "Error attempting BMM verification: {:#}",
+                    ErrorChain::new(&err)
+                );
             }
             InternalMessage::MainchainAncestorsError(err) => {
-                let err: anyhow::Error = err;
-                tracing::error!("Error fetching mainchain ancestors: {err:#}");
+                tracing::error!(
+                    "Error fetching mainchain ancestors: {:#}",
+                    ErrorChain::new(&err)
+                );
             }
             InternalMessage::MainchainAncestors(peer_state_id)
             | InternalMessage::Headers(peer_state_id)
