@@ -65,7 +65,7 @@ impl RpcServer for RpcServerImpl {
         dest: Address,
         value_sats: u64,
         fee_sats: u64,
-    ) -> RpcResult<thunder::types::Transaction> {
+    ) -> RpcResult<Txid> {
         let accumulator =
             self.app.node.get_tip_accumulator().map_err(custom_err)?;
         let tx = self
@@ -78,7 +78,9 @@ impl RpcServer for RpcServerImpl {
                 Amount::from_sat(fee_sats),
             )
             .map_err(custom_err)?;
-        Ok(tx)
+        let txid = tx.txid();
+        let () = self.app.sign_and_send(tx).map_err(custom_err)?;
+        Ok(txid)
     }
 
     async fn create_withdrawal(
@@ -87,7 +89,7 @@ impl RpcServer for RpcServerImpl {
         amount_sats: u64,
         fee_sats: u64,
         mainchain_fee_sats: u64,
-    ) -> RpcResult<thunder::types::Transaction> {
+    ) -> RpcResult<Txid> {
         let accumulator =
             self.app.node.get_tip_accumulator().map_err(custom_err)?;
         let tx = self
@@ -101,7 +103,9 @@ impl RpcServer for RpcServerImpl {
                 Amount::from_sat(fee_sats),
             )
             .map_err(custom_err)?;
-        Ok(tx)
+        let txid = tx.txid();
+        let () = self.app.sign_and_send(tx).map_err(custom_err)?;
+        Ok(txid)
     }
 
     async fn connect_peer(&self, addr: SocketAddr) -> RpcResult<()> {

@@ -249,21 +249,15 @@ impl Sidechain for PostSetup {
         fee: bitcoin::Amount,
     ) -> Result<bip300301_enforcer_lib::types::M6id, Self::CreateWithdrawalError>
     {
-        {
-            let withdrawal_tx = self
-                .rpc_client
-                .create_withdrawal(
-                    receive_address.as_unchecked().clone(),
-                    value.to_sat(),
-                    0,
-                    fee.to_sat(),
-                )
-                .await?;
-            let _signed_withdrawal_tx = self
-                .rpc_client
-                .sign_transaction(withdrawal_tx, Some(true))
-                .await?;
-        }
+        let _txid = self
+            .rpc_client
+            .create_withdrawal(
+                receive_address.as_unchecked().clone(),
+                value.to_sat(),
+                0,
+                fee.to_sat(),
+            )
+            .await?;
         let blocks_to_mine = 'blocks_to_mine: {
             use thunder::state::WITHDRAWAL_BUNDLE_FAILURE_GAP;
             let block_count = self.rpc_client.getblockcount().await?;

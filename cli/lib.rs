@@ -37,8 +37,7 @@ pub enum Command {
         #[arg(long)]
         fee_sats: u64,
     },
-    /// Create a tx that transfers funds to the specified address,
-    /// without signing it
+    /// Create a tx that transfers funds to the specified address
     CreateTransfer {
         dest: Address,
         #[arg(long)]
@@ -47,7 +46,7 @@ pub enum Command {
         fee_sats: u64,
     },
     /// Creates a tx that initiates a withdrawal to the specified mainchain
-    /// address, without signing it
+    /// address
     CreateWithdrawal {
         mainchain_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         #[arg(long)]
@@ -175,10 +174,10 @@ where
             value_sats,
             fee_sats,
         } => {
-            let tx = rpc_client
+            let txid = rpc_client
                 .create_transfer(dest, value_sats, fee_sats)
                 .await?;
-            serde_json::to_string_pretty(&tx)?
+            format!("{txid}")
         }
         Command::CreateWithdrawal {
             mainchain_address,
@@ -186,7 +185,7 @@ where
             fee_sats,
             mainchain_fee_sats,
         } => {
-            let tx = rpc_client
+            let txid = rpc_client
                 .create_withdrawal(
                     mainchain_address,
                     amount_sats,
@@ -194,7 +193,7 @@ where
                     mainchain_fee_sats,
                 )
                 .await?;
-            serde_json::to_string_pretty(&tx)?
+            format!("{txid}")
         }
         Command::FormatDepositAddress { address } => {
             rpc_client.format_deposit_address(address).await?
