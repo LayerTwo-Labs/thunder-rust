@@ -21,8 +21,10 @@ use tokio::{
 };
 
 use crate::{
-    archive::{self, Archive},
+    archive::Archive,
+    node::error::mainchain_task as error,
     types::proto::{self, mainchain},
+    util::ErrorChain,
 };
 
 /// Request data from the mainchain node
@@ -32,24 +34,11 @@ pub(super) enum Request {
     AncestorInfos(bitcoin::BlockHash),
 }
 
-/// Error included in a response
-#[derive(Debug, Error)]
-pub enum ResponseError {
-    #[error("Archive error")]
-    Archive(#[from] archive::Error),
-    #[error("Database env error")]
-    DbEnv(#[from] EnvError),
-    #[error("Database write error")]
-    DbWrite(#[from] sneed::rwtxn::Error),
-    #[error("CUSF Mainchain proto error")]
-    Mainchain(#[from] proto::Error),
-}
-
 /// Response indicating that a request has been fulfilled
 #[derive(Debug)]
 pub(super) enum Response {
     /// Response bool indicates if the requested header was available
-    AncestorInfos(bitcoin::BlockHash, Result<bool, ResponseError>),
+    AncestorInfos(bitcoin::BlockHash, Result<bool, error::Response>),
 }
 
 impl From<&Response> for Request {
@@ -92,7 +81,7 @@ where
         archive: &Archive,
         cusf_mainchain: &mut proto::mainchain::ValidatorClient<Transport>,
         block_hash: bitcoin::BlockHash,
-    ) -> Result<bool, ResponseError> {
+    ) -> Result<bool, error::Response> {
         if block_hash == bitcoin::BlockHash::all_zeros() {
             return Ok(true);
         } else {
@@ -233,8 +222,10 @@ impl MainchainTaskHandle {
         };
         let task = spawn(async move {
             if let Err(err) = task.run().await {
-                let err = anyhow::Error::from(err);
-                tracing::error!("Mainchain task error: {err:#}");
+                tracing::error!(
+                    "Mainchain task error: {:#}",
+                    ErrorChain::new(&err)
+                );
             }
         });
         let task_handle = MainchainTaskHandle {
