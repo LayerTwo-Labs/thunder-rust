@@ -28,6 +28,10 @@ use crate::{
     util::join_set,
 };
 
+type BmmVerificationError = crate::node::error::mainchain_task::Response;
+
+type MainchainAncestorsError = crate::node::error::net_task::MainchainAncestors;
+
 /// Message received from the connection task / net task / node
 #[derive(Debug)]
 pub enum InternalMessage {
@@ -38,13 +42,13 @@ pub enum InternalMessage {
         peer_state_id: PeerStateId,
     },
     /// Indicates an error attempting BMM verification
-    BmmVerificationError(anyhow::Error),
+    BmmVerificationError(BmmVerificationError),
     /// Forward a request
     ForwardRequest(Request),
     /// Indicates that mainchain ancestors are now available
     MainchainAncestors(PeerStateId),
     /// Indicates an error fetching mainchain ancestors
-    MainchainAncestorsError(anyhow::Error),
+    MainchainAncestorsError(MainchainAncestorsError),
     /// Indicates that the requested headers are now available
     Headers(PeerStateId),
     /// Indicates that all requested missing block bodies are now available
