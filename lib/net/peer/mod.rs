@@ -545,11 +545,12 @@ pub struct Peer {
 }
 
 #[cfg(test)]
-mod test {
-    use std::num::NonZeroUsize;
+mod tests {
+    use std::{collections::HashSet, num::NonZeroUsize, time::Duration};
 
+    use super::Connection;
     use crate::{
-        net::peer::{Connection, message::GetBlockRequest},
+        net::peer::message::{GetBlockRequest, GetHeadersRequest},
         types::BlockHash,
     };
 
@@ -572,6 +573,29 @@ mod test {
             "10MB block response timeout {timeout:?} must exceed the heartbeat \
              timeout {:?}",
             Connection::HEARTBEAT_TIMEOUT_INTERVAL,
+        );
+    }
+
+    /// The height attached to a `GetHeaders` request originates from a peer
+    /// heartbeat, so an absurd height must not be able to inflate the read
+    /// budget (and with it, the response read timeout) without bound.
+    #[test]
+    fn get_headers_read_response_limit_is_bounded() {
+        let get_headers = GetHeadersRequest {
+            start: HashSet::new(),
+            end: BlockHash([0u8; 32]),
+            height: Some(u32::MAX),
+            peer_state_id: None,
+        };
+        let limit = get_headers.read_response_limit();
+        assert!(
+            limit.get() <= 64 * 1024 * 1024,
+            "GetHeaders read limit {limit} must stay bounded",
+        );
+        let timeout = Connection::response_read_timeout(limit);
+        assert!(
+            timeout <= Duration::from_secs(60 * 60),
+            "GetHeaders response read timeout {timeout:?} must stay bounded",
         );
     }
 

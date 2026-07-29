@@ -43,6 +43,8 @@ pub(in crate::net::peer) struct ConnectionTask {
 
 impl ConnectionTask {
     /// Check if peer tip is better, requesting headers if necessary.
+    /// `peer_tip_main_height` MUST be the mainchain height of
+    /// `peer_tip_info.tip.main_block_hash`.
     /// Returns `Some(true)` if the peer tip is better and headers are available,
     /// `Some(false)` if the peer tip is better and headers were requested,
     /// and `None` if the peer tip is not better.
@@ -51,8 +53,16 @@ impl ConnectionTask {
         request_queue: &request_queue::Sender,
         tip_info: Option<&TipInfo>,
         peer_tip_info: &TipInfo,
+        peer_tip_main_height: u32,
         peer_state_id: PeerStateId,
     ) -> Result<Option<bool>, blocking_task::TaskError> {
+        // The height attached to a headers request is only used to size the
+        // read budget for the response. The peer-supplied height is untrusted,
+        // so clamp it: a block at height `h` requires `h` distinct mainchain
+        // blocks, so the peer tip's height cannot exceed the mainchain height
+        // of the mainchain block that its BMM commitment lives in.
+        let headers_height =
+            peer_tip_info.block_height.min(peer_tip_main_height);
         // Check if the peer tip is better, requesting headers if necessary
         let Some(tip_info) = tip_info else {
             // No tip.
@@ -66,7 +76,7 @@ impl ConnectionTask {
                 let request = message::GetHeadersRequest {
                     start: HashSet::new(),
                     end: peer_tip_info.tip.block_hash,
-                    height: Some(peer_tip_info.block_height),
+                    height: Some(headers_height),
                     peer_state_id: Some(peer_state_id),
                 };
                 let _: bool = request_queue.send_request(request.into())?;
@@ -97,7 +107,7 @@ impl ConnectionTask {
                     let request = message::GetHeadersRequest {
                         start,
                         end: peer_tip_info.tip.block_hash,
-                        height: Some(peer_tip_info.block_height),
+                        height: Some(headers_height),
                         peer_state_id: Some(peer_state_id),
                     };
                     let _: bool = request_queue.send_request(request.into())?;
@@ -138,7 +148,7 @@ impl ConnectionTask {
                     let request = message::GetHeadersRequest {
                         start,
                         end: peer_tip_info.tip.block_hash,
-                        height: Some(peer_tip_info.block_height),
+                        height: Some(headers_height),
                         peer_state_id: Some(peer_state_id),
                     };
                     let _: bool = request_queue.send_request(request.into())?;
@@ -173,7 +183,7 @@ impl ConnectionTask {
                     let request = message::GetHeadersRequest {
                         start,
                         end: peer_tip_info.tip.block_hash,
-                        height: Some(peer_tip_info.block_height),
+                        height: Some(headers_height),
                         peer_state_id: Some(peer_state_id),
                     };
                     let _: bool = request_queue.send_request(request.into())?;
@@ -227,7 +237,7 @@ impl ConnectionTask {
                     let request = message::GetHeadersRequest {
                         start,
                         end: peer_tip_info.tip.block_hash,
-                        height: Some(peer_tip_info.block_height),
+                        height: Some(headers_height),
                         peer_state_id: Some(peer_state_id),
                     };
                     let _: bool = request_queue.send_request(request.into())?;
@@ -253,7 +263,7 @@ impl ConnectionTask {
                     let request = message::GetHeadersRequest {
                         start,
                         end: peer_tip_info.tip.block_hash,
-                        height: Some(peer_tip_info.block_height),
+                        height: Some(headers_height),
                         peer_state_id: Some(peer_state_id),
                     };
                     let _: bool = request_queue.send_request(request.into())?;
@@ -313,7 +323,7 @@ impl ConnectionTask {
                     let request = message::GetHeadersRequest {
                         start,
                         end: peer_tip_info.tip.block_hash,
-                        height: Some(peer_tip_info.block_height),
+                        height: Some(headers_height),
                         peer_state_id: Some(peer_state_id),
                     };
                     let _: bool = request_queue.send_request(request.into())?;
@@ -466,8 +476,8 @@ impl ConnectionTask {
             })
         };
         // Check claimed work, request mainchain headers if necessary, verify
-        // BMM
-        {
+        // BMM, and resolve the mainchain height of the peer tip's BMM block
+        let peer_tip_main_height = {
             let rotxn = ctxt.env.read_txn()?;
             match ctxt.archive.try_get_main_header_info(
                 &rotxn,
@@ -511,15 +521,20 @@ impl ConnectionTask {
                             ban_reason,
                         ));
                     }
+                    ctxt.archive.get_main_height(
+                        &rotxn,
+                        peer_tip_info.tip.main_block_hash,
+                    )?
                 }
             }
-        }
+        };
         // Check if the peer tip is better, requesting headers if necessary
         match Self::check_peer_tip_and_request_headers(
             ctxt,
             request_queue,
             tip_info.as_ref(),
             &peer_tip_info,
+            peer_tip_main_height,
             peer_state.into(),
         )? {
             Some(false) | None => return Ok(()),
