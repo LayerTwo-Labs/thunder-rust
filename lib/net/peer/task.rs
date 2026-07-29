@@ -2,12 +2,13 @@
 
 use std::{
     cmp::Ordering,
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     sync::{Arc, atomic::AtomicBool},
 };
 
 use fallible_iterator::FallibleIterator;
 use futures::{StreamExt as _, channel::mpsc};
+use hashlink::LinkedHashMap;
 use quinn::SendStream;
 use sneed::EnvError;
 
@@ -28,6 +29,13 @@ use crate::{
     },
     util::join_set,
 };
+
+/// Maximum number of peer states retained per connection.
+/// Peer states are retained so that follow-up internal messages can be
+/// associated with the peer state that prompted them. A peer chooses the
+/// contents of its own heartbeats, so it can produce an unlimited number of
+/// distinct peer states; the cache must therefore be bounded.
+const MAX_PEER_STATES: usize = 256;
 
 pub(in crate::net::peer) struct ConnectionTask {
     pub connection: Connection,
@@ -699,21 +707,37 @@ impl ConnectionTask {
         }
     }
 
+    /// Record a peer state, evicting the least recently received states if the
+    /// cache is full. Returns the ID of the recorded peer state.
+    fn insert_peer_state(
+        peer_states: &mut LinkedHashMap<PeerStateId, PeerState>,
+        peer_state: PeerState,
+    ) -> PeerStateId {
+        let peer_state_id = (&peer_state).into();
+        // Inserts at the back of the linked list, so that evicting from the
+        // front evicts the least recently received peer state
+        peer_states.insert(peer_state_id, peer_state);
+        while peer_states.len() > MAX_PEER_STATES {
+            let _evicted = peer_states.pop_front();
+        }
+        peer_state_id
+    }
+
     async fn handle_peer_request(
         ctxt: &Arc<ConnectionContext>,
         info_tx: &mpsc::UnboundedSender<Info>,
         mailbox_sender: &mailbox::Sender,
         peer_state: &mut Option<PeerStateId>,
-        // Map associating peer state hashes to peer state
-        peer_states: &mut HashMap<PeerStateId, PeerState>,
+        // Bounded map associating peer state hashes to peer state
+        peer_states: &mut LinkedHashMap<PeerStateId, PeerState>,
         response_tx: SendStream,
         request_msg: RequestMessage,
     ) -> Result<(), Error> {
         match request_msg {
             RequestMessage::Heartbeat(heartbeat) => {
                 let new_peer_state = heartbeat.0;
-                let new_peer_state_id = (&new_peer_state).into();
-                peer_states.insert(new_peer_state_id, new_peer_state);
+                let new_peer_state_id =
+                    Self::insert_peer_state(peer_states, new_peer_state);
                 if *peer_state != Some(new_peer_state_id) {
                     let ctxt = Arc::clone(ctxt);
                     let info_tx = info_tx.clone();
@@ -773,7 +797,7 @@ impl ConnectionTask {
         request_queue: &request_queue::Sender,
         blocking_task_queue_tx: &mpsc::UnboundedSender<BlockingTaskFn>,
         // known peer states
-        peer_states: &HashMap<PeerStateId, PeerState>,
+        peer_states: &LinkedHashMap<PeerStateId, PeerState>,
         msg: InternalMessage,
     ) -> Result<(), Error> {
         match msg {
@@ -787,7 +811,12 @@ impl ConnectionTask {
                 }
                 let Some(peer_state) = peer_states.get(&peer_state_id).copied()
                 else {
-                    return Err(Error::MissingPeerState(peer_state_id));
+                    // The peer state may have been evicted from the bounded
+                    // cache, so dropping the message is preferable to killing
+                    // the connection
+                    let err = Error::MissingPeerState(peer_state_id);
+                    tracing::warn!("{err}");
+                    return Ok(());
                 };
                 let ctxt = Arc::clone(ctxt);
                 let info_tx = info_tx.clone();
@@ -816,7 +845,12 @@ impl ConnectionTask {
             | InternalMessage::BodiesAvailable(peer_state_id) => {
                 let Some(peer_state) = peer_states.get(&peer_state_id).copied()
                 else {
-                    return Err(Error::MissingPeerState(peer_state_id));
+                    // The peer state may have been evicted from the bounded
+                    // cache, so dropping the message is preferable to killing
+                    // the connection
+                    let err = Error::MissingPeerState(peer_state_id);
+                    tracing::warn!("{err}");
+                    return Ok(());
                 };
                 let ctxt = Arc::clone(ctxt);
                 let info_tx = info_tx.clone();
@@ -840,8 +874,8 @@ impl ConnectionTask {
         let ctxt = Arc::new(self.ctxt);
         // current peer state
         let mut peer_state = Option::<PeerStateId>::None;
-        // known peer states
-        let mut peer_states = HashMap::<PeerStateId, PeerState>::new();
+        // known peer states, bounded to `MAX_PEER_STATES`
+        let mut peer_states = LinkedHashMap::<PeerStateId, PeerState>::new();
         let mut mailbox_stream = self
             .mailbox_rx
             .into_stream(self.connection, &self.received_msg_successfully);
@@ -934,5 +968,52 @@ impl ConnectionTask {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hashlink::LinkedHashMap;
+
+    use super::{ConnectionTask, MAX_PEER_STATES};
+    use crate::{
+        net::peer::{PeerState, PeerStateId},
+        types::Version,
+    };
+
+    fn peer_state(patch: u64) -> PeerState {
+        PeerState {
+            tip_info: None,
+            version: Version {
+                major: 0,
+                minor: 0,
+                patch,
+            },
+        }
+    }
+
+    /// A peer controls the contents of its own heartbeats, so it can send
+    /// arbitrarily many distinct peer states over a single connection. The
+    /// per-connection cache of known peer states must stay bounded, retaining
+    /// the most recently received states.
+    #[test]
+    fn peer_state_cache_is_bounded() {
+        let mut peer_states = LinkedHashMap::<PeerStateId, PeerState>::new();
+        let peer_state_ids: Vec<PeerStateId> = (0..2 * MAX_PEER_STATES)
+            .map(|patch| {
+                ConnectionTask::insert_peer_state(
+                    &mut peer_states,
+                    peer_state(patch as u64),
+                )
+            })
+            .collect();
+        assert_eq!(peer_states.len(), MAX_PEER_STATES);
+        for (idx, peer_state_id) in peer_state_ids.iter().enumerate() {
+            assert_eq!(
+                peer_states.contains_key(peer_state_id),
+                idx >= peer_state_ids.len() - MAX_PEER_STATES,
+                "unexpected cache membership for peer state {idx}"
+            );
+        }
     }
 }
