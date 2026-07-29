@@ -29,7 +29,7 @@ use crate::{
         proto::{self, mainchain},
         state::WithdrawalBundleInfo,
     },
-    util::Watchable,
+    util::{ErrorChain, Watchable},
 };
 
 pub(crate) mod error;
@@ -815,14 +815,30 @@ where
             if let Some(cusf_mainchain_block_producer) =
                 self.cusf_mainchain_block_producer.as_ref()
             {
-                {
+                let broadcast_res = {
                     let mut cusf_mainchain_block_producer_lock =
                         cusf_mainchain_block_producer.lock().await;
-                    let () = cusf_mainchain_block_producer_lock
+                    cusf_mainchain_block_producer_lock
                         .propose_withdrawal_bundle(bundle.tx())
-                        .await?;
+                        .await
+                };
+                // The new tip is already committed at this point, so a broadcast
+                // failure MUST NOT be reported as a rejected block.
+                // The bundle remains pending until the corresponding mainchain
+                // event is connected, so it is re-broadcast on the next block.
+                match broadcast_res {
+                    Ok(()) => {
+                        tracing::trace!(%m6id, "Proposed withdrawal bundle")
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            %m6id,
+                            "Failed to broadcast withdrawal bundle; \
+                            will retry on next block: {:#}",
+                            ErrorChain::new(&err),
+                        )
+                    }
                 }
-                tracing::trace!(%m6id, "Proposed withdrawal bundle");
             } else {
                 // Without the mainchain's block producer service there is
                 // nowhere to send the bundle, and it stays pending for every
