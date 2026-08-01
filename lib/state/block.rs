@@ -8,10 +8,19 @@ use crate::{
     state::{Error, PrevalidatedBlock, State, error},
     types::{
         AccumulatorDiff, AmountOverflowError, Body, FilledTransaction,
-        GetAddress as _, GetValue as _, Header, InPoint, MerkleRoot, OutPoint,
-        OutPointKey, PointedOutput, SpentOutput, Verify as _,
+        GetAddress as _, GetValue as _, Header, InPoint,
+        LEGACY_WITHDRAWAL_ACCOUNTING_BLOCKS, MerkleRoot, OutPoint, OutPointKey,
+        PointedOutput, SpentOutput, Verify as _, WithdrawalValueRule,
     },
 };
+
+fn withdrawal_rule_for_block(header: &Header) -> WithdrawalValueRule {
+    if LEGACY_WITHDRAWAL_ACCOUNTING_BLOCKS.contains(&header.hash()) {
+        WithdrawalValueRule::PayoutOnly
+    } else {
+        WithdrawalValueRule::PayoutAndMainchainFee
+    }
+}
 
 /// Prevalidate a block: compute and verify all read-only checks and
 /// prepare data needed for fast connection.
@@ -60,6 +69,7 @@ pub fn prevalidate(
     let mut filled_transactions: Vec<FilledTransaction> =
         Vec::with_capacity(body.transactions.len());
     let mut total_fees = bitcoin::Amount::ZERO;
+    let withdrawal_rule = withdrawal_rule_for_block(header);
     for transaction in &body.transactions {
         let txid = transaction.txid();
         let mut spent_utxos = Vec::with_capacity(transaction.inputs.len());
@@ -95,13 +105,19 @@ pub fn prevalidate(
             transaction: transaction.clone(),
         };
         total_fees = total_fees
-            .checked_add(state.validate_filled_transaction(&filled_tx)?)
+            .checked_add(
+                state.validate_filled_transaction_with_withdrawal_rule(
+                    &filled_tx,
+                    withdrawal_rule,
+                )?,
+            )
             .ok_or(AmountOverflowError)?;
         filled_transactions.push(filled_tx);
     }
-    let computed_merkle_root = Body::compute_merkle_root(
+    let computed_merkle_root = Body::compute_merkle_root_with_withdrawal_rule(
         body.coinbase.as_slice(),
         filled_transactions.as_slice(),
+        withdrawal_rule,
     )?;
     if computed_merkle_root != header.merkle_root {
         let err = Error::InvalidBody {
@@ -309,9 +325,11 @@ pub fn validate(
         .iter()
         .map(|t| state.fill_transaction(rotxn, t))
         .collect::<Result<_, _>>()?;
-    let merkle_root = Body::compute_merkle_root(
+    let withdrawal_rule = withdrawal_rule_for_block(header);
+    let merkle_root = Body::compute_merkle_root_with_withdrawal_rule(
         body.coinbase.as_slice(),
         filled_transactions.as_slice(),
+        withdrawal_rule,
     )?;
     if merkle_root != header.merkle_root {
         let err = Error::InvalidBody {
@@ -365,7 +383,12 @@ pub fn validate(
             accumulator_diff.insert((&pointed_output).into());
         }
         total_fees = total_fees
-            .checked_add(state.validate_filled_transaction(filled_transaction)?)
+            .checked_add(
+                state.validate_filled_transaction_with_withdrawal_rule(
+                    filled_transaction,
+                    withdrawal_rule,
+                )?,
+            )
             .ok_or(AmountOverflowError)?;
         // verify utreexo proof
         if !accumulator
@@ -488,9 +511,10 @@ pub fn connect(
         };
         filled_txs.push(filled_tx);
     }
-    let merkle_root = Body::compute_merkle_root(
+    let merkle_root = Body::compute_merkle_root_with_withdrawal_rule(
         body.coinbase.as_slice(),
         filled_txs.as_slice(),
+        withdrawal_rule_for_block(header),
     )?;
     if merkle_root != header.merkle_root {
         let err = Error::InvalidBody {
