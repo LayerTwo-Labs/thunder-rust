@@ -28,6 +28,7 @@ pub use address::Address;
 pub use hashes::{
     BlockHash, Hash, M6id, MerkleRoot, Txid, hash, hash_with_scratch_buffer,
 };
+pub(crate) use transaction::WithdrawalValueRule;
 pub use transaction::{
     Authorized, AuthorizedTransaction, Content as OutputContent,
     FilledTransaction, GetAddress, GetValue, InPoint, OutPoint, OutPointKey,
@@ -35,6 +36,30 @@ pub use transaction::{
 };
 
 pub const THIS_SIDECHAIN: u8 = 9;
+
+/// Drivenet blocks mined before withdrawals included the mainchain fee in
+/// their sidechain value. Limit compatibility to these historical blocks so
+/// all newly mined blocks keep the corrected accounting rule.
+pub static LEGACY_WITHDRAWAL_ACCOUNTING_BLOCKS: LazyLock<[BlockHash; 5]> =
+    LazyLock::new(|| {
+        [
+            "19bf0990a4fa4ffce101700d09e28aa23e6b8a64903f4c30e2b7dbdc74a695bf"
+                .parse()
+                .expect("valid block hash"),
+            "050c29feb2a2a941c927522f11abb127b7d9490de239d243da2d2146e647b483"
+                .parse()
+                .expect("valid block hash"),
+            "4970b5c50448d9dd70e2837cef8130a0eb7651bc0ac285e4c3fbd96887fb18df"
+                .parse()
+                .expect("valid block hash"),
+            "b2801de2dacdec717a27f793dc1bf9510ea3c21124c025e0ec1f3a24762d5788"
+                .parse()
+                .expect("valid block hash"),
+            "5a8521290fe161053fa868097891e1f92d78658a4dbc3843399e3d32977f1c9b"
+                .parse()
+                .expect("valid block hash"),
+        ]
+    });
 
 #[derive(Debug, Error)]
 #[error("Bitcoin amount overflow")]
@@ -816,6 +841,21 @@ impl Body {
     where
         FilledTx: Borrow<FilledTransaction>,
     {
+        Self::compute_merkle_root_with_withdrawal_rule(
+            coinbase,
+            txs,
+            transaction::WithdrawalValueRule::PayoutAndMainchainFee,
+        )
+    }
+
+    pub(crate) fn compute_merkle_root_with_withdrawal_rule<FilledTx>(
+        coinbase: &[Output],
+        txs: &[FilledTx],
+        withdrawal_rule: transaction::WithdrawalValueRule,
+    ) -> Result<MerkleRoot, ComputeMerkleRootError>
+    where
+        FilledTx: Borrow<FilledTransaction>,
+    {
         let CbmtNode {
             commitment: txs_root,
             ..
@@ -826,12 +866,12 @@ impl Body {
                 .enumerate()
                 .map(|(idx, tx)| {
                     let tx = tx.borrow();
-                    let fees = tx.get_fee().map_err(|err| {
-                        ComputeMerkleRootErrorInner {
+                    let fees = tx
+                        .get_fee_with_withdrawal_rule(withdrawal_rule)
+                        .map_err(|err| ComputeMerkleRootErrorInner {
                             txid: tx.transaction.txid(),
                             source: err,
-                        }
-                    })?;
+                        })?;
                     let canonical_size = tx.transaction.canonical_size();
                     let leaf_pre_commitment = CbmtLeafPreCommitment {
                         fee: fees,

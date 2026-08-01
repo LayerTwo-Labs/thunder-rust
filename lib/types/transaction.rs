@@ -248,6 +248,7 @@ mod tests {
     fn withdrawal_value_includes_main_fee() {
         use super::{
             Content, FilledTransaction, GetValue, Output, Transaction,
+            WithdrawalValueRule,
         };
         use crate::types::Address;
 
@@ -280,6 +281,12 @@ mod tests {
 
         // inputs covering only the payout are insufficient
         assert!(withdrawal_tx(value).get_fee().is_err());
+        assert_eq!(
+            withdrawal_tx(value)
+                .get_fee_with_withdrawal_rule(WithdrawalValueRule::PayoutOnly,)
+                .unwrap(),
+            bitcoin::Amount::ZERO
+        );
         // inputs covering payout plus mainchain fee fully fund it
         assert_eq!(
             withdrawal_tx(value + main_fee).get_fee().unwrap(),
@@ -620,6 +627,12 @@ pub enum ComputeFeeError {
     ValueOutOverflow(#[source] AmountOverflowError),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WithdrawalValueRule {
+    PayoutOnly,
+    PayoutAndMainchainFee,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FilledTransaction {
     pub transaction: Transaction,
@@ -646,12 +659,39 @@ impl FilledTransaction {
             .ok_or(AmountOverflowError)
     }
 
+    pub(crate) fn get_value_out_with_withdrawal_rule(
+        &self,
+        rule: WithdrawalValueRule,
+    ) -> Result<bitcoin::Amount, AmountOverflowError> {
+        self.transaction
+            .outputs
+            .iter()
+            .map(|output| match (&output.content, rule) {
+                (
+                    Content::Withdrawal { value, .. },
+                    WithdrawalValueRule::PayoutOnly,
+                ) => *value,
+                _ => output.get_value(),
+            })
+            .checked_sum()
+            .ok_or(AmountOverflowError)
+    }
+
     pub fn get_fee(&self) -> Result<bitcoin::Amount, ComputeFeeError> {
+        self.get_fee_with_withdrawal_rule(
+            WithdrawalValueRule::PayoutAndMainchainFee,
+        )
+    }
+
+    pub(crate) fn get_fee_with_withdrawal_rule(
+        &self,
+        rule: WithdrawalValueRule,
+    ) -> Result<bitcoin::Amount, ComputeFeeError> {
         let value_in = self
             .get_value_in()
             .map_err(ComputeFeeError::ValueInOverflow)?;
         let value_out = self
-            .get_value_out()
+            .get_value_out_with_withdrawal_rule(rule)
             .map_err(ComputeFeeError::ValueOutOverflow)?;
         if value_in < value_out {
             Err(ComputeFeeError::Underfunded)

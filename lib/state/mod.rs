@@ -355,9 +355,19 @@ impl State {
         &self,
         transaction: &FilledTransaction,
     ) -> Result<bitcoin::Amount, Error> {
+        self.validate_filled_transaction_with_withdrawal_rule(
+            transaction,
+            crate::types::WithdrawalValueRule::PayoutAndMainchainFee,
+        )
+    }
+
+    pub(crate) fn validate_filled_transaction_with_withdrawal_rule(
+        &self,
+        transaction: &FilledTransaction,
+        withdrawal_rule: crate::types::WithdrawalValueRule,
+    ) -> Result<bitcoin::Amount, Error> {
         let () = Self::validate_utxo_hashes(transaction)?;
         let mut value_in = bitcoin::Amount::ZERO;
-        let mut value_out = bitcoin::Amount::ZERO;
         for (outpoint, _, utxo) in transaction.inputs() {
             // a withdrawal output is committed to a bundle and can only be
             // spent by the bundle, never by a transaction
@@ -370,11 +380,8 @@ impl State {
                 .checked_add(utxo.get_value())
                 .ok_or(AmountOverflowError)?;
         }
-        for output in &transaction.transaction.outputs {
-            value_out = value_out
-                .checked_add(output.get_value())
-                .ok_or(AmountOverflowError)?;
-        }
+        let value_out =
+            transaction.get_value_out_with_withdrawal_rule(withdrawal_rule)?;
         if value_out > value_in {
             return Err(Error::NotEnoughValueIn);
         }
