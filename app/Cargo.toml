@@ -11,6 +11,7 @@ anyhow = { workspace = true }
 bincode = { workspace = true }
 bitcoin = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["derive"] }
+const-hex = { workspace = true }
 dirs = { workspace = true }
 fallible-iterator = { workspace = true }
 futures = { workspace = true }
