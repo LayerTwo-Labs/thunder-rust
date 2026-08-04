@@ -202,7 +202,7 @@ const fn seed_node_addrs(network: Network) -> &'static [SocketAddr] {
 pub struct Net {
     pub server: Endpoint,
     archive: Archive,
-    network: Network,
+    magic_bytes: peer_message::MagicBytes,
     state: State,
     active_peers: Arc<RwLock<HashMap<SocketAddr, PeerConnectionHandle>>>,
     // None indicates that the stream has ended
@@ -297,7 +297,7 @@ impl Net {
         let connection_ctxt = PeerConnectionCtxt {
             env,
             archive: self.archive.clone(),
-            network: self.network,
+            magic_bytes: self.magic_bytes,
             state: self.state.clone(),
         };
 
@@ -335,6 +335,7 @@ impl Net {
     pub fn new(
         env: &sneed::Env<heed::WithoutTls>,
         archive: Archive,
+        magic_bytes_override: Option<peer_message::MagicBytes>,
         network: Network,
         state: State,
         bind_addr: SocketAddr,
@@ -359,11 +360,13 @@ impl Net {
             version.put(&mut rwtxn, &(), &*VERSION)?;
         }
         rwtxn.commit().map_err(RwTxnError::from)?;
+        let magic_bytes = magic_bytes_override
+            .unwrap_or_else(|| peer_message::magic_bytes(network));
         let (peer_info_tx, peer_info_rx) = mpsc::unbounded();
         let net = Net {
             server,
             archive,
-            network,
+            magic_bytes,
             state,
             active_peers,
             peer_info_tx,
@@ -436,7 +439,7 @@ impl Net {
                         remote_address,
                     }
                 })?;
-                Connection::new(raw_conn, self.network)
+                Connection::new(raw_conn, self.magic_bytes)
             }
             None => {
                 tracing::debug!("server endpoint closed");
@@ -468,7 +471,7 @@ impl Net {
         let connection_ctxt = PeerConnectionCtxt {
             env,
             archive: self.archive.clone(),
-            network: self.network,
+            magic_bytes: self.magic_bytes,
             state: self.state.clone(),
         };
         let (connection_handle, info_rx) =

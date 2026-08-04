@@ -61,6 +61,7 @@ where
         cusf_mainchain_wallet: Option<
             mainchain::WalletClient<MainchainTransport>,
         >,
+        magic_bytes_override: Option<crate::net::peer_message::MagicBytes>,
         network: Network,
         runtime: &tokio::runtime::Runtime,
     ) -> Result<Self, Error>
@@ -119,8 +120,14 @@ where
                 archive.clone(),
                 cusf_mainchain.clone(),
             );
-        let (net, peer_info_rx) =
-            Net::new(&env, archive.clone(), network, state.clone(), bind_addr)?;
+        let (net, peer_info_rx) = Net::new(
+            &env,
+            archive.clone(),
+            magic_bytes_override,
+            network,
+            state.clone(),
+            bind_addr,
+        )?;
 
         let net_task = NetTaskHandle::new(
             runtime,
