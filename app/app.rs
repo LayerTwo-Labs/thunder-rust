@@ -271,6 +271,7 @@ impl App {
             config.net_addr,
             cusf_mainchain,
             cusf_mainchain_wallet,
+            config.network_magic_override,
             config.network,
             &runtime,
         )?;
