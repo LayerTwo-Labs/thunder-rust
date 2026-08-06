@@ -94,6 +94,16 @@ struct ProtoSupport {
     wallet: bool,
 }
 
+/// A block that is ready to be blind merged mined
+pub struct BlockTemplate {
+    /// Bribe to offer for this block
+    pub bribe: bitcoin::Amount,
+    pub header: types::Header,
+    pub body: types::Body,
+    /// Fees collected by the transactions in the block
+    pub fees: bitcoin::Amount,
+}
+
 #[derive(Clone)]
 pub struct App {
     pub node: Arc<Node>,
@@ -354,10 +364,11 @@ impl App {
     const EMPTY_BLOCK_BMM_BRIBE: bitcoin::Amount =
         bitcoin::Amount::from_sat(1000);
 
-    pub async fn mine(
+    /// Assemble a block to blind merge mine, without requesting BMM for it
+    async fn build_block_template(
         &self,
         fee: Option<bitcoin::Amount>,
-    ) -> Result<(), Error> {
+    ) -> Result<BlockTemplate, Error> {
         let Some(miner) = self.miner.as_ref() else {
             return Err(Error::NoCusfMainchainWalletClient);
         };
@@ -429,7 +440,7 @@ impl App {
         } else {
             None
         };
-        let (bribe, header, body) = if prev_side_hash == tip_hash {
+        let (bribe, header, body, fees) = if prev_side_hash == tip_hash {
             const NUM_TRANSACTIONS: usize = 1000;
             let (txs, tx_fees) =
                 self.node.get_transactions(NUM_TRANSACTIONS)?;
@@ -484,7 +495,7 @@ impl App {
                     Self::EMPTY_BLOCK_BMM_BRIBE
                 }
             });
-            (bribe, header, body)
+            (bribe, header, body, tx_fees)
         } else {
             let coinbase = Vec::new();
             let (merkle_root, roots) = {
@@ -523,8 +534,55 @@ impl App {
                 prev_main_hash,
             };
             let bribe = Self::EMPTY_BLOCK_BMM_BRIBE;
-            (bribe, header, body)
+            (bribe, header, body, bitcoin::Amount::ZERO)
         };
+        Ok(BlockTemplate {
+            bribe,
+            header,
+            body,
+            fees,
+        })
+    }
+
+    /// Assemble a block to blind merge mine. The caller requests BMM for
+    /// `header.hash()` itself, and submits the block via `connect_block` once
+    /// its BMM request is included in a mainchain block.
+    pub async fn get_block_template(&self) -> Result<BlockTemplate, Error> {
+        self.build_block_template(None).await
+    }
+
+    /// Connect a block for which a BMM request was included in the specified
+    /// mainchain block. Returns `true` if it was accepted as the new tip.
+    pub async fn connect_block(
+        &self,
+        block: types::Block,
+        main_block_hash: bitcoin::BlockHash,
+    ) -> Result<bool, Error> {
+        let types::Block { header, body } = block;
+        let accepted = self
+            .node
+            .submit_block(main_block_hash, &header, &body)
+            .await?;
+        if accepted {
+            let () = self.update()?;
+        }
+        Ok(accepted)
+    }
+
+    /// Attempt to mine a sidechain block
+    pub async fn mine(
+        &self,
+        fee: Option<bitcoin::Amount>,
+    ) -> Result<(), Error> {
+        let Some(miner) = self.miner.as_ref() else {
+            return Err(Error::NoCusfMainchainWalletClient);
+        };
+        let BlockTemplate {
+            bribe,
+            header,
+            body,
+            ..
+        } = self.build_block_template(fee).await?;
         let mut miner_write = miner.write().await;
         let bmm_txid = miner_write
             .attempt_bmm(bribe.to_sat(), 0, header, body)
