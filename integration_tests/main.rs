@@ -4,6 +4,7 @@ use bip300301_enforcer_integration_tests::util::{
 use clap::Parser;
 use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
 
+mod block_template;
 mod ibd;
 mod integration_test;
 mod setup;

@@ -30,6 +30,12 @@ impl<T> JsonParser<T> {
 pub enum Command {
     /// Get balance in sats
     Balance,
+    /// Connect a block for which a BMM request was included in the specified
+    /// mainchain block. The block is the JSON returned by `get-block-template`.
+    ConnectBlock {
+        block: String,
+        main_block_hash: bitcoin::BlockHash,
+    },
     /// Connect to a peer
     ConnectPeer { addr: SocketAddr },
     /// Deposit to address
@@ -74,6 +80,8 @@ pub enum Command {
     GetBlock {
         block_hash: thunder::types::BlockHash,
     },
+    /// Assemble a block to blind merge mine, without requesting BMM for it
+    GetBlockTemplate,
     /// Get mainchain blocks that commit to a specified block hash
     GetBmmInclusions {
         block_hash: thunder::types::BlockHash,
@@ -168,6 +176,15 @@ where
             let balance = rpc_client.balance().await?;
             serde_json::to_string_pretty(&balance)?
         }
+        Command::ConnectBlock {
+            block,
+            main_block_hash,
+        } => {
+            let block = serde_json::from_str(&block)?;
+            let accepted =
+                rpc_client.connect_block(block, main_block_hash).await?;
+            format!("{accepted}")
+        }
         Command::ConnectPeer { addr } => {
             let () = rpc_client.connect_peer(addr).await?;
             String::default()
@@ -226,6 +243,10 @@ where
         Command::GetBestSidechainBlockHash => {
             let block_hash = rpc_client.get_best_sidechain_block_hash().await?;
             serde_json::to_string_pretty(&block_hash)?
+        }
+        Command::GetBlockTemplate => {
+            let template = rpc_client.get_block_template().await?;
+            serde_json::to_string_pretty(&template)?
         }
         Command::GetBmmInclusions { block_hash } => {
             let bmm_inclusions =
