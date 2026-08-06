@@ -13,7 +13,7 @@ use futures::{TryFutureExt as _, channel::mpsc, future};
 use reserve_port::ReservedPort;
 use thiserror::Error;
 use thunder::types::{Network, OutputContent, PointedOutput};
-use thunder_app_rpc_api::RpcClient as _;
+use thunder_app_rpc_api::{node::RpcClient as _, wallet::RpcClient as _};
 use tokio::time::sleep;
 
 use crate::util::ThunderApp;

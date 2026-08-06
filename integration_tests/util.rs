@@ -58,6 +58,8 @@ impl ThunderApp {
             "--net-addr".to_owned(),
             format!("127.0.0.1:{}", self.net_port),
             format!("--network={}", self.network),
+            "--private-rpc-addr".to_owned(),
+            format!("127.0.0.1:{}", self.rpc_port),
             "--rpc-addr".to_owned(),
             format!("127.0.0.1:{}", self.rpc_port),
         ];

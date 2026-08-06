@@ -5,7 +5,10 @@ use http::HeaderMap;
 use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder};
 
 use thunder::types::{Address, Txid};
-use thunder_app_rpc_api::RpcClient;
+use thunder_app_rpc_api::{
+    node::{PrivateRpcClient as _, RpcClient as _},
+    wallet::RpcClient as _,
+};
 use tracing_subscriber::layer::SubscriberExt as _;
 
 struct JsonParser<T>(PhantomData<T>);
@@ -283,9 +286,12 @@ where
             serde_json::to_string_pretty(&withdrawal_bundle)?
         }
         Command::OpenApiSchema => {
-            let openapi =
-                <thunder_app_rpc_api::RpcDoc as utoipa::OpenApi>::openapi();
-            openapi.to_pretty_json()?
+            use utoipa::OpenApi as _;
+            let mut schema = thunder_app_rpc_api::open_api::RpcDoc::openapi();
+            schema.merge(thunder_app_rpc_api::node::PrivateRpcDoc::openapi());
+            schema.merge(thunder_app_rpc_api::node::RpcDoc::openapi());
+            schema.merge(thunder_app_rpc_api::wallet::RpcDoc::openapi());
+            schema.to_pretty_json()?
         }
         Command::RemoveFromMempool { txid } => {
             let () = rpc_client.remove_from_mempool(txid).await?;

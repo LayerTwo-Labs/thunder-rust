@@ -12,7 +12,7 @@ use bip300301_enforcer_integration_tests::{
     util::{AbortOnDrop, AsyncTrial, TestFailureCollector, TestFileRegistry},
 };
 use futures::{FutureExt, StreamExt as _, channel::mpsc, future::BoxFuture};
-use thunder_app_rpc_api::RpcClient as _;
+use thunder_app_rpc_api::node::{PrivateRpcClient as _, RpcClient as _};
 use tokio::time::sleep;
 use tracing::Instrument as _;
 
