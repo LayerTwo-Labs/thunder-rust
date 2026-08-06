@@ -25,7 +25,7 @@ pub mod node {
     use l2l_openapi::open_api;
     use serde::{Deserialize, Serialize};
     use thunder_types::{
-        Address, Authorized, BlockHash, MerkleRoot, OutPoint, Output,
+        Address, Authorized, Block, BlockHash, MerkleRoot, OutPoint, Output,
         OutputContent, Pointed, PointedOutput, SpentOutput, Transaction, Txid,
         WithdrawalBundle, net::Peer, schema as thunder_schema,
     };
@@ -86,6 +86,20 @@ pub mod node {
     ])]
     #[rpc(client, server, server_bounds(Self: open_api::RpcServer))]
     pub trait Rpc {
+        /// Connect a block template for which a BMM request was included in the
+        /// specified mainchain block. Returns `true` if it was accepted as the new
+        /// tip.
+        #[open_api_method(output_schema(ToSchema))]
+        #[method(name = "connect_block")]
+        async fn connect_block(
+            &self,
+            block: Block,
+            #[open_api_method_arg(schema(
+                PartialSchema = "thunder_schema::BitcoinBlockHash"
+            ))]
+            main_block_hash: bitcoin::BlockHash,
+        ) -> RpcResult<bool>;
+
         /// Get the block with specified block hash, if it exists
         #[method(name = "get_block")]
         async fn get_block(
@@ -183,13 +197,26 @@ pub mod node {
 pub mod wallet {
     use jsonrpsee::{core::RpcResult, proc_macros::rpc};
     use l2l_openapi::open_api;
+    use serde::{Deserialize, Serialize};
     use thunder_types::{
-        Address, Authorized, MerkleRoot, OutPoint, Output, OutputContent,
-        PointedOutput, Transaction, Txid, schema as thunder_schema,
-        wallet::Balance,
+        Address, Authorized, Block, BlockHash, MerkleRoot, OutPoint, Output,
+        OutputContent, PointedOutput, Transaction, Txid,
+        schema as thunder_schema, wallet::Balance,
     };
+    use utoipa::ToSchema;
 
     use crate::{open_api, schema};
+
+    #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+    pub struct GetBlockTemplateResponse {
+        /// Block hash to commit to in a BMM request
+        pub critical_hash: BlockHash,
+        /// Block to pass to `connect_block` once its BMM request is included in a
+        /// mainchain block
+        pub block: Block,
+        /// Fees collected by the transactions in the block, in sats
+        pub fees_sats: u64,
+    }
 
     #[open_api(ref_schemas[
         Address, MerkleRoot, OutPoint, Output, OutputContent, Txid,
@@ -250,6 +277,15 @@ pub mod wallet {
         /// Generate a mnemonic seed phrase
         #[method(name = "generate_mnemonic")]
         async fn generate_mnemonic(&self) -> RpcResult<String>;
+
+        /// Assemble a block to blind merge mine, without requesting BMM for it.
+        /// The caller requests BMM for `critical_hash` itself, then passes the
+        /// block back to `connect_block`.
+        #[open_api_method(output_schema(ToSchema))]
+        #[method(name = "get_block_template")]
+        async fn get_block_template(
+            &self,
+        ) -> RpcResult<GetBlockTemplateResponse>;
 
         /// Get a new address
         #[method(name = "get_new_address")]
