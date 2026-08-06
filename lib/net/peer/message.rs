@@ -81,19 +81,29 @@ pub struct GetHeadersRequest {
 }
 
 impl GetHeadersRequest {
+    /// Hard cap on the bytes to read in a response, regardless of the
+    /// requested height. Bounds memory use (and the response read timeout)
+    /// even if an unreasonably large height is used to size the read budget.
+    const MAX_READ_RESPONSE_LIMIT: NonZeroUsize =
+        NonZeroUsize::new(64 * 1024 * 1024).unwrap();
+
     /// Limit bytes to read in a response to a request
     pub const fn read_response_limit(&self) -> NonZeroUsize {
         // 2KB limit per header
         const READ_HEADER_LIMIT: NonZeroUsize =
             NonZeroUsize::new(2048).unwrap();
-        let expected_headers = self.height.expect(
+        let expected_headers = (self.height.expect(
             "GetHeaders height should always be Some in an outbound request",
-        ) as usize
-            + 1;
-        NonZeroUsize::new(expected_headers)
+        ) as usize)
+            .saturating_add(1);
+        let limit = NonZeroUsize::new(expected_headers)
             .unwrap()
-            .checked_mul(READ_HEADER_LIMIT)
-            .unwrap()
+            .saturating_mul(READ_HEADER_LIMIT);
+        if limit.get() > Self::MAX_READ_RESPONSE_LIMIT.get() {
+            Self::MAX_READ_RESPONSE_LIMIT
+        } else {
+            limit
+        }
     }
 }
 
