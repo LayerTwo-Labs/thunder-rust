@@ -651,11 +651,25 @@ where
             let m6id = bundle.compute_m6id();
             let mut cusf_mainchain_wallet_lock =
                 cusf_mainchain_wallet.lock().await;
-            let () = cusf_mainchain_wallet_lock
+            let broadcast_res = cusf_mainchain_wallet_lock
                 .broadcast_withdrawal_bundle(bundle.tx())
-                .await?;
+                .await;
             drop(cusf_mainchain_wallet_lock);
-            tracing::trace!(%m6id, "Broadcast withdrawal bundle");
+            // The new tip is already committed at this point, so a broadcast
+            // failure MUST NOT be reported as a rejected block.
+            // The bundle remains pending until the corresponding mainchain
+            // event is connected, so it is re-broadcast on the next block.
+            match broadcast_res {
+                Ok(()) => tracing::trace!(%m6id, "Broadcast withdrawal bundle"),
+                Err(err) => {
+                    let err = anyhow::Error::from(err);
+                    tracing::error!(
+                        %m6id,
+                        "Failed to broadcast withdrawal bundle; \
+                        will retry on next block: {err:#}"
+                    )
+                }
+            }
         }
         Ok(true)
     }
