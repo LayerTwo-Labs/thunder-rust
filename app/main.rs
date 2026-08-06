@@ -219,8 +219,12 @@ fn main() -> anyhow::Result<()> {
             let app = app.clone();
             async move {
                 tracing::info!("starting RPC server at `{}`", config.rpc_addr);
-                if let Err(err) =
-                    rpc_server::run_server(app, config.rpc_addr).await
+                if let Err(err) = rpc_server::run_server(
+                    app,
+                    config.private_rpc_addr,
+                    config.rpc_addr,
+                )
+                .await
                 {
                     app_tx.send(err).expect("failed to send error to app");
                 }

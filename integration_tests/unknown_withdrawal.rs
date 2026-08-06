@@ -19,7 +19,7 @@ use futures::{
     FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture,
 };
 use thunder::types::OutPoint;
-use thunder_app_rpc_api::RpcClient as _;
+use thunder_app_rpc_api::node::RpcClient as _;
 use tokio::time::sleep;
 use tracing::Instrument as _;
 
