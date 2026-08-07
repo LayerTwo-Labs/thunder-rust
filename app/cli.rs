@@ -144,6 +144,11 @@ pub(super) struct Cli {
     /// Socket address to host the private RPC server
     #[arg(default_value_t = DEFAULT_RPC_ADDR, long, short)]
     private_rpc_addr: SocketAddr,
+    /// Path to the private-RPC auth cookie file.
+    /// Defaults to `<DATADIR>/.cookie`. Created automatically with mode 0600
+    /// if it does not exist. Clients must send `Authorization: Bearer <token>`.
+    #[arg(long)]
+    rpc_cookie_file: Option<PathBuf>,
     /// Socket address to host the RPC server
     #[arg(default_value_t = DEFAULT_RPC_ADDR, long, short)]
     rpc_addr: SocketAddr,
@@ -163,6 +168,8 @@ pub struct Config {
     pub network: Network,
     pub network_magic_override: Option<thunder::net::peer_message::MagicBytes>,
     pub private_rpc_addr: SocketAddr,
+    /// Cookie file used to authenticate private / wallet RPC requests.
+    pub rpc_cookie_file: PathBuf,
     pub rpc_addr: SocketAddr,
 }
 
@@ -189,8 +196,12 @@ impl Cli {
         } else {
             saturating_pred_level(self.log_level)
         };
+        let datadir = self.datadir.0;
+        let rpc_cookie_file = self
+            .rpc_cookie_file
+            .unwrap_or_else(|| crate::rpc_auth::default_cookie_path(&datadir));
         Ok(Config {
-            datadir: self.datadir.0,
+            datadir,
             headless: self.headless,
             log_dir,
             log_level,
@@ -201,6 +212,7 @@ impl Cli {
             network: self.network,
             network_magic_override: self.network_magic,
             private_rpc_addr: self.private_rpc_addr,
+            rpc_cookie_file,
             rpc_addr: self.rpc_addr,
         })
     }

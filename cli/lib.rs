@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, net::SocketAddr, time::Duration};
+use std::{marker::PhantomData, net::SocketAddr, path::PathBuf, time::Duration};
 
 use clap::{Parser, Subcommand};
 use http::HeaderMap;
@@ -153,6 +153,16 @@ pub struct Cli {
     /// Base URL used for requests to the RPC server.
     #[arg(default_value = "http://localhost:6009", long)]
     pub rpc_url: url::Url,
+
+    /// Bearer token for private / wallet RPC authentication.
+    /// If unset, the token is read from `--rpc-cookie-file` when present.
+    #[arg(long, env = "THUNDER_RPC_AUTH_TOKEN")]
+    pub rpc_auth_token: Option<String>,
+
+    /// Path to the node RPC cookie file (default: platform data dir
+    /// `thunder/.cookie`). Used when `--rpc-auth-token` is not set.
+    #[arg(long)]
+    pub rpc_cookie_file: Option<PathBuf>,
 
     #[arg(long, help = "Timeout for RPC requests in seconds (default: 60)")]
     pub timeout: Option<u64>,
@@ -358,6 +368,43 @@ fn set_tracing_subscriber() -> anyhow::Result<()> {
 }
 
 impl Cli {
+    /// Resolve the bearer token used for private RPC auth, if available.
+    fn resolve_auth_token(&self) -> anyhow::Result<Option<String>> {
+        if let Some(token) = &self.rpc_auth_token {
+            anyhow::ensure!(
+                !token.trim().is_empty(),
+                "--rpc-auth-token / THUNDER_RPC_AUTH_TOKEN must not be empty"
+            );
+            return Ok(Some(token.trim().to_owned()));
+        }
+
+        let cookie_path = if let Some(path) = &self.rpc_cookie_file {
+            path.clone()
+        } else if let Some(data_dir) = dirs::data_dir() {
+            data_dir.join("thunder").join(".cookie")
+        } else {
+            return Ok(None);
+        };
+
+        if !cookie_path.is_file() {
+            return Ok(None);
+        }
+
+        let content = std::fs::read_to_string(&cookie_path).map_err(|err| {
+            anyhow::anyhow!(
+                "failed to read RPC cookie file `{}`: {err}",
+                cookie_path.display()
+            )
+        })?;
+        let token = content.trim();
+        anyhow::ensure!(
+            !token.is_empty(),
+            "RPC cookie file `{}` is empty",
+            cookie_path.display()
+        );
+        Ok(Some(token.to_owned()))
+    }
+
     pub async fn run(self) -> anyhow::Result<String> {
         if self.verbose {
             set_tracing_subscriber()?;
@@ -369,6 +416,21 @@ impl Cli {
 
         tracing::info!("request ID: {}", request_id);
 
+        let mut headers = HeaderMap::from_iter([(
+            http::header::HeaderName::from_static("x-request-id"),
+            http::header::HeaderValue::from_str(&request_id)?,
+        )]);
+
+        if let Some(token) = self.resolve_auth_token()? {
+            let value = format!("Bearer {token}");
+            headers.insert(
+                http::header::AUTHORIZATION,
+                http::header::HeaderValue::from_str(&value).map_err(|err| {
+                    anyhow::anyhow!("invalid RPC auth token for Authorization header: {err}")
+                })?,
+            );
+        }
+
         let builder = HttpClientBuilder::default()
             .request_timeout(Duration::from_secs(
                 self.timeout.unwrap_or(DEFAULT_TIMEOUT),
@@ -377,10 +439,7 @@ impl Cli {
                 jsonrpsee::core::middleware::RpcServiceBuilder::new()
                     .rpc_logger(1024),
             )
-            .set_headers(HeaderMap::from_iter([(
-                http::header::HeaderName::from_static("x-request-id"),
-                http::header::HeaderValue::from_str(&request_id)?,
-            )]));
+            .set_headers(headers);
 
         let client = builder.build(self.rpc_url)?;
         let result = handle_command(&client, self.command).await?;

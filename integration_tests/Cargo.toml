@@ -14,6 +14,7 @@ bitcoin = { workspace = true }
 clap = { workspace = true }
 dotenvy = { workspace = true }
 futures = { workspace = true }
+http = { workspace = true }
 jsonrpsee = { workspace = true }
 libtest-mimic = { workspace = true }
 reserve-port = { workspace = true }
@@ -38,5 +39,3 @@ workspace = true
 name = "integration_tests"
 path = "main.rs"
 harness = false
-test = false
-crate-type = ["bin"]

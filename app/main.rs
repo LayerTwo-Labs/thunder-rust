@@ -11,6 +11,7 @@ mod app;
 mod cli;
 mod gui;
 mod line_buffer;
+mod rpc_auth;
 mod rpc_server;
 mod util;
 
@@ -217,12 +218,16 @@ fn main() -> anyhow::Result<()> {
         // spawn rpc server
         app.runtime.spawn({
             let app = app.clone();
+            let private_rpc_addr = config.private_rpc_addr;
+            let rpc_addr = config.rpc_addr;
+            let rpc_cookie_file = config.rpc_cookie_file.clone();
             async move {
-                tracing::info!("starting RPC server at `{}`", config.rpc_addr);
+                tracing::info!("starting RPC server at `{}`", rpc_addr);
                 if let Err(err) = rpc_server::run_server(
                     app,
-                    config.private_rpc_addr,
-                    config.rpc_addr,
+                    private_rpc_addr,
+                    rpc_addr,
+                    &rpc_cookie_file,
                 )
                 .await
                 {

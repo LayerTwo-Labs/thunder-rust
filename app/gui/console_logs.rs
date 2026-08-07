@@ -69,6 +69,8 @@ impl ConsoleLogs {
         };
         let cli = thunder_app_cli_lib::Cli {
             rpc_url: self.rpc_addr.clone(),
+            rpc_auth_token: None,
+            rpc_cookie_file: None,
             timeout: None,
             command,
             verbose: false,

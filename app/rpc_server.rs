@@ -1,4 +1,4 @@
-use std::{collections::HashSet, net::SocketAddr};
+use std::{collections::HashSet, net::SocketAddr, path::Path};
 
 use bitcoin::Amount;
 use jsonrpsee::{
@@ -17,9 +17,10 @@ use tower_http::{
         MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer,
     },
     trace::{DefaultOnFailure, DefaultOnResponse, TraceLayer},
+    validate_request::ValidateRequestHeaderLayer,
 };
 
-use crate::app::App;
+use crate::{app::App, rpc_auth};
 
 fn custom_err_msg(err_msg: impl Into<String>) -> ErrorObject<'static> {
     ErrorObject::owned(-1, err_msg.into(), Option::<()>::None)
@@ -477,8 +478,21 @@ pub async fn run_server(
     app: App,
     private_rpc_addr: SocketAddr,
     rpc_addr: SocketAddr,
+    rpc_cookie_file: &Path,
 ) -> anyhow::Result<ServerAddesses> {
     const REQUEST_ID_HEADER: &str = "x-request-id";
+
+    // Private / wallet RPC is always authenticated via a bearer token stored in
+    // the cookie file. When public and private share a single bind address the
+    // whole surface is authenticated (wallet methods are exposed there).
+    let auth_token = rpc_auth::load_or_create_cookie(rpc_cookie_file)?;
+    if !private_rpc_addr.ip().is_loopback() {
+        tracing::warn!(
+            %private_rpc_addr,
+            "private RPC is bound to a non-loopback address; ensure the cookie \
+             file permissions stay restrictive and the token is not shared"
+        );
+    }
 
     // Ordering here matters! Order here is from official docs on request IDs tracings
     // https://docs.rs/tower-http/latest/tower_http/request_id/index.html#using-trace
@@ -522,23 +536,38 @@ pub async fn run_server(
             .into_inner()
     };
 
-    let http_middleware = || {
+    let public_http_middleware = || {
         tower::ServiceBuilder::new()
             .layer(tracer())
             .layer(CorsLayer::permissive())
     };
+    // Bearer auth is applied only to the private / combined RPC server.
+    // tower-http marks the helper deprecated as "too basic", but cookie bearer
+    // auth is exactly the threat model we want here (shared secret on loopback).
+    #[allow(deprecated)]
+    let private_http_middleware = {
+        let auth_token = auth_token.clone();
+        move || {
+            tower::ServiceBuilder::new()
+                .layer(tracer())
+                .layer(CorsLayer::permissive())
+                .layer(ValidateRequestHeaderLayer::bearer(&auth_token))
+        }
+    };
     let rpc_middleware = || RpcServiceBuilder::new().rpc_logger(1024);
 
-    let server = Server::builder()
-        .set_http_middleware(http_middleware())
-        .set_rpc_middleware(rpc_middleware())
-        .build(rpc_addr)
-        .await?;
-    let rpc_server_addr = server.local_addr()?;
-
     let (_task_handle, server_addrs) = if private_rpc_addr != rpc_addr {
+        // Public read-mostly surface: no auth required.
+        let server = Server::builder()
+            .set_http_middleware(public_http_middleware())
+            .set_rpc_middleware(rpc_middleware())
+            .build(rpc_addr)
+            .await?;
+        let rpc_server_addr = server.local_addr()?;
+
+        // Private / wallet / control surface: cookie auth required.
         let private_rpc_server = Server::builder()
-            .set_http_middleware(http_middleware())
+            .set_http_middleware(private_http_middleware())
             .set_rpc_middleware(rpc_middleware())
             .build(private_rpc_addr)
             .await?;
@@ -564,6 +593,11 @@ pub async fn run_server(
                 .merge(rpc_api::wallet::RpcServer::into_rpc(rpc_server_impl))?;
             private_rpc_server.start(rpc_module)
         };
+        tracing::info!(
+            %private_rpc_server_addr,
+            cookie = %rpc_cookie_file.display(),
+            "private RPC requires Authorization: Bearer <cookie>"
+        );
         let server_addrs = ServerAddesses {
             _rpc_addr: rpc_server_addr,
             _private_rpc_addr: private_rpc_server_addr,
@@ -576,6 +610,15 @@ pub async fn run_server(
         });
         (task_handle, server_addrs)
     } else {
+        // Combined public+private surface on one port: auth required for all
+        // methods so wallet / stop cannot be reached anonymously.
+        let server = Server::builder()
+            .set_http_middleware(private_http_middleware())
+            .set_rpc_middleware(rpc_middleware())
+            .build(rpc_addr)
+            .await?;
+        let rpc_server_addr = server.local_addr()?;
+
         let rpc_server_impl = RpcServerImpl::<true> { app };
         let mut rpc_module =
             rpc_api::open_api::RpcServer::into_rpc(rpc_server_impl.clone());
@@ -588,6 +631,11 @@ pub async fn run_server(
         rpc_module
             .merge(rpc_api::wallet::RpcServer::into_rpc(rpc_server_impl))?;
 
+        tracing::info!(
+            %rpc_server_addr,
+            cookie = %rpc_cookie_file.display(),
+            "combined RPC requires Authorization: Bearer <cookie>"
+        );
         let server_addrs = ServerAddesses {
             _rpc_addr: rpc_server_addr,
             _private_rpc_addr: rpc_server_addr,

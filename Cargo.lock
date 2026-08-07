@@ -6502,6 +6502,7 @@ dependencies = [
  "anyhow",
  "bitcoin",
  "clap",
+ "dirs",
  "http",
  "jsonrpsee",
  "serde",
@@ -6541,6 +6542,7 @@ dependencies = [
  "clap",
  "dotenvy",
  "futures",
+ "http",
  "jsonrpsee",
  "libtest-mimic",
  "reserve-port",
@@ -6877,12 +6879,14 @@ version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4e6559d53cc268e5031cd8429d05415bc4cb4aefc4aa5d6cc35fbf5b924a1f8"
 dependencies = [
+ "base64 0.22.1",
  "bitflags 2.13.1",
  "bytes",
  "futures-util",
  "http",
  "http-body",
  "iri-string",
+ "mime",
  "pin-project-lite",
  "tower",
  "tower-layer",

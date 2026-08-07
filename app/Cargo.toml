@@ -36,13 +36,13 @@ tonic = { workspace = true }
 tonic-health = { workspace = true }
 # needs to line up with jsonrpsee tower version...
 tower = { workspace = true }
-tower-http = { workspace = true, features = ["cors", "request-id", "trace"] }
+tower-http = { workspace = true, features = ["auth", "cors", "request-id", "trace", "validate-request"] }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 url = { workspace = true }
 utoipa = { workspace = true }
-uuid = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 
 [dependencies.eframe]
 workspace = true
