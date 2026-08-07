@@ -91,6 +91,14 @@ impl Wallet {
 
     pub fn new(path: &Path) -> Result<Self, Error> {
         std::fs::create_dir_all(path)?;
+        // Wallet data includes the BIP39 seed in plaintext today. Restrict the
+        // directory so only the node user can read it (best-effort on Unix).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o700);
+            std::fs::set_permissions(path, perms)?;
+        }
         let env = {
             use heed::EnvFlags;
             let mut env_open_options =
@@ -98,27 +106,20 @@ impl Wallet {
             env_open_options
                 .map_size(10 * 1024 * 1024) // 10MB
                 .max_dbs(Self::NUM_DBS);
-            // Apply LMDB "fast" flags consistent with our benchmark setup:
-            // - WRITE_MAP lets us write directly into the memory map instead of
-            //   copying into LMDB's page buffer, reducing syscall overhead for
-            //   write-heavy workloads.
-            // - MAP_ASYNC hands dirty-page flushing to the kernel so commits do
-            //   not block waiting for msync, keeping latencies tight.
-            // - NO_SYNC and NO_META_SYNC skip fsync calls for data and
-            //   metadata; this trades durability for throughput, which is
-            //   acceptable here because the state can be reconstructed from the
-            //   canonical chain if a crash occurs.
-            // - NO_READ_AHEAD disables kernel readahead that would otherwise
-            //   touch cold pages we immediately overwrite, improving random
-            //   access behaviour on SSDs used in testing.
-            // - NO_TLS stops LMDB from relying on thread-local storage for
-            //   reader slots so transactions can be moved across Tokio tasks.
-            let fast_flags = EnvFlags::WRITE_MAP
-                | EnvFlags::MAP_ASYNC
-                | EnvFlags::NO_SYNC
-                | EnvFlags::NO_META_SYNC
-                | EnvFlags::NO_READ_AHEAD;
-            unsafe { env_open_options.flags(fast_flags) };
+            // Wallet durability flags:
+            // - WRITE_MAP reduces copy overhead for writes.
+            // - NO_READ_AHEAD improves random access on SSDs.
+            //
+            // Unlike the node state DB, we deliberately do NOT set NO_SYNC /
+            // NO_META_SYNC / MAP_ASYNC here. The wallet stores the BIP39 seed
+            // and spendable UTXO metadata that cannot be reconstructed from
+            // the public chain alone after a crash; fsync on commit is the
+            // correct durability trade-off.
+            //
+            // TODO: Don't store the seed in plaintext (encrypt at rest).
+            let durable_flags =
+                EnvFlags::WRITE_MAP | EnvFlags::NO_READ_AHEAD;
+            unsafe { env_open_options.flags(durable_flags) };
             unsafe { Env::open(&env_open_options, path) }
                 .map_err(EnvError::from)?
         };
