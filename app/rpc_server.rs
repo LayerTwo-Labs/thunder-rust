@@ -12,7 +12,7 @@ use thunder::types::{
 };
 use thunder_app_rpc_api as rpc_api;
 use tower_http::{
-    cors::CorsLayer,
+    cors::{AllowOrigin, CorsLayer},
     request_id::{
         MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer,
     },
@@ -85,6 +85,15 @@ impl rpc_api::node::PrivateRpcServer for RpcServerImpl<true> {
             Ok(_) => Ok(()),
             Err(err) => Err(custom_err(err)),
         }
+    }
+
+    async fn list_utxos(&self) -> RpcResult<Vec<PointedOutput>> {
+        let utxos = self.app.node.get_all_utxos().map_err(custom_err)?;
+        let res = utxos
+            .into_iter()
+            .map(|(outpoint, output)| PointedOutput { outpoint, output })
+            .collect();
+        Ok(res)
     }
 
     async fn remove_from_mempool(&self, txid: Txid) -> RpcResult<()> {
@@ -234,15 +243,6 @@ impl<const ENABLE_PRIVATE_API: bool> rpc_api::node::RpcServer
     async fn list_peers(&self) -> RpcResult<Vec<Peer>> {
         let peers = self.app.node.get_active_peers();
         Ok(peers)
-    }
-
-    async fn list_utxos(&self) -> RpcResult<Vec<PointedOutput>> {
-        let utxos = self.app.node.get_all_utxos().map_err(custom_err)?;
-        let res = utxos
-            .into_iter()
-            .map(|(outpoint, output)| PointedOutput { outpoint, output })
-            .collect();
-        Ok(res)
     }
 
     async fn pending_withdrawal_bundle(
@@ -523,9 +523,28 @@ pub async fn run_server(
     };
 
     let http_middleware = || {
+        // Do not use CorsLayer::permissive(): it reflects arbitrary Origin and
+        // enables credentialed cross-site calls against a local RPC browser
+        // session. Restrict to same-origin style defaults (no origin reflection).
+        let cors = CorsLayer::new()
+            .allow_methods([
+                http::Method::GET,
+                http::Method::POST,
+                http::Method::OPTIONS,
+            ])
+            .allow_headers([
+                http::header::CONTENT_TYPE,
+                http::header::AUTHORIZATION,
+                http::HeaderName::from_static("x-request-id"),
+            ])
+            // Explicit empty allow-list: browser frontends that need CORS must
+            // opt in by changing this configuration; RPC is not a public web API.
+            .allow_origin(AllowOrigin::list(std::iter::empty::<
+                http::HeaderValue,
+            >()));
         tower::ServiceBuilder::new()
             .layer(tracer())
-            .layer(CorsLayer::permissive())
+            .layer(cors)
     };
     let rpc_middleware = || RpcServiceBuilder::new().rpc_logger(1024);
 

@@ -62,6 +62,13 @@ pub mod node {
             addr: SocketAddr,
         ) -> RpcResult<()>;
 
+        /// List all UTXOs.
+        ///
+        /// Restricted to the private RPC surface: dumping the full UTXO set is
+        /// a privacy/DoS vector on a public endpoint.
+        #[method(name = "list_utxos")]
+        async fn list_utxos(&self) -> RpcResult<Vec<PointedOutput>>;
+
         /// Remove a tx from the mempool
         #[open_api_method(output_schema(ToSchema))]
         #[method(name = "remove_from_mempool")]
@@ -169,10 +176,6 @@ pub mod node {
         /// List peers
         #[method(name = "list_peers")]
         async fn list_peers(&self) -> RpcResult<Vec<Peer>>;
-
-        /// List all UTXOs
-        #[method(name = "list_utxos")]
-        async fn list_utxos(&self) -> RpcResult<Vec<PointedOutput>>;
 
         /// Get pending withdrawal bundle
         #[open_api_method(output_schema(ToSchema))]
