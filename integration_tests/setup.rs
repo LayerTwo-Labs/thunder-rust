@@ -49,8 +49,14 @@ pub enum BmmError {
 
 #[derive(Debug, Error)]
 pub enum SetupError {
+    #[error(transparent)]
+    Anyhow(#[from] anyhow::Error),
     #[error("Failed to create thunder dir")]
     CreateThunderDir(#[source] std::io::Error),
+    #[error("Invalid RPC auth header")]
+    InvalidAuthHeader(#[from] http::header::InvalidHeaderValue),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
     #[error(transparent)]
     ReservePort(#[from] reserve_port::Error),
     #[error(transparent)]
@@ -179,7 +185,29 @@ impl Sidechain for PostSetup {
             });
         tracing::debug!("Started thunder");
         sleep(Duration::from_secs(1)).await;
+
+        // Combined public+private RPC requires the cookie bearer token.
+        let cookie_path = thunder_app.data_dir.join(".cookie");
+        let cookie = std::fs::read_to_string(&cookie_path).map_err(|err| {
+            SetupError::Anyhow(anyhow::anyhow!(
+                "failed to read thunder RPC cookie `{}`: {err}",
+                cookie_path.display()
+            ))
+        })?;
+        let token = cookie.trim();
+        if token.is_empty() {
+            return Err(SetupError::Anyhow(anyhow::anyhow!(
+                "thunder RPC cookie `{}` is empty",
+                cookie_path.display()
+            )));
+        }
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::AUTHORIZATION,
+            http::header::HeaderValue::from_str(&format!("Bearer {token}"))?,
+        );
         let rpc_client = jsonrpsee::http_client::HttpClient::builder()
+            .set_headers(headers)
             .build(format!("http://127.0.0.1:{}", reserved_ports.rpc.port()))?;
         tracing::debug!("Generating mnemonic seed phrase");
         let mnemonic = rpc_client.generate_mnemonic().await?;
