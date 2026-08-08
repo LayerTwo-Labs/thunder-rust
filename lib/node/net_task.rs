@@ -212,6 +212,12 @@ fn is_fatal_reorg_error(err: &Error) -> bool {
     !matches!(err, Error::State(_))
 }
 
+/// Delay before reconnecting to a peer after a heartbeat timeout
+const HEARTBEAT_RECONNECT_DELAY: Duration = Duration::from_secs(10);
+/// Delay before reconnecting to a peer after a connection error, disconnect,
+/// or invalid tip
+const ERROR_RECONNECT_DELAY: Duration = Duration::from_secs(30);
+
 fn reorg_to_tip<ThreadLocalStorage>(
     env: &sneed::Env<ThreadLocalStorage>,
     archive: &Archive,
@@ -908,6 +914,20 @@ impl NetTask {
             crate::types::BlockHash,
             HashMap<Tip, HashSet<SocketAddr>>,
         >::new();
+        // Peers with a scheduled reconnect attempt, so that overlapping
+        // disconnect events don't schedule duplicate reconnects
+        let mut pending_reconnects = HashSet::<SocketAddr>::new();
+        let schedule_reconnect =
+            |pending_reconnects: &mut HashSet<SocketAddr>,
+             addr: SocketAddr,
+             delay: Duration| {
+                if pending_reconnects.insert(addr) {
+                    reconnect_peer_spawner.spawn(async move {
+                        tokio::time::sleep(delay).await;
+                        addr
+                    });
+                }
+            };
         // Map associating mainchain task requests with the peer(s) that
         // caused the request, and the request peer state ID
         let mut mainchain_task_request_sources = HashMap::<
@@ -1010,6 +1030,14 @@ impl NetTask {
                             );
                             if let Some(addr) = addr {
                                 let () = self.ctxt.net.remove_active_peer(addr);
+                                // keep retrying so that the node recovers
+                                // without a restart once the network's tip
+                                // becomes valid again
+                                schedule_reconnect(
+                                    &mut pending_reconnects,
+                                    addr,
+                                    ERROR_RECONNECT_DELAY,
+                                );
                             }
                             false
                         }
@@ -1027,6 +1055,11 @@ impl NetTask {
                     // peer connection is closed, remove it
                     tracing::warn!(%addr, "Connection to peer closed");
                     let () = self.ctxt.net.remove_active_peer(addr);
+                    schedule_reconnect(
+                        &mut pending_reconnects,
+                        addr,
+                        ERROR_RECONNECT_DELAY,
+                    );
                     continue;
                 }
                 MailboxItem::PeerInfo(Some((addr, Some(peer_info)))) => {
@@ -1037,8 +1070,6 @@ impl NetTask {
                                 PeerConnectionMailboxError::HeartbeatTimeout,
                             ),
                         ) => {
-                            const RECONNECT_DELAY: Duration =
-                                Duration::from_secs(10);
                             // Attempt to reconnect if a valid message was
                             // received successfully
                             let Some(received_msg_successfully) =
@@ -1055,16 +1086,22 @@ impl NetTask {
                             if !received_msg_successfully {
                                 continue;
                             }
-                            reconnect_peer_spawner.spawn(async move {
-                                tokio::time::sleep(RECONNECT_DELAY).await;
-                                addr
-                            });
+                            schedule_reconnect(
+                                &mut pending_reconnects,
+                                addr,
+                                HEARTBEAT_RECONNECT_DELAY,
+                            );
                         }
                         PeerConnectionInfo::Error(err) => {
                             let err_msg =
                                 format!("{:#}", ErrorChain::new(&err));
                             tracing::error!(%addr, err = err_msg, "Peer connection error");
                             let () = self.ctxt.net.remove_active_peer(addr);
+                            schedule_reconnect(
+                                &mut pending_reconnects,
+                                addr,
+                                ERROR_RECONNECT_DELAY,
+                            );
                         }
                         PeerConnectionInfo::NeedMainchainAncestors {
                             main_hash,
@@ -1134,18 +1171,24 @@ impl NetTask {
                     }
                 }
                 MailboxItem::ReconnectPeer(peer_address) => {
+                    let _: bool = pending_reconnects.remove(&peer_address);
                     match self
                         .ctxt
                         .net
                         .connect_peer(self.ctxt.env.clone(), peer_address)
                     {
-                        Ok(()) => (),
+                        Ok(()) | Err(net::Error::AlreadyConnected(_)) => (),
                         Err(err) => {
                             tracing::error!(
                                 %peer_address,
                                 "Failed to connect to peer: {:#}",
                                 ErrorChain::new(&err)
-                            )
+                            );
+                            schedule_reconnect(
+                                &mut pending_reconnects,
+                                peer_address,
+                                ERROR_RECONNECT_DELAY,
+                            );
                         }
                     }
                 }
