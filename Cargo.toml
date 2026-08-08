@@ -104,6 +104,8 @@ rev = "6da503b598470f6e87aa9d769b94df64df7ff3ae"
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
 assertions_on_result_states = "allow"
+# fires in jsonrpsee/tonic macro-generated code on current nightly
+double_must_use = "allow"
 let_unit_value = "allow"
 print_stderr = "deny"
 print_stdout = "deny"
