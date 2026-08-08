@@ -1299,7 +1299,11 @@ mod test {
     // a peer's invalid block (value out > value in) must not be fatal
     #[test]
     fn invalid_peer_block_is_not_fatal() {
-        let err = Error::State(state::Error::NotEnoughValueIn);
+        let err = Error::State(state::Error::NotEnoughValueIn {
+            txid: Default::default(),
+            value_in: bitcoin::Amount::ZERO,
+            value_out: bitcoin::Amount::ONE_BTC,
+        });
         assert!(!is_fatal_reorg_error(&err));
     }
 

@@ -394,7 +394,11 @@ impl State {
                 .ok_or(AmountOverflowError)?;
         }
         if value_out > value_in {
-            return Err(Error::NotEnoughValueIn);
+            return Err(Error::NotEnoughValueIn {
+                txid: transaction.transaction.txid(),
+                value_in,
+                value_out,
+            });
         }
         value_in
             .checked_sub(value_out)

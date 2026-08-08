@@ -158,8 +158,14 @@ pub enum Error {
     NoTip,
     #[error("stxo {outpoint} doesn't exist")]
     NoStxo { outpoint: OutPoint },
-    #[error("value in is less than value out")]
-    NotEnoughValueIn,
+    #[error(
+        "value in ({value_in}) is less than value out ({value_out}) in tx {txid}"
+    )]
+    NotEnoughValueIn {
+        txid: Txid,
+        value_in: bitcoin::Amount,
+        value_out: bitcoin::Amount,
+    },
     #[error(transparent)]
     NoUtxo(#[from] NoUtxo),
     #[error("withdrawal output {outpoint} cannot be spent by a transaction")]
