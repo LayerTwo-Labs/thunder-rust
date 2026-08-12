@@ -36,6 +36,14 @@ use mainchain_task::MainchainTaskHandle;
 mod net_task;
 use net_task::NetTaskHandle;
 
+#[derive(Clone, Debug)]
+pub struct Config<'a> {
+    pub datadir: &'a Path,
+    pub bind_addr: SocketAddr,
+    pub magic_bytes_override: Option<crate::net::peer_message::MagicBytes>,
+    pub network: Network,
+}
+
 #[derive(Clone)]
 pub struct Node<MainchainTransport = Channel> {
     archive: Archive,
@@ -55,14 +63,11 @@ where
     MainchainTransport: proto::Transport,
 {
     pub fn new(
-        datadir: &Path,
-        bind_addr: SocketAddr,
+        config: Config<'_>,
         cusf_mainchain: mainchain::ValidatorClient<MainchainTransport>,
         cusf_mainchain_wallet: Option<
             mainchain::WalletClient<MainchainTransport>,
         >,
-        magic_bytes_override: Option<crate::net::peer_message::MagicBytes>,
-        network: Network,
         runtime: &tokio::runtime::Runtime,
     ) -> Result<Self, Error>
     where
@@ -72,6 +77,12 @@ where
             tonic::body::Body,
         >>::Future: Send,
 {
+        let Config {
+            datadir,
+            bind_addr,
+            magic_bytes_override,
+            network,
+        } = config;
         let env_path = datadir.join("data.mdb");
         // let _ = std::fs::remove_dir_all(&env_path);
         std::fs::create_dir_all(&env_path)?;
