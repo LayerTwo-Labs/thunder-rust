@@ -26,6 +26,7 @@ name: Check, Lint, Build
 env:
   CARGO_TERM_COLOR: always
   ELECTRS_VERSION: v3.2.0
+  BITCOIND_UNPATCHED_VERSION: "30.2"
 
 jobs:
   check-lint:
@@ -120,37 +121,91 @@ jobs:
     runs-on: ubuntu-latest
     needs: [cache-electrs, check-lint]
     steps:
-      - name: Download latest bitcoin-patched
+      # The `-latest-` artifacts are republished in place, so there is no
+      # version to key a cache on. Key on the server's ETag instead: a hit means
+      # the build is byte-identical, and a new release invalidates the cache by
+      # itself. Falls back to a per-run key so a failed HEAD downloads fresh.
+      - name: Resolve dependency cache keys
+        id: dep-keys
         run: |
-          pushd ..
-          wget https://releases.drivechain.info/L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
-          unzip L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
+          etag() {
+            curl -fsSLI "$1" \
+              | tr -d '\r' \
+              | awk 'tolower($1) == "etag:" { gsub(/"/, "", $2); print $2 }' \
+              | tail -1
+          }
+          for dep in patched:"$BITCOIN_PATCHED_URL" enforcer:"$ENFORCER_URL"; do
+            name="${dep%%:*}"
+            tag="$(etag "${dep#*:}" || true)"
+            if [ -z "$tag" ]; then
+              tag="unknown-${{ github.run_id }}-${{ github.run_attempt }}"
+              echo "::warning::Could not read ETag for $name; skipping its cache"
+            fi
+            echo "$name=$tag" >> "$GITHUB_OUTPUT"
+          done
+        env:
+          BITCOIN_PATCHED_URL: https://releases.drivechain.info/L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
+          ENFORCER_URL: https://releases.drivechain.info/bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip
+
+      - name: Cache bitcoin-patched
+        id: cache-bitcoin-patched
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/deps/bitcoin-patched
+          key: bitcoin-patched-x86_64-linux-${{ steps.dep-keys.outputs.patched }}
+
+      - name: Download bitcoin-patched
+        if: steps.cache-bitcoin-patched.outputs.cache-hit != 'true'
+        run: |
+          cd "${{ runner.temp }}"
+          wget -q https://releases.drivechain.info/L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
+          unzip -q L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
           rm L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
-          mv L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu bitcoin-patched-bins
-          chmod +x bitcoin-patched-bins/bitcoind
-          chmod +x bitcoin-patched-bins/bitcoin-cli
-          popd
+          mkdir -p deps
+          rm -rf deps/bitcoin-patched
+          mv L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu deps/bitcoin-patched
+          chmod +x deps/bitcoin-patched/bitcoind deps/bitcoin-patched/bitcoin-cli
+
+      - name: Cache bitcoin unpatched
+        id: cache-bitcoin-unpatched
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/deps/bitcoin-unpatched
+          key: bitcoin-unpatched-x86_64-linux-${{ env.BITCOIND_UNPATCHED_VERSION }}
 
       - name: Download bitcoin unpatched
+        if: steps.cache-bitcoin-unpatched.outputs.cache-hit != 'true'
         run: |
-          pushd ..
-          wget https://bitcoincore.org/bin/bitcoin-core-30.2/bitcoin-30.2-x86_64-linux-gnu.tar.gz
-          tar -xf bitcoin-30.2-x86_64-linux-gnu.tar.gz
-          rm bitcoin-30.2-x86_64-linux-gnu.tar.gz
-          mv bitcoin-30.2/bin bitcoin-unpatched-bins
-          rm -r bitcoin-30.2
-          popd
+          cd "${{ runner.temp }}"
+          VERSION='${{ env.BITCOIND_UNPATCHED_VERSION }}'
+          TARBALL="bitcoin-${VERSION}-x86_64-linux-gnu.tar.gz"
+          wget -q "https://bitcoincore.org/bin/bitcoin-core-${VERSION}/${TARBALL}"
+          tar -xf "${TARBALL}"
+          rm "${TARBALL}"
+          mkdir -p deps
+          rm -rf deps/bitcoin-unpatched
+          mv "bitcoin-${VERSION}/bin" deps/bitcoin-unpatched
+          rm -r "bitcoin-${VERSION}"
 
-      - name: Download latest bip300301_enforcer
+      - name: Cache bip300301_enforcer
+        id: cache-enforcer
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/deps/bip300301-enforcer
+          key: bip300301-enforcer-x86_64-linux-${{ steps.dep-keys.outputs.enforcer }}
+
+      - name: Download bip300301_enforcer
+        if: steps.cache-enforcer.outputs.cache-hit != 'true'
         run: |
-          pushd ..
-          wget https://releases.drivechain.info/bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip
-          unzip bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip
+          cd "${{ runner.temp }}"
+          wget -q https://releases.drivechain.info/bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip
+          unzip -q bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip
           rm bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip
-          mv bip300301-enforcer-latest-x86_64-unknown-linux-gnu/bip300301-enforcer-*-x86_64-unknown-linux-gnu bip300301-enforcer
+          mkdir -p deps
+          rm -f deps/bip300301-enforcer
+          mv bip300301-enforcer-latest-x86_64-unknown-linux-gnu/bip300301-enforcer-*-x86_64-unknown-linux-gnu deps/bip300301-enforcer
           rm -r bip300301-enforcer-latest-x86_64-unknown-linux-gnu
-          chmod +x bip300301-enforcer
-          popd
+          chmod +x deps/bip300301-enforcer
 
       - name: Restore electrs from cache
         uses: actions/cache/restore@v6
@@ -181,10 +236,10 @@ jobs:
       - name: Run integration tests
         id: runIntegrationTests
         run: |
-          export BIP300301_ENFORCER='../bip300301-enforcer'
-          export BITCOIND='../bitcoin-patched-bins/bitcoind'
-          export BITCOIND_UNPATCHED='../bitcoin-unpatched-bins/bitcoind'
-          export BITCOIN_CLI='../bitcoin-patched-bins/bitcoin-cli'
+          export BIP300301_ENFORCER='${{ runner.temp }}/deps/bip300301-enforcer'
+          export BITCOIND='${{ runner.temp }}/deps/bitcoin-patched/bitcoind'
+          export BITCOIND_UNPATCHED='${{ runner.temp }}/deps/bitcoin-unpatched/bitcoind'
+          export BITCOIN_CLI='${{ runner.temp }}/deps/bitcoin-patched/bitcoin-cli'
           export ELECTRS='${{ runner.temp }}/electrs/target/release/electrs'
           export THUNDER_APP='target/debug/thunder_app'
           target/debug/examples/integration_tests
