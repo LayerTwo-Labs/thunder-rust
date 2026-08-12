@@ -270,6 +270,8 @@ impl Net {
             .collect()
     }
 
+    /// The peer is not recorded in `known_peers` here, see
+    /// [`Self::remember_peer`].
     #[instrument(skip_all, fields(addr), err(Debug))]
     pub fn connect_peer(
         &self,
@@ -289,11 +291,6 @@ impl Net {
             return Err(Error::UnspecfiedPeerIP(addr.ip()));
         }
         let connecting = self.server.connect(addr, "localhost")?;
-        let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
-        self.known_peers
-            .put(&mut rwtxn, &addr, &())
-            .map_err(DbError::from)?;
-        rwtxn.commit().map_err(RwTxnError::from)?;
         let connection_ctxt = PeerConnectionCtxt {
             env,
             archive: self.archive.clone(),
@@ -318,6 +315,22 @@ impl Net {
         tracing::trace!("connect peer: adding to active peers");
         self.add_active_peer(addr, connection_handle)?;
         Ok(())
+    }
+
+    /// Record a peer in `known_peers`, so that it is dialed again on the next
+    /// startup.
+    ///
+    /// Only for peers that have emitted [`PeerConnectionInfo::Validated`].
+    /// Recording one any earlier persists nodes from other networks, which are
+    /// then re-dialed on every startup forever.
+    pub fn remember_peer(
+        &self,
+        rwtxn: &mut RwTxn,
+        addr: &SocketAddr,
+    ) -> Result<(), Error> {
+        self.known_peers
+            .put(rwtxn, addr, &())
+            .map_err(|err| DbError::from(err).into())
     }
 
     /// Delete peer from known_peers DB.
@@ -461,13 +474,8 @@ impl Net {
             return Ok(None);
         }
         tracing::info!(%addr, "connected to new peer");
-        let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
-        self.known_peers
-            .put(&mut rwtxn, &addr, &())
-            .map_err(DbError::from)?;
-        rwtxn.commit().map_err(RwTxnError::from)?;
-
-        tracing::trace!(%addr, "wrote peer to database");
+        // Not written to `known_peers` here: the handshake proves nothing about
+        // which network the peer is on. Recorded once it emits `Validated`.
         let connection_ctxt = PeerConnectionCtxt {
             env,
             archive: self.archive.clone(),

@@ -1113,6 +1113,21 @@ impl NetTask {
                                 .net
                                 .push_tx(HashSet::from_iter([addr]), &new_tx);
                         }
+                        PeerConnectionInfo::Validated => {
+                            tracing::debug!(
+                                %addr, "peer validated, recording in known peers"
+                            );
+                            let mut rwtxn = self
+                                .ctxt
+                                .env
+                                .write_txn()
+                                .map_err(EnvError::from)?;
+                            let () = self
+                                .ctxt
+                                .net
+                                .remember_peer(&mut rwtxn, &addr)?;
+                            rwtxn.commit().map_err(RwTxnError::from)?;
+                        }
                         PeerConnectionInfo::Response(boxed) => {
                             let (resp, req) = *boxed;
                             tracing::trace!(

@@ -119,6 +119,9 @@ pub enum Info {
     NewTipReady(Tip),
     NewTransaction(AuthorizedTransaction),
     Response(Box<(ResponseMessage, Request)>),
+    /// The peer has sent a message bearing our magic bytes, confirming it is on
+    /// the same network. Emitted at most once per connection.
+    Validated,
 }
 
 impl From<ConnectionError> for Info {
