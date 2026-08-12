@@ -80,6 +80,41 @@ fn set_tracing_subscriber(log_level: tracing::Level) -> anyhow::Result<()> {
     })
 }
 
+/// Written to the repo root by `scripts/setup_integration_tests.sh`. Resolved
+/// relative to the working directory, walking up through parent directories, so
+/// it is found from anywhere within the repo.
+const DEFAULT_ENV_FILE: &str = "integrationtests.env";
+
+/// Env files are a convenience only: setting the variables in the environment
+/// works just as well, and takes precedence over [`DEFAULT_ENV_FILE`].
+///
+/// `THUNDER_INTEGRATION_TEST_ENV` names an env file to load instead. That one
+/// was asked for explicitly, so it must exist, and its values do override the
+/// environment.
+fn load_env_file() -> anyhow::Result<()> {
+    if let Some(env_filepath) = std::env::var_os("THUNDER_INTEGRATION_TEST_ENV")
+    {
+        let env_filepath: &std::path::Path = env_filepath.as_ref();
+        tracing::info!("Adding env vars from `{}`", env_filepath.display());
+        dotenvy::from_filename_override(env_filepath)?;
+        return Ok(());
+    }
+    match dotenvy::from_filename(DEFAULT_ENV_FILE) {
+        Ok(path) => {
+            tracing::info!("Adding env vars from `{}`", path.display());
+            Ok(())
+        }
+        Err(err) if err.not_found() => {
+            tracing::debug!(
+                "No `{DEFAULT_ENV_FILE}`; \
+                 expecting the environment to be set by other means"
+            );
+            Ok(())
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<std::process::ExitCode> {
     // Parse command line arguments
@@ -87,12 +122,7 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
     let () = set_tracing_subscriber(tracing::Level::DEBUG)?;
     let rt_handle = tokio::runtime::Handle::current();
     // Read env vars
-    if let Some(env_filepath) = std::env::var_os("THUNDER_INTEGRATION_TEST_ENV")
-    {
-        let env_filepath: &std::path::Path = env_filepath.as_ref();
-        tracing::info!("Adding env vars from `{}`", env_filepath.display());
-        dotenvy::from_filename_override(env_filepath)?;
-    }
+    let () = load_env_file()?;
 
     // Create a list of tests
     let mut tests = Vec::<libtest_mimic::Trial>::new();

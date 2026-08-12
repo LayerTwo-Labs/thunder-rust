@@ -10,16 +10,24 @@ cargo run --example integration_tests
 
 ## Setup
 
-The integration tests require at least one environment variable to be set.
-Environment variables can also be set via an env file, where the path to the env
-file is set via environment variable. An example env file is provided
-[here](/integration_tests/example.env). The path to the env file can be provided
-by setting the `THUNDER_INTEGRATION_TEST_ENV` variable, eg.
+The tests drive a real enforcer, bitcoind and electrs. The quickest way to get
+those in place is
 
 ```sh
-THUNDER_INTEGRATON_TEST_ENV='integration_tests/example.env'
+./scripts/setup_integration_tests.sh
 ```
 
-Variables set in an env file have higher precedence than environment variables.
-If multiple declarations for the same environment variable exist in an env file,
-the last one has highest precedence.
+which fetches or builds the binaries and writes their paths to
+`integrationtests.env` in the repo root. 
+
+```sh
+cargo run --example integration_tests
+```
+
+passing a test name after `--` to run a single test.
+
+An env file is only a convenience: setting the variables in the environment
+works just as well, and variables that are already set take precedence over
+`integrationtests.env`. To load a different env file, point
+`THUNDER_INTEGRATION_TEST_ENV` at it. An example is provided
+[here](/integration_tests/example.env).
