@@ -16,14 +16,14 @@ use tonic::transport::Channel;
 use crate::{
     archive::Archive,
     mempool::{self, MemPool},
-    net::Net,
+    net::{DialKnownPeersHandle, Net},
     state::State,
     types::{
         Accumulator, Address, AmountOverflowError, AmountUnderflowError,
         Authorized, AuthorizedTransaction, BlockHash, BmmResult, Body,
         FilledTransaction, GetValue, Header, Network, OutPoint, OutPointKey,
         Output, SpentOutput, Tip, Transaction, Txid, WithdrawalBundle,
-        net::Peer,
+        net::{Peer, PeerAddress, ResolvedPeerAddress},
         proto::{self, mainchain},
     },
     util::Watchable,
@@ -36,6 +36,23 @@ use mainchain_task::MainchainTaskHandle;
 mod net_task;
 use net_task::NetTaskHandle;
 
+#[derive(Clone, Debug)]
+pub struct Config<'a> {
+    pub datadir: &'a Path,
+    pub bind_addr: SocketAddr,
+    pub magic_bytes_override: Option<crate::net::peer_message::MagicBytes>,
+    pub network: Network,
+    pub peers: &'a [PeerAddress],
+}
+
+/// Handles for spawned tasks / task sets
+#[derive(Clone)]
+struct TaskHandles {
+    _dial_known_peers: Arc<DialKnownPeersHandle>,
+    mainchain: MainchainTaskHandle,
+    net: NetTaskHandle,
+}
+
 #[derive(Clone)]
 pub struct Node<MainchainTransport = Channel> {
     archive: Archive,
@@ -43,11 +60,10 @@ pub struct Node<MainchainTransport = Channel> {
     cusf_mainchain_wallet:
         Option<Arc<Mutex<mainchain::WalletClient<MainchainTransport>>>>,
     env: sneed::Env<heed::WithoutTls>,
-    mainchain_task: MainchainTaskHandle,
     mempool: MemPool,
     net: Net,
-    net_task: NetTaskHandle,
     state: State,
+    task_handles: TaskHandles,
 }
 
 impl<MainchainTransport> Node<MainchainTransport>
@@ -55,14 +71,11 @@ where
     MainchainTransport: proto::Transport,
 {
     pub fn new(
-        datadir: &Path,
-        bind_addr: SocketAddr,
+        config: Config<'_>,
         cusf_mainchain: mainchain::ValidatorClient<MainchainTransport>,
         cusf_mainchain_wallet: Option<
             mainchain::WalletClient<MainchainTransport>,
         >,
-        magic_bytes_override: Option<crate::net::peer_message::MagicBytes>,
-        network: Network,
         runtime: &tokio::runtime::Runtime,
     ) -> Result<Self, Error>
     where
@@ -72,6 +85,13 @@ where
             tonic::body::Body,
         >>::Future: Send,
 {
+        let Config {
+            datadir,
+            bind_addr,
+            magic_bytes_override,
+            network,
+            peers,
+        } = config;
         let env_path = datadir.join("data.mdb");
         // let _ = std::fs::remove_dir_all(&env_path);
         std::fs::create_dir_all(&env_path)?;
@@ -114,31 +134,38 @@ where
         let state = State::new(&env)?;
         let archive = Archive::new(&env)?;
         let mempool = MemPool::new(&env)?;
-        let (mainchain_task, mainchain_task_event_rx) =
+        let (mainchain_task_handle, mainchain_task_event_rx) =
             MainchainTaskHandle::new(
                 env.clone(),
                 archive.clone(),
                 cusf_mainchain.clone(),
             );
-        let (net, peer_info_rx) = Net::new(
+        let (net, peer_info_rx, dial_known_peers_handle) = Net::new(
+            runtime.handle(),
             &env,
             archive.clone(),
             magic_bytes_override,
             network,
             state.clone(),
             bind_addr,
+            peers.iter().cloned().collect(),
         )?;
-        let net_task = NetTaskHandle::new(
+        let net_task_handle = NetTaskHandle::new(
             runtime,
             env.clone(),
             archive.clone(),
-            mainchain_task.clone(),
+            mainchain_task_handle.clone(),
             mainchain_task_event_rx,
             mempool.clone(),
             net.clone(),
             peer_info_rx,
             state.clone(),
         );
+        let task_handles = TaskHandles {
+            _dial_known_peers: Arc::new(dial_known_peers_handle),
+            mainchain: mainchain_task_handle,
+            net: net_task_handle,
+        };
         let cusf_mainchain_wallet =
             cusf_mainchain_wallet.map(|wallet| Arc::new(Mutex::new(wallet)));
         Ok(Self {
@@ -146,11 +173,10 @@ where
             cusf_mainchain,
             cusf_mainchain_wallet,
             env,
-            mainchain_task,
             mempool,
             net,
-            net_task,
             state,
+            task_handles,
         })
     }
 
@@ -543,13 +569,19 @@ where
         Ok(())
     }
 
-    pub fn connect_peer(&self, addr: SocketAddr) -> Result<(), Error> {
-        self.net
-            .connect_peer(self.env.clone(), addr)
-            .map_err(Error::from)
+    pub fn connect_peer(&self, addr: ResolvedPeerAddress) -> Result<(), Error> {
+        let peer_addr = addr.as_peer_address().to_owned();
+        let () =
+            self.net
+                .connect_peer(self.env.clone(), addr)
+                .map_err(|err| crate::net::Error::ConnectPeer {
+                    peer_addr,
+                    source: err,
+                })?;
+        Ok(())
     }
 
-    pub fn forget_peer(&self, addr: &SocketAddr) -> Result<bool, Error> {
+    pub fn forget_peer(&self, addr: &PeerAddress) -> Result<bool, Error> {
         let mut rwtxn = self.env.write_txn().map_err(EnvError::from)?;
         let res = self.net.forget_peer(&mut rwtxn, addr)?;
         rwtxn.commit().map_err(RwTxnError::from)?;
@@ -565,7 +597,8 @@ where
         block_hash: bitcoin::BlockHash,
     ) -> Result<bool, Error> {
         let mainchain_task::Response::AncestorInfos(_, res): mainchain_task::Response = self
-            .mainchain_task
+            .task_handles
+            .mainchain
             .request_oneshot(mainchain_task::Request::AncestorInfos(
                 block_hash,
             ))
@@ -601,7 +634,8 @@ where
         }
         // Request mainchain header/infos if they do not exist
         let mainchain_task::Response::AncestorInfos(_, res): mainchain_task::Response = self
-            .mainchain_task
+            .task_handles
+            .mainchain
             .request_oneshot(mainchain_task::Request::AncestorInfos(
                 main_block_hash,
             ))
@@ -670,7 +704,7 @@ where
             block_hash,
             main_block_hash,
         };
-        if !self.net_task.new_tip_ready_confirm(new_tip).await? {
+        if !self.task_handles.net.new_tip_ready_confirm(new_tip).await? {
             tracing::warn!(%block_hash, "Not ready to reorg");
             return Ok(false);
         };

@@ -50,3 +50,11 @@ pub enum ParseAddress {
 #[error("utreexo error ({0})")]
 #[repr(transparent)]
 pub struct Utreexo(pub(crate) String);
+
+#[derive(Debug, Error)]
+pub enum ParsePeerAddress {
+    #[error("missing port")]
+    MissingPort,
+    #[error(transparent)]
+    Parse(#[from] url::ParseError),
+}

@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet, hash_map},
-    net::SocketAddr,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
 };
 
@@ -10,7 +10,7 @@ use heed::types::{SerdeBincode, Unit};
 use parking_lot::RwLock;
 use quinn::{ClientConfig, Endpoint, ServerConfig};
 use sneed::{
-    DatabaseUnique, EnvError, RwTxn, RwTxnError, UnitKey,
+    DatabaseUnique, Env, EnvError, RwTxn, RwTxnError, UnitKey,
     db::error::Error as DbError,
 };
 use tokio_stream::StreamNotifyClose;
@@ -20,8 +20,11 @@ use crate::{
     archive::Archive,
     state::State,
     types::{
-        AuthorizedTransaction, Network, THIS_SIDECHAIN, VERSION, Version,
-        net::{Peer, PeerConnectionStatus},
+        AuthorizedTransaction, Network, VERSION, Version,
+        net::{
+            DEFAULT_PORT, Peer, PeerAddress, PeerConnectionStatus,
+            ResolvedPeerAddress,
+        },
     },
     util::ErrorChain,
 };
@@ -30,7 +33,6 @@ pub mod error;
 mod peer;
 
 pub use error::Error;
-pub(crate) use peer::error::mailbox::Error as PeerConnectionMailboxError;
 use peer::{
     Connection, ConnectionContext as PeerConnectionCtxt,
     ConnectionHandle as PeerConnectionHandle,
@@ -148,7 +150,8 @@ pub fn make_server_endpoint(
 
     tracing::info!("creating server endpoint: binding to {bind_addr}",);
 
-    let mut endpoint = Endpoint::server(server_config, bind_addr)?;
+    let mut endpoint =
+        Endpoint::server(server_config, bind_addr).map_err(Error::Quinn)?;
     let client_cfg = configure_client()?;
     endpoint.set_default_client_config(client_cfg);
     Ok((endpoint, server_cert))
@@ -158,48 +161,116 @@ pub fn make_server_endpoint(
 pub type PeerInfoRx =
     mpsc::UnboundedReceiver<(SocketAddr, Option<PeerConnectionInfo>)>;
 
-const ALPHANET_SEED_NODE_ADDRS: &[SocketAddr] = {
+const ALPHANET_SEED_PEER_ADDRS: &[PeerAddress<&'static str>] = {
     // seed.alpha.ecash.drivecha.in
-    const DRIVECHA_IN: SocketAddr = SocketAddr::new(
-        std::net::IpAddr::V4(std::net::Ipv4Addr::new(157, 180, 96, 24)),
-        4000 + THIS_SIDECHAIN as u16,
-    );
+    const DRIVECHA_IN: PeerAddress<&'static str> = PeerAddress {
+        host: url::Host::Ipv4(Ipv4Addr::new(157, 180, 96, 24)),
+        port: DEFAULT_PORT,
+    };
     // seed.alpha.ecash.ninja
-    const ECASH_NINJA: SocketAddr = SocketAddr::new(
-        std::net::IpAddr::V4(std::net::Ipv4Addr::new(65, 109, 148, 184)),
-        4000 + THIS_SIDECHAIN as u16,
-    );
+    const ECASH_NINJA: PeerAddress<&'static str> = PeerAddress {
+        host: url::Host::Domain("seed.alpha.ecash.ninja"),
+        port: DEFAULT_PORT,
+    };
     &[DRIVECHA_IN, ECASH_NINJA]
 };
 
-const SIGNET_SEED_NODE_ADDRS: &[SocketAddr] = {
-    const SIGNET_MINING_SERVER: SocketAddr = SocketAddr::new(
-        std::net::IpAddr::V4(std::net::Ipv4Addr::new(172, 105, 148, 135)),
-        4000 + THIS_SIDECHAIN as u16,
-    );
-    // thunder.bip300.xyz
-    const BIP300_XYZ: SocketAddr = SocketAddr::new(
-        std::net::IpAddr::V4(std::net::Ipv4Addr::new(95, 217, 243, 12)),
-        4000 + THIS_SIDECHAIN as u16,
-    );
+const SIGNET_SEED_PEER_ADDRS: &[PeerAddress<&'static str>] = {
+    const SIGNET_MINING_SERVER: PeerAddress<&'static str> = PeerAddress {
+        host: url::Host::Ipv4(Ipv4Addr::new(172, 105, 148, 135)),
+        port: DEFAULT_PORT,
+    };
+    const BIP300_XYZ: PeerAddress<&'static str> = PeerAddress {
+        host: url::Host::Domain("thunder.bip300.xyz"),
+        port: DEFAULT_PORT,
+    };
     &[SIGNET_MINING_SERVER, BIP300_XYZ]
 };
 
-const FORKNET_SEED_NODE_ADDRS: &[SocketAddr] = {
-    // explorer.bip300.xyz
-    const BIP300_XYZ: SocketAddr = SocketAddr::new(
-        std::net::IpAddr::V4(std::net::Ipv4Addr::new(157, 180, 8, 224)),
-        4000 + THIS_SIDECHAIN as u16,
-    );
-    &[BIP300_XYZ]
+const FORKNET_SEED_PEER_ADDRS: &[PeerAddress<&'static str>] = {
+    const BIP300_XYZ: PeerAddress<&'static str> = PeerAddress {
+        host: url::Host::Domain("explorer.bip300.xyz"),
+        port: DEFAULT_PORT,
+    };
+    &[
+        BIP300_XYZ,
+        PeerAddress {
+            host: url::Host::Ipv4(Ipv4Addr::new(157, 180, 8, 224)),
+            port: DEFAULT_PORT,
+        },
+    ]
 };
 
-const fn seed_node_addrs(network: Network) -> &'static [SocketAddr] {
+const fn seed_peer_addrs(
+    network: Network,
+) -> &'static [PeerAddress<&'static str>] {
     match network {
-        Network::Alphanet => ALPHANET_SEED_NODE_ADDRS,
-        Network::Signet => SIGNET_SEED_NODE_ADDRS,
+        Network::Alphanet => ALPHANET_SEED_PEER_ADDRS,
+        Network::Signet => SIGNET_SEED_PEER_ADDRS,
         Network::Regtest => &[],
-        Network::Forknet => FORKNET_SEED_NODE_ADDRS,
+        Network::Forknet => FORKNET_SEED_PEER_ADDRS,
+    }
+}
+
+pub async fn resolve_peer_address<S>(
+    peer_addr: PeerAddress<S>,
+) -> std::io::Result<ResolvedPeerAddress<S>>
+where
+    S: std::fmt::Display + tokio::net::ToSocketAddrs,
+{
+    match peer_addr.host {
+        url::Host::Ipv4(ipv4) => Ok(ResolvedPeerAddress::Static(
+            SocketAddr::new(IpAddr::V4(ipv4), peer_addr.port),
+        )),
+        url::Host::Ipv6(ipv6) => Ok(ResolvedPeerAddress::Static(
+            SocketAddr::new(IpAddr::V6(ipv6), peer_addr.port),
+        )),
+        url::Host::Domain(domain) => {
+            let mut addrs: Vec<_> = tokio::net::lookup_host(&domain)
+                .await?
+                .filter_map(|addr| {
+                    if addr.ip().is_unspecified() {
+                        None
+                    } else {
+                        Some(addr.ip())
+                    }
+                })
+                .collect();
+            if let Some(last_addr) = addrs.pop() {
+                addrs.reverse();
+                let addrs = nonempty::NonEmpty {
+                    head: last_addr,
+                    tail: addrs,
+                };
+                Ok(ResolvedPeerAddress::Domain {
+                    port: peer_addr.port,
+                    addrs,
+                    domain,
+                })
+            } else {
+                tracing::warn!(%domain, "unable to resolve host");
+                let err_msg =
+                    format!("unable to resolve host for domain ({domain})");
+                Err(std::io::Error::other(err_msg))
+            }
+        }
+    }
+}
+
+/// Handle to tasks that dial known peers. Tasks are aborted on drop.
+#[repr(transparent)]
+pub struct DialKnownPeersHandle(
+    tokio_util::task::JoinMap<PeerAddress, Result<(), error::DialKnownPeer>>,
+);
+
+impl DialKnownPeersHandle {
+    pub async fn join_next(
+        &mut self,
+    ) -> Option<(
+        PeerAddress,
+        Result<Result<(), error::DialKnownPeer>, tokio::task::JoinError>,
+    )> {
+        self.0.join_next().await
     }
 }
 
@@ -223,7 +294,7 @@ pub struct Net {
     // None indicates that the stream has ended
     peer_info_tx:
         mpsc::UnboundedSender<(SocketAddr, Option<PeerConnectionInfo>)>,
-    known_peers: DatabaseUnique<SerdeBincode<SocketAddr>, Unit>,
+    known_peers: DatabaseUnique<SerdeBincode<PeerAddress>, Unit>,
     _version: DatabaseUnique<UnitKey, SerdeBincode<Version>>,
 }
 
@@ -288,31 +359,47 @@ impl Net {
     #[instrument(skip_all, fields(addr), err(Debug))]
     pub fn connect_peer(
         &self,
-        env: sneed::Env<heed::WithoutTls>,
-        addr: SocketAddr,
-    ) -> Result<(), Error> {
-        if self.active_peers.read().contains_key(&addr) {
-            tracing::error!("connect peer: already connected");
-            return Err(error::AlreadyConnected(addr).into());
+        env: Env<heed::WithoutTls>,
+        resolved_addr: ResolvedPeerAddress,
+    ) -> Result<(), error::ConnectPeer> {
+        {
+            let mut rwtxn = env.write_txn()?;
+            self.known_peers.put(
+                &mut rwtxn,
+                &resolved_addr.as_peer_address().to_owned(),
+                &(),
+            )?;
+            rwtxn.commit()?;
         }
+        {
+            let active_peers = self.active_peers.read();
+            for ip_addr in resolved_addr.ip_addrs() {
+                let addr = SocketAddr::new(ip_addr, resolved_addr.port());
+                if active_peers.contains_key(&addr) {
+                    tracing::error!("already connected to peer");
+                    return Err(error::AlreadyConnected(addr).into());
+                }
+            }
+        }
+        let addr = SocketAddr::new(
+            resolved_addr.first_ip_addr(),
+            resolved_addr.port(),
+        );
+        let peer_addr = resolved_addr.as_peer_address().to_owned();
 
         // This check happens within Quinn with a
         // generic "invalid remote address". We run the
         // same check, and provide a friendlier error
         // message.
         if addr.ip().is_unspecified() {
-            return Err(Error::UnspecfiedPeerIP(addr.ip()));
+            return Err(error::ConnectPeer::UnspecfiedPeerIP(addr.ip()));
         }
         let connecting = self.server.connect(addr, "localhost")?;
-        let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
-        self.known_peers
-            .put(&mut rwtxn, &addr, &())
-            .map_err(DbError::from)?;
-        rwtxn.commit().map_err(RwTxnError::from)?;
         let connection_ctxt = PeerConnectionCtxt {
             env,
             archive: self.archive.clone(),
             magic_bytes: self.magic_bytes,
+            resolved_address: resolved_addr,
             state: self.state.clone(),
         };
 
@@ -325,7 +412,10 @@ impl Net {
             let peer_info_tx = self.peer_info_tx.clone();
             async move {
                 if let Err(_send_err) = info_rx.forward(peer_info_tx).await {
-                    tracing::error!(%addr, "Failed to send peer connection info");
+                    tracing::error!(
+                        addr = %peer_addr,
+                        "Failed to send peer connection info",
+                    );
                 }
             }
         });
@@ -340,21 +430,37 @@ impl Net {
     pub fn forget_peer(
         &self,
         rwtxn: &mut RwTxn,
-        addr: &SocketAddr,
+        peer_address: &PeerAddress,
     ) -> Result<bool, Error> {
         self.known_peers
-            .delete(rwtxn, addr)
+            .delete(rwtxn, peer_address)
             .map_err(|err| DbError::from(err).into())
     }
 
+    async fn dial_known_peer(
+        &self,
+        env: Env<heed::WithoutTls>,
+        peer_addr: PeerAddress,
+    ) -> Result<(), error::DialKnownPeer> {
+        tracing::trace!("connecting to already known peer at {peer_addr}");
+        let resolved_peer_addr = resolve_peer_address(peer_addr)
+            .await
+            .map_err(error::DialKnownPeer::DnsResolve)?;
+        let () = self.connect_peer(env, resolved_peer_addr)?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        env: &sneed::Env<heed::WithoutTls>,
+        runtime: &tokio::runtime::Handle,
+        env: &Env<heed::WithoutTls>,
         archive: Archive,
         magic_bytes_override: Option<peer_message::MagicBytes>,
         network: Network,
         state: State,
         bind_addr: SocketAddr,
-    ) -> Result<(Self, PeerInfoRx), Error> {
+        add_peers: HashSet<PeerAddress>,
+    ) -> Result<(Self, PeerInfoRx, DialKnownPeersHandle), Error> {
         let (server, _) = make_server_endpoint(bind_addr)?;
         let active_peers = Arc::new(RwLock::new(HashMap::new()));
         let mut rwtxn = env.write_txn()?;
@@ -364,15 +470,39 @@ impl Net {
                 None => {
                     let known_peers =
                         DatabaseUnique::create(env, &mut rwtxn, "known_peers")?;
-                    for seed_node_addr in seed_node_addrs(network) {
-                        known_peers.put(&mut rwtxn, seed_node_addr, &())?;
+                    for seed_peer_addr in seed_peer_addrs(network) {
+                        let seed_peer_addr =
+                            PeerAddress::to_owned(seed_peer_addr);
+                        known_peers.put(
+                            &mut rwtxn,
+                            &(seed_peer_addr.to_owned()),
+                            &(),
+                        )?;
                     }
                     known_peers
                 }
             };
+        for peer in add_peers {
+            known_peers.put(&mut rwtxn, &peer, &())?;
+        }
         let version = DatabaseUnique::create(env, &mut rwtxn, "net_version")?;
-        if version.try_get(&rwtxn, &())?.is_none() {
-            version.put(&mut rwtxn, &(), &*VERSION)?;
+        match version.try_get(&rwtxn, &())? {
+            Some(db_version)
+                if db_version
+                    < Version {
+                        major: 0,
+                        minor: 17,
+                        patch: 6,
+                    } =>
+            {
+                // types for `known_peers` db changed in v0.17.6
+                return Err(Error::IncompatibleVersion {
+                    version: db_version,
+                    db_path: env.path().to_path_buf(),
+                });
+            }
+            Some(_) => (),
+            None => version.put(&mut rwtxn, &(), &*VERSION)?,
         }
         rwtxn.commit().map_err(RwTxnError::from)?;
         let magic_bytes = magic_bytes_override
@@ -385,56 +515,42 @@ impl Net {
             state,
             active_peers,
             peer_info_tx,
-            known_peers,
+            known_peers: known_peers.clone(),
             _version: version,
         };
-        #[allow(clippy::let_and_return)]
         let known_peers: Vec<_> = {
             let rotxn = env.read_txn().map_err(EnvError::from)?;
-            let known_peers = net
-                .known_peers
-                .iter(&rotxn)
+            known_peers
+                .iter_keys(&rotxn)
                 .map_err(DbError::from)?
                 .collect()
-                .map_err(DbError::from)?;
-            known_peers
+                .map_err(DbError::from)?
         };
-        let () = known_peers.into_iter().try_for_each(|(peer_addr, _)| {
-            tracing::trace!(
-                "new net: connecting to already known peer at {peer_addr}"
-            );
-            match net.connect_peer(env.clone(), peer_addr) {
-                Err(Error::Connect(
-                    quinn::ConnectError::InvalidRemoteAddress(addr),
-                )) => {
-                    tracing::warn!(
-                        %addr, "new net: known peer with invalid remote address, removing"
-                    );
-                    let mut rwtxn = env.write_txn()?;
-                    net.known_peers.delete(&mut rwtxn, &peer_addr).map_err(DbError::from)?;
-                    rwtxn.commit()?;
-                    tracing::info!(
-                        %addr,
-                        "new net: removed known peer with invalid remote address"
-                    );
-                    Ok(())
-                }
-                res => res,
+        let dial_known_peers_handle = {
+            let mut join_map = tokio_util::task::JoinMap::new();
+            for peer_addr in known_peers {
+                let env = Env::clone(env);
+                let net = net.clone();
+                join_map.spawn_on(
+                    peer_addr.clone(),
+                    async move {
+                        net.dial_known_peer(env, peer_addr)
+                            .await
+                            .inspect_err(|err| tracing::error!(message = %ErrorChain::new(err)))
+                    },
+                    runtime
+                );
             }
-        })
-        // TODO: would be better to indicate this in the return error? tbh I want to scrap
-        // the typed error out of here, and just use anyhow
-        .inspect_err(|err| {
-            tracing::error!("unable to connect to known peers during net construction: {err:#}");
-        })?;
-        Ok((net, peer_info_rx))
+            DialKnownPeersHandle(join_map)
+        };
+        Ok((net, peer_info_rx, dial_known_peers_handle))
     }
 
     /// Accept the next incoming connection. Returns Some(addr) if a connection was accepted
     /// and a new peer was added.
     pub async fn accept_incoming(
         &self,
-        env: sneed::Env<heed::WithoutTls>,
+        env: Env<heed::WithoutTls>,
     ) -> Result<Option<SocketAddr>, error::AcceptConnection> {
         tracing::debug!(
             "accept incoming: listening for connections on `{}`",
@@ -476,17 +592,11 @@ impl Net {
             return Ok(None);
         }
         tracing::info!(%addr, "connected to new peer");
-        let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
-        self.known_peers
-            .put(&mut rwtxn, &addr, &())
-            .map_err(DbError::from)?;
-        rwtxn.commit().map_err(RwTxnError::from)?;
-
-        tracing::trace!(%addr, "wrote peer to database");
         let connection_ctxt = PeerConnectionCtxt {
             env,
             archive: self.archive.clone(),
             magic_bytes: self.magic_bytes,
+            resolved_address: addr.into(),
             state: self.state.clone(),
         };
         let (connection_handle, info_rx) =

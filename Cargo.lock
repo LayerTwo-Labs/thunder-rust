@@ -6433,6 +6433,7 @@ dependencies = [
  "tonic-prost-build",
  "tracing",
  "transitive",
+ "url",
 ]
 
 [[package]]
@@ -6549,6 +6550,7 @@ dependencies = [
  "hashlink 0.12.1",
  "heed",
  "merkle-cbt",
+ "nonempty 0.11.0",
  "rayon",
  "rustreexo",
  "semver",
@@ -6557,6 +6559,7 @@ dependencies = [
  "strum 0.27.2",
  "thiserror 2.0.19",
  "tracing",
+ "url",
  "utoipa",
 ]
 
@@ -6719,6 +6722,7 @@ dependencies = [
  "futures-io",
  "futures-sink",
  "futures-util",
+ "hashbrown 0.15.5",
  "pin-project-lite",
  "tokio",
 ]
@@ -7129,6 +7133,7 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+ "serde_derive",
 ]
 
 [[package]]

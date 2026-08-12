@@ -1,10 +1,10 @@
-use std::{marker::PhantomData, net::SocketAddr, time::Duration};
+use std::{marker::PhantomData, time::Duration};
 
 use clap::{Parser, Subcommand};
 use http::HeaderMap;
 use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder};
 
-use thunder::types::{Address, Txid};
+use thunder::types::{Address, Txid, net::PeerAddress};
 use thunder_app_rpc_api::{
     node::{PrivateRpcClient as _, RpcClient as _},
     wallet::RpcClient as _,
@@ -37,7 +37,7 @@ pub enum Command {
         main_block_hash: bitcoin::BlockHash,
     },
     /// Connect to a peer
-    ConnectPeer { addr: SocketAddr },
+    ConnectPeer { addr: PeerAddress },
     /// Deposit to address
     CreateDeposit {
         address: Address,
@@ -69,7 +69,7 @@ pub enum Command {
     FormatDepositAddress { address: Address },
     /// Delete peer from known_peers DB.
     /// Connections to the peer are not terminated.
-    ForgetPeer { addr: SocketAddr },
+    ForgetPeer { addr: PeerAddress },
     /// Generate a mnemonic seed phrase
     GenerateMnemonic,
     /// Get the best mainchain block hash
