@@ -4,11 +4,11 @@ use std::sync::{Arc, LazyLock};
 
 use eframe::egui::{FontData, FontDefinitions, FontFamily};
 
-static FIRA_MONO_NERD_REGULAR: &[u8] = include_path::include_path_bytes!(
+static FIRA_MONO_NERD_REGULAR: &[u8] = include_bytes!(
     "../../res/nerd-fonts/patched-fonts/FiraMono/Regular/FiraMonoNerdFont-Regular.otf"
 );
 
-static NOTO_SANS_MONO_NERD_REGULAR: &[u8] = include_path::include_path_bytes!(
+static NOTO_SANS_MONO_NERD_REGULAR: &[u8] = include_bytes!(
     "../../res/nerd-fonts/patched-fonts/Noto/Sans-Mono/NotoSansMNerdFont-Regular.ttf"
 );
 

@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use fallible_iterator::FallibleIterator as _;
-use futures::Stream;
 use heed::types::SerdeBincode;
 use serde::{Deserialize, Serialize};
 use sneed::{
@@ -608,7 +607,7 @@ impl State {
 }
 
 impl Watchable<()> for State {
-    type WatchStream = impl Stream<Item = ()>;
+    type WatchStream = tokio_stream::wrappers::WatchStream<()>;
 
     /// Get a signal that notifies whenever the tip changes
     fn watch(&self) -> Self::WatchStream {

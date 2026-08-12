@@ -36,28 +36,15 @@ jobs:
         with:
           submodules: recursive
       
-      - name: Install latest nightly toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly
-          components: rustfmt, clippy
+      - name: Install pinned Rust toolchain
+        # Channel and components come from rust-toolchain.toml, which is the
+        # single source of truth for the Rust version.
+        run: rustup toolchain install
 
-      - name: Restore Rust cache
-        id: restore-rust-cache
+      - name: Rust Cache
         uses: Swatinem/rust-cache@v2.9.1
         with:
           cache-all-crates: "true"
-          prefix-key: "v0-rust-nightly"
-          save-if: "false"
-          shared-key: debug-x86_64-unknown-linux-gnu
-
-      - name: Save Rust cache
-        if: steps.restore-rust-cache.outputs.cache-hit != 'true'
-        uses: Swatinem/rust-cache@v2.9.1
-        with:
-          cache-all-crates: "true"
-          lookup-only: "true"
-          prefix-key: "v0-rust-nightly"
           shared-key: debug-x86_64-unknown-linux-gnu
 
       - name: Rustfmt
@@ -163,16 +150,14 @@ jobs:
         with:
           submodules: "recursive"
 
-      - name: Install latest nightly toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly
+      - name: Install pinned Rust toolchain
+        # Channel comes from rust-toolchain.toml.
+        run: rustup toolchain install
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2.9.1
         with:
           cache-all-crates: "true"
-          prefix-key: "v0-rust-nightly"
           shared-key: debug-x86_64-unknown-linux-gnu
 
       - name: Build (debug)
@@ -224,17 +209,17 @@ jobs:
         with:
           submodules: recursive
       
-      - name: Install latest nightly toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly
-          target: ${{ matrix.name }}
+      - name: Install pinned Rust toolchain
+        # Channel comes from rust-toolchain.toml; the cross-compilation
+        # target comes from the build matrix.
+        run: |
+          rustup toolchain install
+          rustup target add '${{ matrix.name }}'
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2.9.1
         with:
           cache-all-crates: "true"
-          prefix-key: "v0-rust-nightly"
           shared-key: ${{ matrix.name }}
 
       - name: Test

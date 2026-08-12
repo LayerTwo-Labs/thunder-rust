@@ -1,6 +1,14 @@
-# Stable Rust version, as of January 2025. 
-FROM rust:1.84-slim-bookworm AS builder
+# The Rust version is NOT pinned by this tag — it comes from
+# rust-toolchain.toml, which rustup in this image reads. The tag only
+# bootstraps rustup, so it deliberately floats on the latest 1.x.
+FROM rust:1-slim-bookworm AS builder
 WORKDIR /workspace
+
+# Install the pinned toolchain before copying the source, so the download
+# is cached in its own layer and is not invalidated by code changes.
+COPY rust-toolchain.toml .
+RUN rustup toolchain install
+
 COPY . .
 
 RUN cargo build --locked --release
