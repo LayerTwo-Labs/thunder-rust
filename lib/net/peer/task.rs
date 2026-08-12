@@ -935,15 +935,16 @@ impl ConnectionTask {
                     .await?;
                 }
                 MailboxItem::PeerResponse(peer_response) => {
-                    let info = peer_response
-                        .response
-                        .map(|resp| {
-                            Info::Response(Box::new((
-                                resp,
-                                peer_response.request,
-                            )))
-                        })
-                        .into();
+                    let info = match peer_response.response {
+                        Ok(resp) => Info::Response(Box::new((
+                            resp,
+                            peer_response.request,
+                        ))),
+                        Err(err) => Info::Error {
+                            err: err.into(),
+                            resolved_peer_addr: ctxt.resolved_address.clone(),
+                        },
+                    };
                     if self.info_tx.unbounded_send(info).is_err() {
                         tracing::error!("Failed to send response info")
                     };
