@@ -546,7 +546,7 @@ impl Wallet {
 }
 
 impl Watchable<()> for Wallet {
-    type WatchStream = impl Stream<Item = ()>;
+    type WatchStream = std::pin::Pin<Box<dyn Stream<Item = ()> + Send>>;
 
     /// Get a signal that notifies whenever the wallet changes
     fn watch(&self) -> Self::WatchStream {
@@ -570,11 +570,11 @@ impl Watchable<()> for Wallet {
             watchables.into_iter().map(WatchStream::new).enumerate(),
         );
         let streams_len = streams.len();
-        streams.ready_chunks(streams_len).map(|signals| {
+        Box::pin(streams.ready_chunks(streams_len).map(|signals| {
             assert_ne!(signals.len(), 0);
             #[allow(clippy::unused_unit)]
             ()
-        })
+        }))
     }
 }
 
