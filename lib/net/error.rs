@@ -11,6 +11,26 @@ use crate::net::PeerConnectionError;
 #[error("already connected to peer at {0}")]
 pub struct AlreadyConnected(pub SocketAddr);
 
+/// Failure to parse a [`crate::net::PeerAddress`] from `host:port`
+#[derive(Debug, Error)]
+#[error(
+    "peer address `{input}` {reason}, expected `host:port`, \
+     e.g. `seed.example.com:4009` or `[::1]:4009`"
+)]
+pub struct ParsePeerAddress {
+    input: String,
+    reason: &'static str,
+}
+
+impl ParsePeerAddress {
+    pub(crate) fn new(input: &str, reason: &'static str) -> Self {
+        Self {
+            input: input.to_owned(),
+            reason,
+        }
+    }
+}
+
 /// Another connection can be accepted after a non-fatal error
 #[allow(clippy::duplicated_attributes)]
 #[derive(Debug, Error, Fatality, Split, Transitive)]

@@ -52,10 +52,7 @@ async fn block_template_task(
     let mut enforcer_post_setup =
         setup(&bin_paths.others, res_tx.clone()).await?;
     let sidechain = PostSetup::setup(
-        Init {
-            thunder_app: bin_paths.thunder()?.clone(),
-            data_dir_suffix: None,
-        },
+        Init::new(bin_paths.thunder()?.clone(), None),
         &enforcer_post_setup,
         res_tx,
     )

@@ -37,6 +37,36 @@ impl ReservedPorts {
 pub struct Init {
     pub thunder_app: PathBuf,
     pub data_dir_suffix: Option<String>,
+    /// Host to bind the P2P endpoint to. IPv6 hosts must be bracketed, as in
+    /// `[::]`.
+    pub net_host: String,
+    /// Applied on every start, including restarts.
+    pub extra_args: Vec<String>,
+}
+
+impl Init {
+    pub fn new(thunder_app: PathBuf, data_dir_suffix: Option<&str>) -> Self {
+        Self {
+            thunder_app,
+            data_dir_suffix: data_dir_suffix.map(ToOwned::to_owned),
+            net_host: Ipv4Addr::LOCALHOST.to_string(),
+            extra_args: Vec::new(),
+        }
+    }
+
+    pub fn with_net_host(mut self, net_host: &str) -> Self {
+        self.net_host = net_host.to_owned();
+        self
+    }
+
+    pub fn with_extra_args<Arg, Args>(mut self, args: Args) -> Self
+    where
+        Arg: Into<String>,
+        Args: IntoIterator<Item = Arg>,
+    {
+        self.extra_args = args.into_iter().map(Into::into).collect();
+        self
+    }
 }
 
 #[derive(Debug, Error)]
@@ -94,6 +124,8 @@ pub struct PostSetup {
     pub _thunder_app_task: Option<AbortOnDrop<()>>,
     /// Retained so the node can be restarted against the same dir and ports.
     pub thunder_app: ThunderApp,
+    /// Reapplied on restart, so it is configured identically.
+    pub extra_args: Vec<String>,
     /// RPC client for thunder_app
     pub rpc_client: jsonrpsee::http_client::HttpClient,
     /// Address for receiving deposits
@@ -164,11 +196,16 @@ impl PostSetup {
     ) -> Result<(), RestartError> {
         let thunder_app_task = self
             .thunder_app
-            .spawn_command_with_args::<String, String, _, _, _>([], [], {
-                move |err| {
-                    let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
-                }
-            });
+            .spawn_command_with_args::<String, String, _, _, _>(
+                [],
+                self.extra_args.clone(),
+                {
+                    move |err| {
+                        let _err: Result<(), _> =
+                            res_tx.unbounded_send(Err(err));
+                    }
+                },
+            );
         self._thunder_app_task = Some(thunder_app_task);
         // Polled rather than slept, so the test does not race a slow startup.
         const RESTART_TIMEOUT: Duration = Duration::from_secs(60);
@@ -224,17 +261,24 @@ impl Sidechain for PostSetup {
                 .reserved_ports
                 .enforcer_serve_grpc
                 .port(),
+            net_host: init.net_host,
             net_port: reserved_ports.net.port(),
             network: Network::Regtest,
             rpc_port: reserved_ports.rpc.port(),
         };
+        let extra_args = init.extra_args;
         let thunder_app_task = thunder_app
-            .spawn_command_with_args::<String, String, _, _, _>([], [], {
-                let res_tx = res_tx.clone();
-                move |err| {
-                    let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
-                }
-            });
+            .spawn_command_with_args::<String, String, _, _, _>(
+                [],
+                extra_args.clone(),
+                {
+                    let res_tx = res_tx.clone();
+                    move |err| {
+                        let _err: Result<(), _> =
+                            res_tx.unbounded_send(Err(err));
+                    }
+                },
+            );
         tracing::debug!("Started thunder");
         sleep(Duration::from_secs(1)).await;
         let rpc_client = jsonrpsee::http_client::HttpClient::builder()
@@ -248,6 +292,7 @@ impl Sidechain for PostSetup {
         Ok(Self {
             _thunder_app_task: Some(thunder_app_task),
             thunder_app,
+            extra_args,
             rpc_client,
             deposit_address,
             reserved_ports,

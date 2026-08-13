@@ -282,6 +282,7 @@ impl App {
                 bind_addr: config.net_addr,
                 magic_bytes_override: config.network_magic_override,
                 network: config.network,
+                seed_nodes: &config.seed_nodes,
             },
             cusf_mainchain,
             cusf_mainchain_wallet,

@@ -61,10 +61,7 @@ async fn unknown_withdrawal_task(
     let mut enforcer_post_setup =
         setup(&bin_paths.others, res_tx.clone()).await?;
     let mut sidechain_withdrawer = PostSetup::setup(
-        Init {
-            thunder_app: bin_paths.thunder()?.clone(),
-            data_dir_suffix: Some("withdrawer".to_owned()),
-        },
+        Init::new(bin_paths.thunder()?.clone(), Some("withdrawer")),
         &enforcer_post_setup,
         res_tx.clone(),
     )
@@ -92,10 +89,7 @@ async fn unknown_withdrawal_task(
     tracing::info!("Withdrawal succeeded");
     // New sidechain node, starting from scratch
     let mut sidechain_successor = PostSetup::setup(
-        Init {
-            thunder_app: bin_paths.thunder()?.clone(),
-            data_dir_suffix: Some("successor".to_owned()),
-        },
+        Init::new(bin_paths.thunder()?.clone(), Some("successor")),
         &enforcer_post_setup,
         res_tx,
     )

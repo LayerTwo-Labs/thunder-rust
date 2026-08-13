@@ -158,33 +158,125 @@ pub fn make_server_endpoint(
 pub type PeerInfoRx =
     mpsc::UnboundedReceiver<(SocketAddr, Option<PeerConnectionInfo>)>;
 
-const SIGNET_SEED_NODE_ADDRS: &[SocketAddr] = {
-    const SIGNET_MINING_SERVER: SocketAddr = SocketAddr::new(
-        std::net::IpAddr::V4(std::net::Ipv4Addr::new(172, 105, 148, 135)),
-        4000 + THIS_SIDECHAIN as u16,
-    );
-    // thunder.bip300.xyz
-    const BIP300_XYZ: SocketAddr = SocketAddr::new(
-        std::net::IpAddr::V4(std::net::Ipv4Addr::new(95, 217, 243, 12)),
-        4000 + THIS_SIDECHAIN as u16,
-    );
-    &[SIGNET_MINING_SERVER, BIP300_XYZ]
-};
+const DEFAULT_SEED_NODE_PORT: u16 = 4000 + THIS_SIDECHAIN as u16;
 
-const FORKNET_SEED_NODE_ADDRS: &[SocketAddr] = {
-    // explorer.bip300.xyz
-    const BIP300_XYZ: SocketAddr = SocketAddr::new(
-        std::net::IpAddr::V4(std::net::Ipv4Addr::new(157, 180, 8, 224)),
-        4000 + THIS_SIDECHAIN as u16,
-    );
-    &[BIP300_XYZ]
-};
+const SIGNET_SEED_NODES: &[(&str, u16)] = &[
+    // Signet mining server.
+    ("172.105.148.135", DEFAULT_SEED_NODE_PORT),
+];
 
-const fn seed_node_addrs(network: Network) -> &'static [SocketAddr] {
-    match network {
-        Network::Signet => SIGNET_SEED_NODE_ADDRS,
+const FORKNET_SEED_NODES: &[(&str, u16)] = &[
+    ("157.180.8.224", DEFAULT_SEED_NODE_PORT),
+    ("explorer.bip300.xyz", DEFAULT_SEED_NODE_PORT),
+];
+
+/// Built-in seed peers for the provided network.
+pub fn builtin_seed_peers(network: Network) -> Vec<PeerAddress> {
+    let seeds: &[(&str, u16)] = match network {
+        Network::Signet => SIGNET_SEED_NODES,
         Network::Regtest => &[],
-        Network::Forknet => FORKNET_SEED_NODE_ADDRS,
+        Network::Forknet => FORKNET_SEED_NODES,
+    };
+    seeds
+        .iter()
+        .map(|(host, port)| PeerAddress {
+            host: url::Host::parse(host)
+                .expect("builtin seed host should parse"),
+            port: *port,
+        })
+        .collect()
+}
+
+/// A peer's address, as a host and port. The host is kept unresolved, so
+/// that a peer whose name resolves to several socket addresses is still
+/// identified (and persisted) as a single peer. Resolution happens when the
+/// peer is dialed.
+#[derive(
+    Clone, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize,
+)]
+pub struct PeerAddress {
+    pub host: url::Host,
+    pub port: u16,
+}
+
+impl PeerAddress {
+    /// Resolve to socket addresses. IP hosts resolve to themselves without
+    /// a lookup. Failures are logged and yield no addresses, so a peer that
+    /// cannot be resolved never prevents others from being dialed.
+    pub async fn resolve(&self) -> Vec<SocketAddr> {
+        let domain = match &self.host {
+            url::Host::Ipv4(ipv4) => {
+                return vec![SocketAddr::from((*ipv4, self.port))];
+            }
+            url::Host::Ipv6(ipv6) => {
+                return vec![SocketAddr::from((*ipv6, self.port))];
+            }
+            url::Host::Domain(domain) => domain,
+        };
+        match tokio::net::lookup_host((domain.as_str(), self.port)).await {
+            Ok(socket_addrs) => {
+                let socket_addrs: Vec<SocketAddr> = socket_addrs.collect();
+                if socket_addrs.is_empty() {
+                    tracing::warn!(
+                        peer_address = %self,
+                        "resolve peer: host resolved to no addresses"
+                    );
+                } else {
+                    tracing::debug!(
+                        peer_address = %self,
+                        "resolve peer: resolved host to {socket_addrs:?}"
+                    );
+                }
+                socket_addrs
+            }
+            Err(err) => {
+                tracing::warn!(
+                    peer_address = %self,
+                    "resolve peer: failed to resolve host: {err:#}"
+                );
+                Vec::new()
+            }
+        }
+    }
+}
+
+impl From<SocketAddr> for PeerAddress {
+    fn from(socket_addr: SocketAddr) -> Self {
+        let host = match socket_addr.ip() {
+            std::net::IpAddr::V4(ipv4) => url::Host::Ipv4(ipv4),
+            std::net::IpAddr::V6(ipv6) => url::Host::Ipv6(ipv6),
+        };
+        Self {
+            host,
+            port: socket_addr.port(),
+        }
+    }
+}
+
+impl std::fmt::Display for PeerAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `url::Host` displays IPv6 addresses bracketed, so this
+        // round-trips through the `FromStr` impl.
+        write!(f, "{}:{}", self.host, self.port)
+    }
+}
+
+/// Parses `host:port`. IPv6 literals must be bracketed, as in `[::1]:4009`, so
+/// their colons are not read as the port separator.
+impl std::str::FromStr for PeerAddress {
+    type Err = error::ParsePeerAddress;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (host, port) = s
+            .rsplit_once(':')
+            .ok_or_else(|| error::ParsePeerAddress::new(s, "has no port"))?;
+        let host = url::Host::parse(host).map_err(|_| {
+            error::ParsePeerAddress::new(s, "has an invalid host")
+        })?;
+        let port = port.parse().map_err(|_| {
+            error::ParsePeerAddress::new(s, "has an invalid port")
+        })?;
+        Ok(Self { host, port })
     }
 }
 
@@ -208,7 +300,7 @@ pub struct Net {
     // None indicates that the stream has ended
     peer_info_tx:
         mpsc::UnboundedSender<(SocketAddr, Option<PeerConnectionInfo>)>,
-    known_peers: DatabaseUnique<SerdeBincode<SocketAddr>, Unit>,
+    known_peers: DatabaseUnique<SerdeBincode<PeerAddress>, Unit>,
     _version: DatabaseUnique<UnitKey, SerdeBincode<Version>>,
 }
 
@@ -326,10 +418,10 @@ impl Net {
     pub fn remember_peer(
         &self,
         rwtxn: &mut RwTxn,
-        addr: &SocketAddr,
+        peer_address: &PeerAddress,
     ) -> Result<(), Error> {
         self.known_peers
-            .put(rwtxn, addr, &())
+            .put(rwtxn, peer_address, &())
             .map_err(|err| DbError::from(err).into())
     }
 
@@ -338,13 +430,53 @@ impl Net {
     pub fn forget_peer(
         &self,
         rwtxn: &mut RwTxn,
-        addr: &SocketAddr,
+        peer_address: &PeerAddress,
     ) -> Result<bool, Error> {
         self.known_peers
-            .delete(rwtxn, addr)
+            .delete(rwtxn, peer_address)
             .map_err(|err| DbError::from(err).into())
     }
 
+    /// All peers recorded in `known_peers`, to be dialed on startup.
+    ///
+    /// If the records cannot be read -- e.g. they were written by an older
+    /// version, which stored socket addresses -- the DB is cleared instead.
+    /// It is only a cache of validated peers, which will be re-learned.
+    pub fn get_known_peers(
+        &self,
+        env: &sneed::Env<heed::WithoutTls>,
+    ) -> Result<Vec<PeerAddress>, Error> {
+        let known_peers: Result<Vec<(PeerAddress, ())>, DbError> = {
+            let rotxn = env.read_txn().map_err(EnvError::from)?;
+            self.known_peers
+                .iter(&rotxn)
+                .map_err(DbError::from)
+                .and_then(|it| it.collect().map_err(DbError::from))
+        };
+        match known_peers {
+            Ok(known_peers) => Ok(known_peers
+                .into_iter()
+                .map(|(peer_address, ())| peer_address)
+                .collect()),
+            Err(err) => {
+                tracing::warn!(
+                    "clearing unreadable known peers DB: {:#}",
+                    ErrorChain::new(&err)
+                );
+                let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
+                let () = self
+                    .known_peers
+                    .clear(&mut rwtxn)
+                    .map_err(DbError::from)?;
+                rwtxn.commit().map_err(RwTxnError::from)?;
+                Ok(Vec::new())
+            }
+        }
+    }
+
+    /// Known peers and seed nodes are not dialed here: the net task reads
+    /// them via [`Self::get_known_peers`], resolves them, and dials them, so
+    /// that node startup never waits on a resolver.
     pub fn new(
         env: &sneed::Env<heed::WithoutTls>,
         archive: Archive,
@@ -356,17 +488,12 @@ impl Net {
         let (server, _) = make_server_endpoint(bind_addr)?;
         let active_peers = Arc::new(RwLock::new(HashMap::new()));
         let mut rwtxn = env.write_txn()?;
+        // Seed nodes are resolved and dialed on every startup instead of being
+        // written here, so a relocated seed is picked up from DNS.
         let known_peers =
             match DatabaseUnique::open(env, &rwtxn, "known_peers")? {
                 Some(known_peers) => known_peers,
-                None => {
-                    let known_peers =
-                        DatabaseUnique::create(env, &mut rwtxn, "known_peers")?;
-                    for seed_node_addr in seed_node_addrs(network) {
-                        known_peers.put(&mut rwtxn, seed_node_addr, &())?;
-                    }
-                    known_peers
-                }
+                None => DatabaseUnique::create(env, &mut rwtxn, "known_peers")?,
             };
         let version = DatabaseUnique::create(env, &mut rwtxn, "net_version")?;
         if version.try_get(&rwtxn, &())?.is_none() {
@@ -386,45 +513,6 @@ impl Net {
             known_peers,
             _version: version,
         };
-        #[allow(clippy::let_and_return)]
-        let known_peers: Vec<_> = {
-            let rotxn = env.read_txn().map_err(EnvError::from)?;
-            let known_peers = net
-                .known_peers
-                .iter(&rotxn)
-                .map_err(DbError::from)?
-                .collect()
-                .map_err(DbError::from)?;
-            known_peers
-        };
-        let () = known_peers.into_iter().try_for_each(|(peer_addr, _)| {
-            tracing::trace!(
-                "new net: connecting to already known peer at {peer_addr}"
-            );
-            match net.connect_peer(env.clone(), peer_addr) {
-                Err(Error::Connect(
-                    quinn::ConnectError::InvalidRemoteAddress(addr),
-                )) => {
-                    tracing::warn!(
-                        %addr, "new net: known peer with invalid remote address, removing"
-                    );
-                    let mut rwtxn = env.write_txn()?;
-                    net.known_peers.delete(&mut rwtxn, &peer_addr).map_err(DbError::from)?;
-                    rwtxn.commit()?;
-                    tracing::info!(
-                        %addr,
-                        "new net: removed known peer with invalid remote address"
-                    );
-                    Ok(())
-                }
-                res => res,
-            }
-        })
-        // TODO: would be better to indicate this in the return error? tbh I want to scrap
-        // the typed error out of here, and just use anyhow
-        .inspect_err(|err| {
-            tracing::error!("unable to connect to known peers during net construction: {err:#}");
-        })?;
         Ok((net, peer_info_rx))
     }
 
