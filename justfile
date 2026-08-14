@@ -2,7 +2,7 @@ default:
     @just --list
 
 fmt:
-    cargo fmt --all
+    cargo fmt
 
 build:
     cargo build
