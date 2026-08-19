@@ -1,3 +1,5 @@
+//! Sidechain state as of the current sidechain tip
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use fallible_iterator::FallibleIterator as _;

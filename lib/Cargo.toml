@@ -41,6 +41,8 @@ rustls = { workspace = true, features = ["ring"] }
 semver = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+serde_with = { workspace = true }
+smallvec = { workspace = true, features = ["const_generics"] }
 sneed = { workspace = true, features = ["observe"] }
 thiserror = { workspace = true }
 thunder_types = { path = "../types", features = ["heed"] }
