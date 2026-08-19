@@ -82,10 +82,10 @@ where
             env_open_opts
                 .map_size(128 * 1024 * 1024 * 1024) // 128 GB
                 .max_dbs(
-                    State::NUM_DBS
-                        + Archive::NUM_DBS
+                    Archive::NUM_DBS
                         + MemPool::NUM_DBS
-                        + Net::NUM_DBS,
+                        + Net::NUM_DBS
+                        + State::NUM_DBS,
                 );
             // Apply LMDB "fast" flags consistent with our benchmark setup:
             // - WRITE_MAP lets us write directly into the memory map instead of
@@ -114,7 +114,7 @@ where
         let state = State::new(&env)?;
         let archive = Archive::new(&env)?;
         let mempool = MemPool::new(&env)?;
-        let (mainchain_task, mainchain_task_response_rx) =
+        let (mainchain_task, mainchain_task_event_rx) =
             MainchainTaskHandle::new(
                 env.clone(),
                 archive.clone(),
@@ -128,13 +128,12 @@ where
             state.clone(),
             bind_addr,
         )?;
-
         let net_task = NetTaskHandle::new(
             runtime,
             env.clone(),
             archive.clone(),
             mainchain_task.clone(),
-            mainchain_task_response_rx,
+            mainchain_task_event_rx,
             mempool.clone(),
             net.clone(),
             peer_info_rx,
@@ -623,16 +622,18 @@ where
         // Check BMM
         {
             let rotxn = self.env.read_txn().map_err(EnvError::from)?;
-            if self.archive.get_bmm_result(
+            match self.archive.get_bmm_result(
                 &rotxn,
                 block_hash,
                 main_block_hash,
-            )? == BmmResult::Failed
-            {
-                tracing::error!(%block_hash,
-                    "Rejecting block {block_hash} due to failing BMM verification",
-                );
-                return Ok(false);
+            )? {
+                BmmResult::Verified => (),
+                BmmResult::Failed => {
+                    tracing::error!(%block_hash,
+                        "Rejecting block {block_hash} due to failing BMM verification",
+                    );
+                    return Ok(false);
+                }
             }
         }
         // Check that ancestor bodies exist, and store body

@@ -12,6 +12,7 @@ use quinn::SendStream;
 use sneed::EnvError;
 
 use crate::{
+    archive,
     net::peer::{
         BanReason, Connection, ConnectionContext, Info, PeerState, PeerStateId,
         Request, TipInfo,
@@ -53,6 +54,33 @@ impl ConnectionTask {
         peer_tip_info: &TipInfo,
         peer_state_id: PeerStateId,
     ) -> Result<Option<bool>, blocking_task::TaskError> {
+        // If the peer's mainchain tip is not an ancestor of ours, then ignore
+        // the peer tip.
+        {
+            let rotxn = ctxt.env.read_txn()?;
+            if ctxt
+                .archive
+                .try_get_main_header_info(
+                    &rotxn,
+                    &peer_tip_info.tip.main_block_hash,
+                )?
+                .is_none()
+            {
+                return Ok(None);
+            }
+            let side_tips_tip = ctxt
+                .archive
+                .side_tips()
+                .get_mainchain_tip(&rotxn)
+                .map_err(archive::Error::from)?;
+            if !ctxt.archive.is_main_descendant(
+                &rotxn,
+                peer_tip_info.tip.main_block_hash,
+                side_tips_tip.block_hash(),
+            )? {
+                return Ok(None);
+            }
+        }
         // Check if the peer tip is better, requesting headers if necessary
         let Some(tip_info) = tip_info else {
             // No tip.

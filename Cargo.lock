@@ -6419,6 +6419,8 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "serde_with",
+ "smallvec",
  "sneed",
  "temp-dir",
  "thiserror 2.0.19",
