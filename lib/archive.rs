@@ -107,8 +107,14 @@ pub struct Archive {
         SerdeBincode<bitcoin::BlockHash>,
         SerdeBincode<Vec<bitcoin::BlockHash>>,
     >,
-    /// Sidechain headers. All ancestors of any header should always be present.
+    /// Sidechain headers.
+    /// All ancestors of any header should always be present.
+    /// Blocks that are known to be invalid should not be present, and should
+    /// exist in `invalid_blocks`.
     headers: DatabaseUnique<SerdeBincode<BlockHash>, SerdeBincode<Header>>,
+    /// Blocks that have been invalidated.
+    /// Should not exist in `headers` or `bodies`.
+    invalid_blocks: DatabaseUnique<SerdeBincode<BlockHash>, SerdeBincode<()>>,
     main_block_hash_to_height:
         DatabaseUnique<SerdeBincode<bitcoin::BlockHash>, SerdeBincode<u32>>,
     /// Mainchain block infos.
@@ -152,7 +158,7 @@ pub struct Archive {
 }
 
 impl Archive {
-    pub const NUM_DBS: u32 = 15;
+    pub const NUM_DBS: u32 = 16;
 
     pub fn new<Tls>(env: &sneed::Env<Tls>) -> Result<Self, Error> {
         let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
@@ -204,6 +210,9 @@ impl Archive {
         .map_err(EnvError::from)?;
         let headers = DatabaseUnique::create(env, &mut rwtxn, "headers")
             .map_err(EnvError::from)?;
+        let invalid_blocks =
+            DatabaseUnique::create(env, &mut rwtxn, "invalid_blocks")
+                .map_err(EnvError::from)?;
         let main_block_hash_to_height =
             DatabaseUnique::create(env, &mut rwtxn, "main_hash_to_height")
                 .map_err(EnvError::from)?;
@@ -253,6 +262,7 @@ impl Archive {
             exponential_ancestors,
             exponential_main_ancestors,
             headers,
+            invalid_blocks,
             main_block_infos,
             main_block_hash_to_height,
             main_header_infos,
@@ -377,6 +387,16 @@ impl Archive {
     ) -> Result<Header, Error> {
         self.try_get_header(rotxn, block_hash)?
             .ok_or(Error::NoHeader(block_hash))
+    }
+
+    /// Check if a block has been invalidated.
+    pub fn invalidated_block(
+        &self,
+        rotxn: &RoTxn,
+        block_hash: &BlockHash,
+    ) -> Result<bool, Error> {
+        let res = self.invalid_blocks.contains_key(rotxn, block_hash)?;
+        Ok(res)
     }
 
     pub fn try_get_main_block_info(
@@ -757,12 +777,70 @@ impl Archive {
         })
     }
 
+    /// Invalidate a block.
+    /// This will delete the header and body, and mark invalid, the specified
+    /// block and any descendants.
+    /// BMM results are not updated.
+    pub fn invalidate_block(
+        &self,
+        rwtxn: &mut RwTxn,
+        block_hash: BlockHash,
+    ) -> Result<(), Error> {
+        let mut stack = vec![block_hash];
+        while let Some(block_hash) = stack.pop() {
+            self.accumulators.delete(rwtxn, &block_hash)?;
+            self.block_hash_to_height.delete(rwtxn, &block_hash)?;
+            if let Some(body) = self.bodies.try_get(rwtxn, &block_hash)? {
+                for tx in body.transactions {
+                    let txid = tx.txid();
+                    if let Some(mut tx_inclusions) =
+                        self.txid_to_inclusions.try_get(rwtxn, &txid)?
+                    {
+                        tx_inclusions.remove(&block_hash);
+                        if tx_inclusions.is_empty() {
+                            self.txid_to_inclusions.delete(rwtxn, &txid)?;
+                        } else {
+                            self.txid_to_inclusions.put(
+                                rwtxn,
+                                &txid,
+                                &tx_inclusions,
+                            )?;
+                        }
+                    }
+                }
+            }
+            self.bodies.delete(rwtxn, &block_hash)?;
+            self.exponential_ancestors.delete(rwtxn, &block_hash)?;
+            if let Some(header) = self.headers.try_get(rwtxn, &block_hash)?
+                && let Some(mut pred_successors) =
+                    self.successors.try_get(rwtxn, &header.prev_side_hash)?
+            {
+                pred_successors.remove(&block_hash);
+                self.successors.put(
+                    rwtxn,
+                    &header.prev_side_hash,
+                    &pred_successors,
+                )?;
+            }
+            self.headers.delete(rwtxn, &block_hash)?;
+            self.invalid_blocks.put(rwtxn, &block_hash, &())?;
+            if let Some(successors) =
+                self.successors.try_get(rwtxn, &Some(block_hash))?
+            {
+                stack.extend(successors);
+            }
+            self.successors.delete(rwtxn, &Some(block_hash))?;
+        }
+        Ok(())
+    }
+
     /// Store a header.
     ///
     /// The following predicates MUST be met before calling this function:
     /// * Ancestor headers MUST be stored
     /// * BMM commitments MUST be stored for mainchain header where
-    ///   `main_header.prev_blockhash == header.prev_main_hash`
+    ///   `main_header.prev_blockhash == header.prev_main_hash`.
+    /// * The block MUST not have been invalidated.
     pub fn put_header(
         &self,
         rwtxn: &mut RwTxn,

@@ -62,6 +62,14 @@ pub mod node {
             addr: SocketAddr,
         ) -> RpcResult<()>;
 
+        /// Invalidate a block, potentially re-orging to a valid ancestor of
+        /// the current tip.
+        #[method(name = "invalidate_block")]
+        async fn invalidate_block(
+            &self,
+            block_hash: BlockHash,
+        ) -> RpcResult<()>;
+
         /// Remove a tx from the mempool
         #[open_api_method(output_schema(ToSchema))]
         #[method(name = "remove_from_mempool")]
