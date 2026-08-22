@@ -28,6 +28,9 @@ pub struct ThunderApp {
     pub data_dir: PathBuf,
     pub log_level: Option<tracing::Level>,
     pub mainchain_grpc_port: u16,
+    /// Host to bind the P2P endpoint to. IPv6 hosts must be bracketed, as in
+    /// `[::]`.
+    pub net_host: String,
     /// Port to use for P2P networking
     pub net_port: u16,
     pub network: Network,
@@ -56,7 +59,7 @@ impl ThunderApp {
             "--mainchain-grpc-url".to_owned(),
             format!("http://127.0.0.1:{}", self.mainchain_grpc_port),
             "--net-addr".to_owned(),
-            format!("127.0.0.1:{}", self.net_port),
+            format!("{}:{}", self.net_host, self.net_port),
             format!("--network={}", self.network),
             "--private-rpc-addr".to_owned(),
             format!("127.0.0.1:{}", self.rpc_port),

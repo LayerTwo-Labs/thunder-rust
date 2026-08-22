@@ -831,10 +831,24 @@ impl ConnectionTask {
         let mut peer_state = Option::<PeerStateId>::None;
         // known peer states
         let mut peer_states = HashMap::<PeerStateId, PeerState>::new();
+        let mut sent_validated = false;
         let mut mailbox_stream = self
             .mailbox_rx
             .into_stream(self.connection, &self.received_msg_successfully);
         while let Some(mailbox_item) = mailbox_stream.next().await {
+            // The mailbox stream sets `received_msg_successfully` once a
+            // message bearing our magic bytes has been received; forward
+            // that edge to the net task once, so it can persist the peer.
+            if !sent_validated
+                && self
+                    .received_msg_successfully
+                    .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                sent_validated = true;
+                if self.info_tx.unbounded_send(Info::Validated).is_err() {
+                    tracing::error!("Failed to send validated info")
+                }
+            }
             match mailbox_item {
                 MailboxItem::Error(err) => return Err(err.into()),
                 MailboxItem::InternalMessage(msg) => {

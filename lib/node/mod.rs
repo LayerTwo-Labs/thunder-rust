@@ -16,7 +16,7 @@ use tonic::transport::Channel;
 use crate::{
     archive::Archive,
     mempool::{self, MemPool},
-    net::Net,
+    net::{Net, PeerAddress},
     state::State,
     types::{
         Accumulator, Address, AmountOverflowError, AmountUnderflowError,
@@ -35,6 +35,15 @@ mod mainchain_task;
 use mainchain_task::MainchainTaskHandle;
 mod net_task;
 use net_task::NetTaskHandle;
+
+#[derive(Clone, Debug)]
+pub struct Config<'a> {
+    pub datadir: &'a Path,
+    pub bind_addr: SocketAddr,
+    pub magic_bytes_override: Option<crate::net::peer_message::MagicBytes>,
+    pub network: Network,
+    pub seed_nodes: &'a [crate::net::PeerAddress],
+}
 
 #[derive(Clone)]
 pub struct Node<MainchainTransport = Channel> {
@@ -55,14 +64,11 @@ where
     MainchainTransport: proto::Transport,
 {
     pub fn new(
-        datadir: &Path,
-        bind_addr: SocketAddr,
+        config: Config<'_>,
         cusf_mainchain: mainchain::ValidatorClient<MainchainTransport>,
         cusf_mainchain_wallet: Option<
             mainchain::WalletClient<MainchainTransport>,
         >,
-        magic_bytes_override: Option<crate::net::peer_message::MagicBytes>,
-        network: Network,
         runtime: &tokio::runtime::Runtime,
     ) -> Result<Self, Error>
     where
@@ -72,6 +78,13 @@ where
             tonic::body::Body,
         >>::Future: Send,
 {
+        let Config {
+            datadir,
+            bind_addr,
+            magic_bytes_override,
+            network,
+            seed_nodes,
+        } = config;
         let env_path = datadir.join("data.mdb");
         // let _ = std::fs::remove_dir_all(&env_path);
         std::fs::create_dir_all(&env_path)?;
@@ -129,6 +142,11 @@ where
             bind_addr,
         )?;
 
+        let seed_peers: Vec<crate::net::PeerAddress> =
+            crate::net::builtin_seed_peers(network)
+                .into_iter()
+                .chain(seed_nodes.iter().cloned())
+                .collect();
         let net_task = NetTaskHandle::new(
             runtime,
             env.clone(),
@@ -138,6 +156,7 @@ where
             mempool.clone(),
             net.clone(),
             peer_info_rx,
+            seed_peers,
             state.clone(),
         );
         let cusf_mainchain_wallet =
@@ -558,7 +577,8 @@ where
 
     pub fn forget_peer(&self, addr: &SocketAddr) -> Result<bool, Error> {
         let mut rwtxn = self.env.write_txn().map_err(EnvError::from)?;
-        let res = self.net.forget_peer(&mut rwtxn, addr)?;
+        let peer_address: PeerAddress = (*addr).into();
+        let res = self.net.forget_peer(&mut rwtxn, &peer_address)?;
         rwtxn.commit().map_err(RwTxnError::from)?;
         Ok(res)
     }

@@ -277,12 +277,15 @@ impl App {
 
         tracing::debug!("Instantiating node struct");
         let node = Node::new(
-            &config.datadir,
-            config.net_addr,
+            thunder::node::Config {
+                datadir: &config.datadir,
+                bind_addr: config.net_addr,
+                magic_bytes_override: config.network_magic_override,
+                network: config.network,
+                seed_nodes: &config.seed_nodes,
+            },
             cusf_mainchain,
             cusf_mainchain_wallet,
-            config.network_magic_override,
-            config.network,
             &runtime,
         )?;
         let utxos = {

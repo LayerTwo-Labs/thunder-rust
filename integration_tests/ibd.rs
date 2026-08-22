@@ -43,20 +43,14 @@ async fn setup(
             .await?
     };
     let sidechain_sender = PostSetup::setup(
-        Init {
-            thunder_app: bin_paths.thunder()?.clone(),
-            data_dir_suffix: Some("sender".to_owned()),
-        },
+        Init::new(bin_paths.thunder()?.clone(), Some("sender")),
         &enforcer_post_setup,
         res_tx.clone(),
     )
     .await?;
     tracing::info!("Setup thunder send node successfully");
     let sidechain_syncer = PostSetup::setup(
-        Init {
-            thunder_app: bin_paths.thunder()?.clone(),
-            data_dir_suffix: Some("syncer".to_owned()),
-        },
+        Init::new(bin_paths.thunder()?.clone(), Some("syncer")),
         &enforcer_post_setup,
         res_tx,
     )

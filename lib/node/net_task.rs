@@ -2,7 +2,7 @@
 
 use std::{
     cmp::Ordering,
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque, hash_map},
     net::SocketAddr,
     sync::Arc,
     time::Duration,
@@ -27,7 +27,7 @@ use crate::{
     archive::Archive,
     mempool::MemPool,
     net::{
-        self, Net, PeerConnectionError, PeerConnectionInfo,
+        self, Net, PeerAddress, PeerConnectionError, PeerConnectionInfo,
         PeerConnectionMailboxError, PeerConnectionMessage, PeerInfoRx,
         PeerRequest, PeerResponse, PeerStateId, peer_message,
     },
@@ -441,6 +441,8 @@ struct NetTask {
     /// to reorg to the new tip, on the corresponding oneshot receiver.
     new_tip_ready_tx: UnboundedSender<NewTipReadyMessage>,
     peer_info_rx: PeerInfoRx,
+    /// Seed peers to resolve and dial on startup, alongside the known peers
+    seed_peers: Vec<PeerAddress>,
 }
 
 impl NetTask {
@@ -826,6 +828,58 @@ impl NetTask {
         }
     }
 
+    /// Dial the next untried socket address for an initial peer.
+    ///
+    /// Addresses are tried one at a time, with the untried remainder stored
+    /// in `fallback_addrs`, so that a peer whose host resolves to several
+    /// addresses holds at most one connection.
+    fn dial_next_addr(
+        ctxt: &NetTaskContext,
+        dialed_peers: &mut HashMap<SocketAddr, PeerAddress>,
+        fallback_addrs: &mut HashMap<PeerAddress, VecDeque<SocketAddr>>,
+        peer_address: PeerAddress,
+        mut untried: VecDeque<SocketAddr>,
+    ) {
+        while let Some(socket_addr) = untried.pop_front() {
+            // Several hosts may resolve to one address, dial once
+            let hash_map::Entry::Vacant(dialed_entry) =
+                dialed_peers.entry(socket_addr)
+            else {
+                continue;
+            };
+            dialed_entry.insert(peer_address.clone());
+            match ctxt.net.connect_peer(ctxt.env.clone(), socket_addr) {
+                Ok(()) => {
+                    tracing::info!(
+                        %socket_addr, %peer_address,
+                        "dial peer: connecting"
+                    );
+                    // Also stored when empty, so that exhaustion is logged
+                    // when the last address fails
+                    fallback_addrs.insert(peer_address, untried);
+                    return;
+                }
+                // A connection to this address means a connection to this
+                // peer, so its other addresses must not be dialed
+                Err(net::Error::AlreadyConnected(_)) => {
+                    tracing::debug!(
+                        %socket_addr, %peer_address,
+                        "dial peer: already connected"
+                    );
+                    return;
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        %socket_addr, %peer_address,
+                        "dial peer: failed to connect: {:#}",
+                        ErrorChain::new(&err)
+                    );
+                }
+            }
+        }
+        tracing::debug!(%peer_address, "dial peer: no more addresses to try");
+    }
+
     async fn run(self) -> Result<(), Error> {
         tracing::debug!("starting net task");
         #[derive(Debug)]
@@ -849,10 +903,35 @@ impl NetTask {
             // attempting to reorg to the new tip, on the corresponding oneshot
             // receiver.
             NewTipReady(Tip, Option<SocketAddr>, Option<oneshot::Sender<bool>>),
+            // Dial an initial peer, trying its resolved socket addresses
+            // one at a time
+            DialPeer(PeerAddress, Vec<SocketAddr>),
             PeerInfo(Option<(SocketAddr, Option<PeerConnectionInfo>)>),
             // Signal to reconnect to a peer
             ReconnectPeer(SocketAddr),
         }
+        // Peers to dial on startup: those remembered in `known_peers`, and
+        // the seed peers. Hosts are resolved here in the net task, on a
+        // stream merged into the mailbox, so a slow resolver delays nothing
+        // else.
+        let initial_peers: Vec<PeerAddress> = {
+            let known_peers = self.ctxt.net.get_known_peers(&self.ctxt.env)?;
+            let mut seen = HashSet::new();
+            known_peers
+                .into_iter()
+                .chain(self.seed_peers)
+                .filter(|peer_address| seen.insert(peer_address.clone()))
+                .collect()
+        };
+        let dial_initial_peers = stream::iter(initial_peers)
+            .map(|peer_address| async move {
+                let socket_addrs = peer_address.resolve().await;
+                (peer_address, socket_addrs)
+            })
+            .buffer_unordered(8)
+            .map(|(peer_address, socket_addrs)| {
+                MailboxItem::DialPeer(peer_address, socket_addrs)
+            });
         let accept_connections = stream::try_unfold((), |()| {
             let env = self.ctxt.env.clone();
             let net = self.ctxt.net.clone();
@@ -907,6 +986,7 @@ impl NetTask {
             .map(|addr| MailboxItem::ReconnectPeer(addr.unwrap()));
         let mut mailbox_stream = stream::select_all([
             accept_connections.boxed(),
+            dial_initial_peers.boxed(),
             forward_request_stream.boxed(),
             mainchain_task_response_stream.boxed(),
             new_tip_ready_stream.boxed(),
@@ -926,6 +1006,15 @@ impl NetTask {
             mainchain_task::Request,
             HashSet<(SocketAddr, PeerStateId)>,
         >::new();
+        // Maps dialed socket addresses to the peer address they resolved
+        // from, so that a validated peer is remembered by host, rather than
+        // by a resolved address that may change
+        let mut dialed_peers = HashMap::<SocketAddr, PeerAddress>::new();
+        // Maps initial peers to their resolved-but-untried socket addresses.
+        // An entry is dropped once a connection to the peer validates, and
+        // advanced when the current attempt's connection closes before that
+        let mut fallback_addrs =
+            HashMap::<PeerAddress, VecDeque<SocketAddr>>::new();
         while let Some(mailbox_item) = mailbox_stream.next().await {
             tracing::trace!(?mailbox_item, "received new mailbox item");
             match mailbox_item {
@@ -948,6 +1037,15 @@ impl NetTask {
                         );
                     }
                 },
+                MailboxItem::DialPeer(peer_address, socket_addrs) => {
+                    let () = Self::dial_next_addr(
+                        &self.ctxt,
+                        &mut dialed_peers,
+                        &mut fallback_addrs,
+                        peer_address,
+                        socket_addrs.into(),
+                    );
+                }
                 MailboxItem::ForwardMainchainTaskRequest(
                     request,
                     peer,
@@ -1039,6 +1137,22 @@ impl NetTask {
                     // peer connection is closed, remove it
                     tracing::warn!(%addr, "Connection to peer closed");
                     let () = self.ctxt.net.remove_active_peer(addr);
+                    // This event fires exactly once per connection, after any
+                    // error. A fallback entry still exists only if no
+                    // connection to the peer has validated, so try its next
+                    // resolved address, if any
+                    if let Some(peer_address) = dialed_peers.get(&addr).cloned()
+                        && let Some(untried) =
+                            fallback_addrs.remove(&peer_address)
+                    {
+                        let () = Self::dial_next_addr(
+                            &self.ctxt,
+                            &mut dialed_peers,
+                            &mut fallback_addrs,
+                            peer_address,
+                            untried,
+                        );
+                    }
                     continue;
                 }
                 MailboxItem::PeerInfo(Some((addr, Some(peer_info)))) => {
@@ -1125,6 +1239,33 @@ impl NetTask {
                                 .net
                                 .push_tx(HashSet::from_iter([addr]), &new_tx);
                         }
+                        PeerConnectionInfo::Validated => {
+                            // Remembered under the address it was dialed as,
+                            // so a peer dialed by hostname is re-dialed by
+                            // that hostname
+                            let peer_address = dialed_peers
+                                .get(&addr)
+                                .cloned()
+                                .unwrap_or_else(|| PeerAddress::from(addr));
+                            // The peer is connected, so its other resolved
+                            // addresses must not be dialed
+                            let _untried: Option<VecDeque<SocketAddr>> =
+                                fallback_addrs.remove(&peer_address);
+                            tracing::debug!(
+                                %addr, %peer_address,
+                                "peer validated, recording in known peers"
+                            );
+                            let mut rwtxn = self
+                                .ctxt
+                                .env
+                                .write_txn()
+                                .map_err(EnvError::from)?;
+                            let () = self
+                                .ctxt
+                                .net
+                                .remember_peer(&mut rwtxn, &peer_address)?;
+                            rwtxn.commit().map_err(RwTxnError::from)?;
+                        }
                         PeerConnectionInfo::Response(boxed) => {
                             let (resp, req) = *boxed;
                             tracing::trace!(
@@ -1192,6 +1333,7 @@ impl NetTaskHandle {
         mempool: MemPool,
         net: Net,
         peer_info_rx: PeerInfoRx,
+        seed_peers: Vec<PeerAddress>,
         state: State,
     ) -> Self {
         let ctxt = NetTaskContext {
@@ -1215,6 +1357,7 @@ impl NetTaskHandle {
             new_tip_ready_tx: new_tip_ready_tx.clone(),
             new_tip_ready_rx,
             peer_info_rx,
+            seed_peers,
         };
         let task = runtime.spawn(async {
             if let Err(err) = task.run().await {

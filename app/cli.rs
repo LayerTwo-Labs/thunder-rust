@@ -147,6 +147,11 @@ pub(super) struct Cli {
     /// Socket address to host the RPC server
     #[arg(default_value_t = DEFAULT_RPC_ADDR, long, short)]
     rpc_addr: SocketAddr,
+    /// Additional seed node to dial on startup, as `host:port`. May be given
+    /// more than once, and is dialed in addition to the network's built-in seed
+    /// nodes.
+    #[arg(long = "seed-node")]
+    seed_nodes: Vec<thunder::net::PeerAddress>,
 }
 
 #[derive(Clone, Debug)]
@@ -164,6 +169,7 @@ pub struct Config {
     pub network_magic_override: Option<thunder::net::peer_message::MagicBytes>,
     pub private_rpc_addr: SocketAddr,
     pub rpc_addr: SocketAddr,
+    pub seed_nodes: Vec<thunder::net::PeerAddress>,
 }
 
 impl Cli {
@@ -202,6 +208,7 @@ impl Cli {
             network_magic_override: self.network_magic,
             private_rpc_addr: self.private_rpc_addr,
             rpc_addr: self.rpc_addr,
+            seed_nodes: self.seed_nodes,
         })
     }
 }
