@@ -158,7 +158,19 @@ pub fn make_server_endpoint(
 pub type PeerInfoRx =
     mpsc::UnboundedReceiver<(SocketAddr, Option<PeerConnectionInfo>)>;
 
-const ALPHANET_SEED_NODE_ADDRS: &[SocketAddr] = &[];
+const ALPHANET_SEED_NODE_ADDRS: &[SocketAddr] = {
+    // seed.alpha.ecash.drivecha.in
+    const DRIVECHA_IN: SocketAddr = SocketAddr::new(
+        std::net::IpAddr::V4(std::net::Ipv4Addr::new(157, 180, 96, 24)),
+        4000 + THIS_SIDECHAIN as u16,
+    );
+    // seed.alpha.ecash.ninja
+    const ECASH_NINJA: SocketAddr = SocketAddr::new(
+        std::net::IpAddr::V4(std::net::Ipv4Addr::new(65, 109, 148, 184)),
+        4000 + THIS_SIDECHAIN as u16,
+    );
+    &[DRIVECHA_IN, ECASH_NINJA]
+};
 
 const SIGNET_SEED_NODE_ADDRS: &[SocketAddr] = {
     const SIGNET_MINING_SERVER: SocketAddr = SocketAddr::new(
