@@ -1,5 +1,4 @@
 use eframe::egui::{self, Button};
-use futures::FutureExt;
 use thunder::types::proto::mainchain;
 
 use crate::{app::App, gui::util::UiExt};
@@ -32,9 +31,8 @@ impl Info {
         self.promise = Some(poll_promise::Promise::spawn_async(async move {
             let mainchain_tip_info = app
                 .node
-                .with_cusf_mainchain(|cusf_mainchain| {
-                    cusf_mainchain.get_chain_tip().boxed()
-                })
+                .with_cusf_mainchain(|cusf_mainchain| cusf_mainchain.clone())
+                .get_chain_tip()
                 .await?;
             let sidechain_wealth = app.node.get_sidechain_wealth()?;
             Ok(Inner {

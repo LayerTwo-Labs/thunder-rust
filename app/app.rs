@@ -369,16 +369,12 @@ impl App {
         &self,
         fee: Option<bitcoin::Amount>,
     ) -> Result<BlockTemplate, Error> {
-        let Some(miner) = self.miner.as_ref() else {
-            return Err(Error::NoCusfMainchainWalletClient);
-        };
-        let prev_main_hash = {
-            let mut miner_write = miner.write().await;
-            let prev_main_hash =
-                miner_write.cusf_mainchain.get_chain_tip().await?.block_hash;
-            drop(miner_write);
-            prev_main_hash
-        };
+        let prev_main_hash = self
+            .node
+            .with_cusf_mainchain(|cusf_mainchain| cusf_mainchain.clone())
+            .get_chain_tip()
+            .await?
+            .block_hash;
         let tip_hash = self.node.try_get_best_hash()?;
         // If `prev_side_hash` is not the best tip to mine on, then mine an
         // empty block.
