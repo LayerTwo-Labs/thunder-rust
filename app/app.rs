@@ -1,7 +1,7 @@
 use std::{borrow::BorrowMut, collections::HashMap, sync::Arc};
 
 use fallible_iterator::FallibleIterator as _;
-use futures::{FutureExt, StreamExt, TryFutureExt};
+use futures::{StreamExt, TryFutureExt};
 use parking_lot::RwLock;
 use rustreexo::accumulator::proof::Proof;
 use thunder::{
@@ -371,9 +371,8 @@ impl App {
     ) -> Result<BlockTemplate, Error> {
         let prev_main_hash = self
             .node
-            .with_cusf_mainchain(|cusf_mainchain| {
-                cusf_mainchain.get_chain_tip().boxed()
-            })
+            .with_cusf_mainchain(|cusf_mainchain| cusf_mainchain.clone())
+            .get_chain_tip()
             .await?
             .block_hash;
         let tip_hash = self.node.try_get_best_hash()?;
