@@ -12,7 +12,8 @@ use sneed::{
 
 use crate::types::{
     Accumulator, BlockHash, BmmResult, Body, Header, Tip, Txid, VERSION,
-    Version, proto::mainchain,
+    Version,
+    proto::mainchain::{self, BlockHeaderInfo},
 };
 
 pub mod error;
@@ -1128,23 +1129,50 @@ impl Archive {
 
     /// Return a fallible iterator over ancestors of a mainchain block,
     /// starting with the specified block's header
-    pub fn main_ancestors<'a>(
+    pub fn main_ancestor_header_infos<'a>(
         &'a self,
         rotxn: &'a RoTxn,
         mut block_hash: bitcoin::BlockHash,
-    ) -> impl FallibleIterator<Item = bitcoin::BlockHash, Error = Error> + 'a
-    {
+    ) -> impl FallibleIterator<Item = BlockHeaderInfo, Error = Error> + 'a {
         fallible_iterator::from_fn(move || {
             if block_hash == bitcoin::BlockHash::all_zeros() {
                 Ok(None)
             } else {
-                let res = Some(block_hash);
                 let header_info =
                     self.get_main_header_info(rotxn, &block_hash)?;
                 block_hash = header_info.prev_block_hash;
-                Ok(res)
+                Ok(Some(header_info))
             }
         })
+    }
+
+    /// Return a fallible iterator over ancestors of a mainchain block,
+    /// ending with the specified block's header, and starting with the
+    /// ancestor at the specified height.
+    pub fn main_ancestor_header_infos_rev<'a, 'rotxn>(
+        &'a self,
+        rotxn: &'a RoTxn<'rotxn>,
+        end_block_hash: bitcoin::BlockHash,
+        start_height: u32,
+    ) -> impl FallibleIterator<Item = BlockHeaderInfo, Error = Error> + 'a {
+        iter::MainchainAncestorsRev::new(
+            self,
+            rotxn,
+            end_block_hash,
+            start_height,
+        )
+    }
+
+    /// Return a fallible iterator over ancestors of a mainchain block,
+    /// starting with the specified block's header
+    pub fn main_ancestors<'a>(
+        &'a self,
+        rotxn: &'a RoTxn,
+        block_hash: bitcoin::BlockHash,
+    ) -> impl FallibleIterator<Item = bitcoin::BlockHash, Error = Error> + 'a
+    {
+        self.main_ancestor_header_infos(rotxn, block_hash)
+            .map(|info| Ok(info.block_hash))
     }
 
     /// Find the last common ancestor of two blocks, if headers for both exist
