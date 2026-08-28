@@ -232,6 +232,30 @@ impl std::fmt::Display for M6id {
     }
 }
 
+/// A block hash that is known to be non-zero. Bitcoin core often uses the
+/// all-zeros block hash to represent `Option::<bitcoin::BlockHash>::None`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[repr(transparent)]
+#[serde(transparent)]
+pub struct NonZeroBitcoinBlockHash(bitcoin::BlockHash);
+
+impl NonZeroBitcoinBlockHash {
+    pub fn new(block_hash: bitcoin::BlockHash) -> Option<Self> {
+        if block_hash == bitcoin::BlockHash::all_zeros() {
+            None
+        } else {
+            Some(Self(block_hash))
+        }
+    }
+}
+
+impl std::fmt::Display for NonZeroBitcoinBlockHash {
+    #[inline(always)]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 pub fn hash<T>(data: &T) -> Hash
 where
     T: BorshSerialize + ?Sized,

@@ -25,8 +25,8 @@ pub use error::{
 };
 pub mod hashes;
 pub use hashes::{
-    BlockHash, Hash, M6id, MerkleRoot, Txid, UtreexoNodeHash, hash,
-    hash_with_scratch_buffer,
+    BlockHash, Hash, M6id, MerkleRoot, NonZeroBitcoinBlockHash, Txid,
+    UtreexoNodeHash, hash, hash_with_scratch_buffer,
 };
 pub mod net;
 pub mod schema;
