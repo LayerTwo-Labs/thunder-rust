@@ -194,6 +194,24 @@ const FORKNET_SEED_NODE_ADDRS: &[SocketAddr] = {
     &[BIP300_XYZ]
 };
 
+/// Add every seed address the network names that the database does not hold.
+///
+/// This runs on every start, not only when the database is new. A node whose
+/// datadir predates a seed would otherwise never learn it, and would never
+/// find a peer.
+fn ensure_seed_peers(
+    known_peers: &DatabaseUnique<SerdeBincode<SocketAddr>, Unit>,
+    rwtxn: &mut RwTxn,
+    network: Network,
+) -> Result<(), DbError> {
+    for seed_node_addr in seed_node_addrs(network) {
+        if known_peers.try_get(rwtxn, seed_node_addr)?.is_none() {
+            known_peers.put(rwtxn, seed_node_addr, &())?;
+        }
+    }
+    Ok(())
+}
+
 const fn seed_node_addrs(network: Network) -> &'static [SocketAddr] {
     match network {
         Network::Alphanet => ALPHANET_SEED_NODE_ADDRS,
@@ -361,15 +379,9 @@ impl Net {
         let known_peers =
             match DatabaseUnique::open(env, &rwtxn, "known_peers")? {
                 Some(known_peers) => known_peers,
-                None => {
-                    let known_peers =
-                        DatabaseUnique::create(env, &mut rwtxn, "known_peers")?;
-                    for seed_node_addr in seed_node_addrs(network) {
-                        known_peers.put(&mut rwtxn, seed_node_addr, &())?;
-                    }
-                    known_peers
-                }
+                None => DatabaseUnique::create(env, &mut rwtxn, "known_peers")?,
             };
+        let () = ensure_seed_peers(&known_peers, &mut rwtxn, network)?;
         let version = DatabaseUnique::create(env, &mut rwtxn, "net_version")?;
         if version.try_get(&rwtxn, &())?.is_none() {
             version.put(&mut rwtxn, &(), &*VERSION)?;
@@ -562,5 +574,87 @@ impl Net {
                     tracing::warn!("Failed to push tx {txid} to peer at {addr}")
                 }
             })
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use fallible_iterator::FallibleIterator as _;
+    use heed::types::{SerdeBincode, Unit};
+    use sneed::DatabaseUnique;
+
+    use crate::{
+        net::{ensure_seed_peers, seed_node_addrs},
+        types::Network,
+    };
+
+    fn temp_env(
+        test_name: &str,
+    ) -> anyhow::Result<(temp_dir::TempDir, sneed::Env)> {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let temp_dir = temp_dir::TempDir::with_prefix(format!(
+            "thunder-{test_name}-{}-{nanos}",
+            std::process::id()
+        ))?;
+        let mut opts = heed::EnvOpenOptions::new();
+        opts.map_size(16 * 1024 * 1024).max_dbs(2);
+        let env = unsafe { sneed::Env::open(&opts, temp_dir.path()) }?;
+        Ok((temp_dir, env))
+    }
+
+    // A datadir made before a seed existed holds an empty peer table. Adding
+    // seeds only at creation leaves that node with no peer, forever.
+    #[test]
+    fn seeds_reach_an_existing_database() -> anyhow::Result<()> {
+        let (_temp_dir, env) = temp_env("seed-peers")?;
+        let network = Network::Alphanet;
+
+        let mut rwtxn = env.write_txn()?;
+        let known_peers: DatabaseUnique<
+            SerdeBincode<std::net::SocketAddr>,
+            Unit,
+        > = DatabaseUnique::create(&env, &mut rwtxn, "known_peers")?;
+        rwtxn.commit()?;
+
+        // The table exists and holds nothing, like an upgraded node.
+        let mut rwtxn = env.write_txn()?;
+        ensure_seed_peers(&known_peers, &mut rwtxn, network)?;
+        rwtxn.commit()?;
+
+        let rotxn = env.read_txn()?;
+        for addr in seed_node_addrs(network) {
+            anyhow::ensure!(
+                known_peers.try_get(&rotxn, addr)?.is_some(),
+                "the seed {addr} never reached the database"
+            );
+        }
+        Ok(())
+    }
+
+    // Running it twice writes the same set, so a restart costs nothing.
+    #[test]
+    fn seeds_are_idempotent() -> anyhow::Result<()> {
+        let (_temp_dir, env) = temp_env("seed-peers-twice")?;
+        let network = Network::Alphanet;
+
+        let mut rwtxn = env.write_txn()?;
+        let known_peers: DatabaseUnique<
+            SerdeBincode<std::net::SocketAddr>,
+            Unit,
+        > = DatabaseUnique::create(&env, &mut rwtxn, "known_peers")?;
+        ensure_seed_peers(&known_peers, &mut rwtxn, network)?;
+        ensure_seed_peers(&known_peers, &mut rwtxn, network)?;
+        rwtxn.commit()?;
+
+        let rotxn = env.read_txn()?;
+        let count = known_peers.iter(&rotxn)?.count()?;
+        anyhow::ensure!(
+            count == seed_node_addrs(network).len(),
+            "the database holds {count} peers, want {}",
+            seed_node_addrs(network).len()
+        );
+        Ok(())
     }
 }
