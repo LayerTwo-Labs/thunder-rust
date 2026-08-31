@@ -609,6 +609,11 @@ impl Transaction {
     pub fn canonical_size(&self) -> u64 {
         (borsh::object_length(self).unwrap() / 8) as u64
     }
+
+    /// Canonical encoding. This is the form the txid hashes over.
+    pub fn canonical_encoding(&self) -> Vec<u8> {
+        borsh::to_vec(self).expect("serializing a transaction cannot fail")
+    }
 }
 
 /// Representation of a spent output

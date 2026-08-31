@@ -177,6 +177,39 @@ impl<const ENABLE_PRIVATE_API: bool> rpc_api::node::RpcServer
         Ok(Some(block_hash))
     }
 
+    async fn get_block_hash(
+        &self,
+        height: u32,
+    ) -> RpcResult<Option<thunder::types::BlockHash>> {
+        self.app.node.try_get_block_hash(height).map_err(custom_err)
+    }
+
+    async fn get_block_index(
+        &self,
+        block_hash: thunder::types::BlockHash,
+    ) -> RpcResult<rpc_api::node::GetBlockIndexResponse> {
+        let body = self.app.node.get_body(block_hash).map_err(custom_err)?;
+        let txs = body
+            .transactions
+            .iter()
+            .map(|tx| rpc_api::node::BlockIndexTx {
+                txid: tx.txid(),
+                size: tx.canonical_size(),
+                raw: const_hex::encode(tx.canonical_encoding()),
+            })
+            .collect();
+        let events = self
+            .app
+            .node
+            .get_block_index_events(block_hash)
+            .map_err(custom_err)?;
+        Ok(rpc_api::node::GetBlockIndexResponse {
+            txs,
+            deposits: events.deposits,
+            bundle_spends: events.bundle_spends,
+        })
+    }
+
     async fn get_bmm_inclusions(
         &self,
         block_hash: thunder::types::BlockHash,

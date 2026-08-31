@@ -9,7 +9,7 @@ use std::{
 use bitcoin::amount::CheckedSum;
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::Stream;
-use sneed::{DbError, Env, EnvError, RwTxnError};
+use sneed::{DbError, Env, EnvError, RoTxn, RwTxnError};
 use tokio::sync::Mutex;
 use tonic::transport::Channel;
 
@@ -20,9 +20,10 @@ use crate::{
     state::State,
     types::{
         Accumulator, Address, AmountOverflowError, AmountUnderflowError,
-        Authorized, AuthorizedTransaction, BlockHash, BmmResult, Body,
-        FilledTransaction, GetValue, Header, Network, OutPoint, OutPointKey,
-        Output, SpentOutput, Tip, Transaction, Txid, WithdrawalBundle,
+        Authorized, AuthorizedTransaction, BlockHash, BlockIndexEvents,
+        BmmResult, Body, FilledTransaction, GetValue, Header, Network,
+        OutPoint, OutPointKey, Output, SpentOutput, Tip, Transaction, Txid,
+        WithdrawalBundle,
         net::{Peer, PeerAddress, ResolvedPeerAddress},
         proto::{self, mainchain},
     },
@@ -373,6 +374,43 @@ where
         Ok(self.archive.get_header(&txn, block_hash)?)
     }
 
+    /// Get the coin movements that the block applied outside its body
+    pub fn get_block_index_events(
+        &self,
+        block_hash: BlockHash,
+    ) -> Result<BlockIndexEvents, Error> {
+        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
+        let height = self.archive.get_height(&rotxn, block_hash)?;
+        // The events are keyed by height, so a block off the current chain
+        // would read another block's events.
+        if self.try_get_block_hash_read(&rotxn, height)? != Some(block_hash) {
+            return Err(Error::NotInCurrentChain { block_hash });
+        }
+        let events = self.state.get_block_index_events(&rotxn, height)?;
+        Ok(events)
+    }
+
+    fn try_get_block_hash_read(
+        &self,
+        rotxn: &RoTxn,
+        height: u32,
+    ) -> Result<Option<BlockHash>, Error> {
+        let Some(tip) = self.state.try_get_tip(rotxn)? else {
+            return Ok(None);
+        };
+        let Some(tip_height) = self.state.try_get_height(rotxn)? else {
+            return Ok(None);
+        };
+        if tip_height >= height {
+            self.archive
+                .ancestors(rotxn, tip)
+                .nth((tip_height - height) as usize)
+                .map_err(Error::from)
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Get the block hash at the specified height in the current chain,
     /// if it exists
     pub fn try_get_block_hash(
@@ -380,20 +418,7 @@ where
         height: u32,
     ) -> Result<Option<BlockHash>, Error> {
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
-        let Some(tip) = self.state.try_get_tip(&rotxn)? else {
-            return Ok(None);
-        };
-        let Some(tip_height) = self.state.try_get_height(&rotxn)? else {
-            return Ok(None);
-        };
-        if tip_height >= height {
-            self.archive
-                .ancestors(&rotxn, tip)
-                .nth((tip_height - height) as usize)
-                .map_err(Error::from)
-        } else {
-            Ok(None)
-        }
+        self.try_get_block_hash_read(&rotxn, height)
     }
 
     pub fn try_get_body(

@@ -11,10 +11,11 @@ use crate::{
         error, rollback::RollBack,
     },
     types::{
-        AccumulatorDiff, AggregatedWithdrawal, AmountOverflowError, InPoint,
-        M6id, OutPoint, OutPointKey, Output, OutputContent, PointedOutput,
-        PointedOutputRef, SpentOutput, WithdrawalBundle, WithdrawalBundleEvent,
-        WithdrawalBundleEventStatus, WithdrawalBundleStatus, hash,
+        AccumulatorDiff, AggregatedWithdrawal, AmountOverflowError,
+        BlockIndexEvents, InPoint, M6id, OutPoint, OutPointKey, Output,
+        OutputContent, PointedOutput, PointedOutputRef, SpentOutput,
+        WithdrawalBundle, WithdrawalBundleEvent, WithdrawalBundleEventStatus,
+        WithdrawalBundleStatus, hash,
         proto::mainchain::{BlockEvent, TwoWayPegData},
     },
 };
@@ -113,11 +114,13 @@ fn collect_withdrawal_bundle(
     Ok(Some(bundle))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn connect_withdrawal_bundle_submitted(
     state: &State,
     rwtxn: &mut RwTxn,
     block_height: u32,
     accumulator_diff: &mut AccumulatorDiff,
+    index_events: &mut BlockIndexEvents,
     event_block_hash: &bitcoin::BlockHash,
     m6id: M6id,
 ) -> Result<(), error::ConnectWithdrawalBundleSubmitted> {
@@ -160,6 +163,7 @@ fn connect_withdrawal_bundle_submitted(
                 inpoint: InPoint::Withdrawal { m6id },
             };
             state.stxos.put(rwtxn, &key, &spent_output)?;
+            index_events.bundle_spends.push((*outpoint, m6id));
         }
         assert_eq!(
             bundle_status.latest().value,
@@ -477,11 +481,13 @@ fn connect_withdrawal_bundle_failed(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn connect_withdrawal_bundle_event(
     state: &State,
     rwtxn: &mut RwTxn,
     block_height: u32,
     accumulator_diff: &mut AccumulatorDiff,
+    index_events: &mut BlockIndexEvents,
     event_block_hash: &bitcoin::BlockHash,
     event: &WithdrawalBundleEvent,
 ) -> Result<(), Error> {
@@ -492,6 +498,7 @@ fn connect_withdrawal_bundle_event(
                 rwtxn,
                 block_height,
                 accumulator_diff,
+                index_events,
                 event_block_hash,
                 event.m6id,
             )
@@ -525,6 +532,7 @@ fn connect_event(
     rwtxn: &mut RwTxn,
     block_height: u32,
     accumulator_diff: &mut AccumulatorDiff,
+    index_events: &mut BlockIndexEvents,
     latest_deposit_block_hash: &mut Option<bitcoin::BlockHash>,
     latest_withdrawal_bundle_event_block_hash: &mut Option<bitcoin::BlockHash>,
     event_block_hash: bitcoin::BlockHash,
@@ -540,6 +548,7 @@ fn connect_event(
                 .map_err(DbError::from)?;
             let utxo_hash = hash(&PointedOutputRef { outpoint, output });
             accumulator_diff.insert(utxo_hash.into());
+            index_events.deposits.push((outpoint, output.clone()));
             *latest_deposit_block_hash = Some(event_block_hash);
         }
         BlockEvent::WithdrawalBundle(withdrawal_bundle_event) => {
@@ -548,6 +557,7 @@ fn connect_event(
                 rwtxn,
                 block_height,
                 accumulator_diff,
+                index_events,
                 &event_block_hash,
                 withdrawal_bundle_event,
             )?;
@@ -570,6 +580,7 @@ pub fn connect(
         .map_err(DbError::from)?
         .unwrap_or_default();
     let mut accumulator_diff = AccumulatorDiff::default();
+    let mut index_events = BlockIndexEvents::default();
     let mut latest_deposit_block_hash = None;
     let mut latest_withdrawal_bundle_event_block_hash = None;
     for (event_block_hash, event_block_info) in &two_way_peg_data.block_info {
@@ -579,12 +590,21 @@ pub fn connect(
                 rwtxn,
                 block_height,
                 &mut accumulator_diff,
+                &mut index_events,
                 &mut latest_deposit_block_hash,
                 &mut latest_withdrawal_bundle_event_block_hash,
                 *event_block_hash,
                 event,
             )?;
         }
+    }
+    // Record what this block moved outside its body. An address index cannot
+    // see a deposit or a bundle spend any other way.
+    if !index_events.is_empty() {
+        state
+            .block_index_events
+            .put(rwtxn, &block_height, &index_events)
+            .map_err(DbError::from)?;
     }
     // Handle deposits.
     if let Some(latest_deposit_block_hash) = latest_deposit_block_hash {
@@ -1023,6 +1043,10 @@ pub fn disconnect(
     let mut accumulator_diff = AccumulatorDiff::default();
     let mut latest_deposit_block_hash = None;
     let mut latest_withdrawal_bundle_event_block_hash = None;
+    state
+        .block_index_events
+        .delete(rwtxn, &block_height)
+        .map_err(DbError::from)?;
     // Restore pending withdrawal bundle
     for (event_block_hash, event_block_info) in
         two_way_peg_data.block_info.iter().rev()
