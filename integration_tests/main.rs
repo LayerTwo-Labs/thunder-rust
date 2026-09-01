@@ -10,6 +10,7 @@ mod integration_test;
 mod setup;
 mod unknown_withdrawal;
 mod util;
+mod wallet_less_block_template;
 
 #[derive(Parser)]
 struct Cli {
