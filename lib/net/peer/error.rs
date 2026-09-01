@@ -221,6 +221,19 @@ pub(in crate::net::peer) mod connection {
         }
     }
 
+    impl Receive {
+        /// True when the peer sent another network's magic bytes.
+        pub fn is_bad_magic(&self) -> bool {
+            matches!(self, Self::BadMagic(_))
+        }
+    }
+
+    impl ReceiveRequest {
+        pub fn is_bad_magic(&self) -> bool {
+            self.0.is_bad_magic()
+        }
+    }
+
     impl Recoverable for ReceiveRequest {
         fn may_reconnect(&self) -> bool {
             self.0.may_reconnect()
@@ -231,6 +244,12 @@ pub(in crate::net::peer) mod connection {
     #[error("Failed to receive response from peer")]
     #[repr(transparent)]
     pub struct ReceiveResponse(#[source] Receive);
+
+    impl ReceiveResponse {
+        pub fn is_bad_magic(&self) -> bool {
+            self.0.is_bad_magic()
+        }
+    }
 
     impl<E> From<E> for ReceiveResponse
     where
@@ -526,6 +545,15 @@ pub mod mailbox {
         SendResponse(#[from] super::connection::SendResponse),
     }
 
+    impl Error {
+        pub fn is_bad_magic(&self) -> bool {
+            match self {
+                Self::ReceiveRequest(err) => err.is_bad_magic(),
+                _ => false,
+            }
+        }
+    }
+
     impl Recoverable for Error {
         fn may_reconnect(&self) -> bool {
             match self {
@@ -585,5 +613,59 @@ impl Recoverable for Error {
             Self::SendRequest(err) => err.may_reconnect(),
             Self::SendResponse(err) => err.may_reconnect(),
         }
+    }
+}
+
+impl Error {
+    /// True when the peer answered with another network's magic bytes. Such a
+    /// peer runs a different chain, so it never becomes useful.
+    pub fn is_bad_magic(&self) -> bool {
+        match self {
+            Self::Mailbox(err) => err.is_bad_magic(),
+            Self::ReceiveResponse(err) => err.is_bad_magic(),
+            _ => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::{Error, connection, mailbox};
+    use crate::net::peer::message;
+
+    const FOREIGN_MAGIC: message::MagicBytes = [0x85, 0x18, 0x95, 0x01];
+
+    // A peer that answers a request with another network's magic must read as
+    // bad magic through every wrapper the error passes.
+    #[test]
+    fn bad_magic_survives_the_request_path() {
+        let inner = connection::Receive::BadMagic(FOREIGN_MAGIC);
+        let err = Error::Mailbox(mailbox::Error::ReceiveRequest(
+            connection::ReceiveRequest::from(inner),
+        ));
+        assert!(err.is_bad_magic());
+    }
+
+    #[test]
+    fn bad_magic_survives_the_response_path() {
+        let inner = connection::Receive::BadMagic(FOREIGN_MAGIC);
+        let err =
+            Error::ReceiveResponse(connection::ReceiveResponse::from(inner));
+        assert!(err.is_bad_magic());
+    }
+
+    // A timeout says nothing about the peer's network, so the node keeps it.
+    #[test]
+    fn a_timeout_is_not_bad_magic() {
+        let err = Error::ReceiveResponse(connection::ReceiveResponse::from(
+            connection::Receive::Timeout,
+        ));
+        assert!(!err.is_bad_magic());
+    }
+
+    #[test]
+    fn a_heartbeat_timeout_is_not_bad_magic() {
+        let err = Error::Mailbox(mailbox::Error::HeartbeatTimeout);
+        assert!(!err.is_bad_magic());
     }
 }
