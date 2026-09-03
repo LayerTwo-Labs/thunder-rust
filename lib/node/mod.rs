@@ -706,18 +706,22 @@ where
         };
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         let bundle = self.state.try_get_pending_withdrawal_bundle(&rotxn)?;
-        if let Some((bundle, _)) = bundle
-            && let Some(cusf_mainchain_wallet) =
+        if let Some((bundle, _)) = bundle {
+            // Only a withdrawal bundle reaches the mainchain wallet. Blind
+            // merge mining needs none, so a node with no wallet client still
+            // connects the blocks it wins.
+            let Some(cusf_mainchain_wallet) =
                 self.cusf_mainchain_wallet.as_ref()
-        {
+            else {
+                return Err(Error::NoCusfMainchainWalletClient);
+            };
             let m6id = bundle.compute_m6id();
-            {
-                let mut cusf_mainchain_wallet_lock =
-                    cusf_mainchain_wallet.lock().await;
-                let () = cusf_mainchain_wallet_lock
-                    .broadcast_withdrawal_bundle(bundle.tx())
-                    .await?;
-            }
+            let mut cusf_mainchain_wallet_lock =
+                cusf_mainchain_wallet.lock().await;
+            let () = cusf_mainchain_wallet_lock
+                .broadcast_withdrawal_bundle(bundle.tx())
+                .await?;
+            drop(cusf_mainchain_wallet_lock);
             tracing::trace!(%m6id, "Broadcast withdrawal bundle");
         }
         Ok(true)
