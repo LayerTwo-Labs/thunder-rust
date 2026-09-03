@@ -176,8 +176,6 @@ pub enum Error {
     Net(#[from] Box<net::Error>),
     #[error("net task error")]
     NetTask(#[source] Box<net_task::Error>),
-    #[error("No CUSF mainchain wallet client")]
-    NoCusfMainchainWalletClient,
     #[error("peer info stream closed")]
     PeerInfoRxClosed,
     #[error("Receive mainchain task response cancelled")]
