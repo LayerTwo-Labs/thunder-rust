@@ -101,6 +101,17 @@ pub mod node {
             block_hash: thunder_types::BlockHash,
         ) -> RpcResult<Option<thunder_types::Block>>;
 
+        /// Get the block hash at the specified height in the active chain,
+        /// if it exists
+        #[open_api_method(output_schema(
+            PartialSchema = "schema::Optional<thunder_types::BlockHash>"
+        ))]
+        #[method(name = "get_block_hash")]
+        async fn get_block_hash(
+            &self,
+            height: u32,
+        ) -> RpcResult<Option<thunder_types::BlockHash>>;
+
         /// Get mainchain blocks that commit to a specified block hash
         #[open_api_method(output_schema(
             PartialSchema = "schema::BitcoinBlockHash"
