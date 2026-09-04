@@ -1,4 +1,4 @@
-//! Mostly a wrapper around plain_bitnames_types
+//! Mostly a wrapper around thunder_types
 
 use std::sync::LazyLock;
 
