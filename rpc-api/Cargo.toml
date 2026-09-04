@@ -15,6 +15,9 @@ serde_json = { workspace = true }
 thunder_types = { path = "../types" }
 utoipa = { workspace = true }
 
+[dev-dependencies]
+anyhow = { workspace = true }
+
 [lints]
 workspace = true
 

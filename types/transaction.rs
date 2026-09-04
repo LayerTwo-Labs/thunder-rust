@@ -400,10 +400,6 @@ mod content {
         pub fn is_withdrawal(&self) -> bool {
             matches!(self, Self::Withdrawal { .. })
         }
-
-        pub(crate) fn schema_ref() -> utoipa::openapi::Ref {
-            utoipa::openapi::Ref::new("OutputContent")
-        }
     }
 
     impl GetValue for Content {
@@ -539,7 +535,6 @@ pub use content::Content;
 )]
 pub struct Output {
     pub address: Address,
-    #[schema(schema_with = Content::schema_ref)]
     pub content: Content,
 }
 
