@@ -7,6 +7,8 @@ use utoipa::{
     openapi::{self, RefOr, Schema},
 };
 
+pub use thunder_types::schema::*;
+
 pub struct BitcoinTxid;
 
 impl PartialSchema for BitcoinTxid {
