@@ -77,6 +77,16 @@ pub mod node {
         pub block_hash: Option<BlockHash>,
     }
 
+    /// One transaction the mempool holds
+    #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+    pub struct MempoolTx {
+        /// Blake3 over the canonical encoding
+        pub txid: Txid,
+        /// Canonical size in bytes
+        pub size: u64,
+        pub tx: Transaction,
+    }
+
     #[open_api(ref_schemas[
         Address, MerkleRoot, OutPoint, Output, OutputContent, Txid,
         schema::BitcoinTxid, thunder_schema::BitcoinAddr,
@@ -163,6 +173,10 @@ pub mod node {
         async fn latest_failed_withdrawal_bundle_height(
             &self,
         ) -> RpcResult<Option<u32>>;
+
+        /// List the transactions the mempool holds, in no particular order.
+        #[method(name = "list_mempool")]
+        async fn list_mempool(&self) -> RpcResult<Vec<MempoolTx>>;
 
         /// List peers
         #[method(name = "list_peers")]
