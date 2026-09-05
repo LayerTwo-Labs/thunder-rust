@@ -6455,6 +6455,7 @@ dependencies = [
  "mimalloc",
  "parking_lot",
  "poll-promise",
+ "reserve-port",
  "rustreexo",
  "serde",
  "shlex",

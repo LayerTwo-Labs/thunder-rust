@@ -51,6 +51,9 @@ features = ["glow", "wayland", "web_screen_reader", "x11"]
 workspace = true
 features = ["macros", "rt-multi-thread", "signal"]
 
+[dev-dependencies]
+reserve-port = { workspace = true }
+
 [lints]
 workspace = true
 

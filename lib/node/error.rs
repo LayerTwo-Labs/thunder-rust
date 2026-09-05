@@ -130,8 +130,6 @@ pub mod net_task {
         ReceiveMainchainTaskResponse,
         #[error("Receive reorg result cancelled (oneshot)")]
         ReceiveReorgResultOneshot(#[source] oneshot::Canceled),
-        #[error("Send mainchain task request failed")]
-        SendMainchainTaskRequest,
         #[error("Send new tip ready failed")]
         SendNewTipReady(#[source] mpsc::SendError),
         #[error("Send reorg result error (oneshot)")]

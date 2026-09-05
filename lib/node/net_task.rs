@@ -1069,15 +1069,18 @@ impl NetTask {
                     peer,
                     peer_state_id,
                 ) => {
+                    if self.ctxt.mainchain_task.request(request).is_err() {
+                        tracing::warn!(
+                            ?request,
+                            %peer,
+                            "the mainchain task took no request"
+                        );
+                        continue;
+                    }
                     mainchain_task_request_sources
                         .entry(request)
                         .or_default()
                         .insert((peer, peer_state_id));
-                    let () = self
-                        .ctxt
-                        .mainchain_task
-                        .request(request)
-                        .map_err(|_| Error::SendMainchainTaskRequest)?;
                 }
                 MailboxItem::MainchainTaskEvent(event) => {
                     let () = Self::handle_mainchain_task_event(

@@ -1,4 +1,4 @@
-use std::{borrow::BorrowMut, collections::HashMap, sync::Arc};
+use std::{borrow::BorrowMut, collections::HashMap, sync::Arc, time::Duration};
 
 use fallible_iterator::FallibleIterator as _;
 use futures::{StreamExt, TryFutureExt};
@@ -44,11 +44,6 @@ pub enum Error {
     NoCusfMainchainWalletClient,
     #[error("Failed to request mainchain ancestor info for {block_hash}")]
     RequestMainchainAncestorInfos { block_hash: bitcoin::BlockHash },
-    #[error("Unable to verify existence of CUSF mainchain service(s) at {url}")]
-    VerifyMainchainServices {
-        url: Box<url::Url>,
-        source: Box<tonic::Status>,
-    },
     #[error("wallet error")]
     Wallet(#[from] wallet::Error),
 }
@@ -214,6 +209,27 @@ impl App {
         Ok(res)
     }
 
+    /// Ask the mainchain node for its services until it answers. The node may
+    /// start before the mainchain node.
+    async fn wait_for_proto_support(
+        transport: tonic::transport::channel::Channel,
+        url: &url::Url,
+    ) -> ProtoSupport {
+        const RETRY_DELAY: Duration = Duration::from_secs(5);
+
+        loop {
+            match Self::check_proto_support(transport.clone()).await {
+                Ok(proto_support) => return proto_support,
+                Err(status) => {
+                    tracing::warn!(
+                        %url, %status, "Waiting for CUSF mainchain service(s)"
+                    );
+                    tokio::time::sleep(RETRY_DELAY).await;
+                }
+            }
+        }
+    }
+
     pub fn new(config: &Config) -> Result<Self, Error> {
         // Node launches some tokio tasks for p2p networking, that is why we need a tokio runtime
         // here.
@@ -244,12 +260,11 @@ impl App {
         .concurrency_limit(256)
         .connect_lazy();
         let (cusf_mainchain, cusf_mainchain_miner, cusf_mainchain_wallet) = {
-            let ProtoSupport { miner, wallet } = runtime
-                .block_on(Self::check_proto_support(transport.clone()))
-                .map_err(|err| Error::VerifyMainchainServices {
-                    url: Box::new(config.mainchain_grpc_url.clone()),
-                    source: Box::new(err),
-                })?;
+            let ProtoSupport { miner, wallet } =
+                runtime.block_on(Self::wait_for_proto_support(
+                    transport.clone(),
+                    &config.mainchain_grpc_url,
+                ));
             let mining_client = if miner {
                 Some(mainchain::MiningClient::new(transport.clone()))
             } else {
@@ -658,5 +673,63 @@ impl App {
 impl Drop for App {
     fn drop(&mut self) {
         self.task.abort()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::{net::SocketAddr, time::Duration};
+
+    use thunder::types::proto::mainchain::generated::validator_service_server;
+    use tokio::time::timeout;
+    use tonic_health::ServingStatus;
+
+    use crate::app::App;
+
+    fn transport(addr: SocketAddr) -> tonic::transport::channel::Channel {
+        tonic::transport::channel::Channel::from_shared(format!(
+            "http://{addr}"
+        ))
+        .unwrap()
+        .connect_lazy()
+    }
+
+    async fn serve_validator_service(addr: SocketAddr) {
+        let (health_reporter, health_service) =
+            tonic_health::server::health_reporter();
+        let () = health_reporter
+            .set_service_status(
+                validator_service_server::SERVICE_NAME,
+                ServingStatus::Serving,
+            )
+            .await;
+        tokio::spawn(
+            tonic::transport::Server::builder()
+                .add_service(health_service)
+                .serve(addr),
+        );
+    }
+
+    /// The node may start before the mainchain node, so it waits for the
+    /// validator service instead of an error.
+    #[tokio::test]
+    async fn wait_for_the_validator_service() -> anyhow::Result<()> {
+        let reserved =
+            reserve_port::ReservedSocketAddr::reserve_random_socket_addr()?;
+        let addr = reserved.socket_addr();
+        let url = format!("http://{addr}").parse()?;
+        let mut proto_support =
+            Box::pin(App::wait_for_proto_support(transport(addr), &url));
+        assert!(
+            timeout(Duration::from_secs(1), &mut proto_support)
+                .await
+                .is_err()
+        );
+        let () = serve_validator_service(addr).await;
+        let proto_support =
+            timeout(Duration::from_secs(30), proto_support).await?;
+        assert!(!proto_support.miner);
+        assert!(!proto_support.wallet);
+        Ok(())
     }
 }
