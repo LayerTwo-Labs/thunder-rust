@@ -480,7 +480,7 @@ where
         }
     }
 
-    async fn run(mut self) -> Result<(), Error> {
+    async fn run_once(&mut self) -> Result<(), Error> {
         let (best_main_tip, block_event_stream) =
             Self::subscribe_block_events(&mut self.mainchain).await?;
         if !Self::request_ancestor_infos(
@@ -525,12 +525,13 @@ where
         }
         let block_event_stream =
             block_event_stream.map_ok(MailboxItem::BlockEvent);
-        let request_stream = self.request_rx.map(|(request, response_tx)| {
-            Ok(MailboxItem::Request {
-                request,
-                response_tx,
-            })
-        });
+        let request_stream =
+            (&mut self.request_rx).map(|(request, response_tx)| {
+                Ok(MailboxItem::Request {
+                    request,
+                    response_tx,
+                })
+            });
         let mut mailbox_stream =
             futures::stream::select(block_event_stream, request_stream);
 
@@ -561,6 +562,26 @@ where
             }
         }
         Ok(())
+    }
+
+    /// Run the task, and start it again after it stops. The mainchain node can
+    /// stop at any time, and the node must connect to it again.
+    async fn run(mut self) {
+        const RECONNECT_DELAY: Duration = Duration::from_secs(5);
+
+        loop {
+            match self.run_once().await {
+                Ok(()) => {
+                    tracing::warn!("Mainchain task: the event stream closed")
+                }
+                Err(err) => tracing::error!(
+                    "Mainchain task error: {:#}",
+                    ErrorChain::new(&err)
+                ),
+            }
+            tokio::time::sleep(RECONNECT_DELAY).await;
+            tracing::info!("Mainchain task: connecting to the mainchain node");
+        }
     }
 }
 
@@ -595,14 +616,7 @@ impl MainchainTaskHandle {
             request_rx,
             event_tx,
         };
-        let task = spawn(async move {
-            if let Err(err) = task.run().await {
-                tracing::error!(
-                    "Mainchain task error: {:#}",
-                    ErrorChain::new(&err)
-                );
-            }
-        });
+        let task = spawn(task.run());
         let task_handle = MainchainTaskHandle {
             task: Arc::new(task),
             request_tx,
