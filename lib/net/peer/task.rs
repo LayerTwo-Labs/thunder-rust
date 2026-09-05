@@ -73,10 +73,15 @@ impl ConnectionTask {
                 .side_tips()
                 .get_mainchain_tip(&rotxn)
                 .map_err(archive::Error::from)?;
+            // A node that never synced its mainchain state holds no tip to
+            // compare the peer against.
+            let Some(side_tips_tip_info) = side_tips_tip.tip_info else {
+                return Ok(None);
+            };
             if !ctxt.archive.is_main_descendant(
                 &rotxn,
                 peer_tip_info.tip.main_block_hash,
-                side_tips_tip.block_hash(),
+                side_tips_tip_info.block_hash,
             )? {
                 return Ok(None);
             }

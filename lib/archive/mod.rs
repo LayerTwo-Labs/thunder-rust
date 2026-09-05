@@ -1726,6 +1726,15 @@ pub(crate) mod test {
             archive
                 .put_main_header_info(&mut rwtxn, &main_header_info(height))?;
         }
+        // A node that never synced its mainchain state holds no tip, and the
+        // peer comparison must read that as "no tip", not as a block hash.
+        assert!(
+            archive
+                .side_tips()
+                .get_mainchain_tip(&rwtxn)?
+                .tip_info
+                .is_none()
+        );
         let chain_tip = main_header_info(CHAIN_LEN - 1).block_hash;
         let walk =
             |rwtxn: &sneed::RwTxn| -> Result<Vec<u32>, crate::archive::Error> {
