@@ -1655,3 +1655,98 @@ impl Archive {
         }
     }
 }
+
+#[cfg(test)]
+pub(crate) mod test {
+    use bitcoin::hashes::Hash as _;
+    use fallible_iterator::FallibleIterator as _;
+
+    use crate::{archive::Archive, types::proto::mainchain::BlockHeaderInfo};
+
+    pub(crate) fn temp_env(
+        test_name: &str,
+    ) -> anyhow::Result<(temp_dir::TempDir, sneed::Env)> {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let temp_dir = temp_dir::TempDir::with_prefix(format!(
+            "thunder-{test_name}-{}-{nanos}",
+            std::process::id()
+        ))?;
+        let mut opts = heed::EnvOpenOptions::new();
+        opts.map_size(64 * 1024 * 1024).max_dbs(Archive::NUM_DBS);
+        let env = unsafe { sneed::Env::open(&opts, temp_dir.path()) }?;
+        Ok((temp_dir, env))
+    }
+
+    pub(crate) fn main_header_info(height: u32) -> BlockHeaderInfo {
+        let block_hash = {
+            let mut bytes = [0u8; 32];
+            bytes[0] = 0xff;
+            bytes[1..5].copy_from_slice(&height.to_le_bytes());
+            bitcoin::BlockHash::from_byte_array(bytes)
+        };
+        let prev_block_hash = if height == 0 {
+            bitcoin::BlockHash::all_zeros()
+        } else {
+            main_header_info(height - 1).block_hash
+        };
+        BlockHeaderInfo {
+            block_hash,
+            prev_block_hash,
+            height,
+            work: bitcoin::Work::from_le_bytes([1; 32]),
+        }
+    }
+
+    /// The walk reads each block one time, whatever height the block index
+    /// holds for it.
+    #[test]
+    fn no_batch_repeats_a_block() -> anyhow::Result<()> {
+        const CHAIN_LEN: u32 = 100;
+        const BATCH_SIZE: usize = 32;
+        let (_temp_dir, env) = temp_env("no-batch-repeats-a-block")?;
+        let archive = Archive::new(&env)?;
+        let mut rwtxn = env.write_txn()?;
+        for height in 0..CHAIN_LEN {
+            archive
+                .put_main_header_info(&mut rwtxn, &main_header_info(height))?;
+        }
+        let chain_tip = main_header_info(CHAIN_LEN - 1).block_hash;
+        let walk =
+            |rwtxn: &sneed::RwTxn| -> Result<Vec<u32>, crate::archive::Error> {
+                let mut connected: Vec<u32> = Vec::new();
+                while connected.last() != Some(&(CHAIN_LEN - 1)) {
+                    let start_height =
+                        connected.last().map_or(0, |height| height + 1);
+                    let batch: Vec<BlockHeaderInfo> = archive
+                        .main_ancestor_header_infos_rev(
+                            rwtxn,
+                            chain_tip,
+                            start_height,
+                        )
+                        .take(BATCH_SIZE)
+                        .collect()?;
+                    assert!(
+                        !batch.is_empty(),
+                        "batch from {start_height} is empty"
+                    );
+                    connected.extend(batch.iter().map(|info| info.height));
+                }
+                Ok(connected)
+            };
+        let heights = (0..CHAIN_LEN).collect::<Vec<_>>();
+        assert_eq!(walk(&rwtxn)?, heights);
+        for height in 0..CHAIN_LEN {
+            let block_hash = main_header_info(height).block_hash;
+            archive.main_block_hash_to_height.put(
+                &mut rwtxn,
+                &block_hash,
+                &(height + 1),
+            )?;
+        }
+        assert_eq!(walk(&rwtxn)?, heights);
+
+        Ok(())
+    }
+}
