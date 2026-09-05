@@ -480,7 +480,11 @@ pub mod mainchain {
                             break 'address Address::ALL_ZEROS;
                         }
                     };
-                match Address::from_str(address_utf8) {
+                // A deposit carries the prefixed form. A bare address also
+                // parses.
+                match Address::from_deposit_address(address_utf8)
+                    .or_else(|_| Address::from_str(address_utf8))
+                {
                     Ok(address) => address,
                     Err(_) => {
                         tracing::warn!(
