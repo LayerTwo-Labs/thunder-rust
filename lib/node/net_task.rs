@@ -1186,6 +1186,30 @@ impl NetTask {
                                     },
                                 );
                             let () = self.ctxt.net.remove_active_peer(addr);
+                            // A peer on another network never becomes useful,
+                            // so it must not survive into the next start.
+                            if err.is_bad_magic() {
+                                let peer_address = resolved_peer_addr
+                                    .as_peer_address()
+                                    .to_owned();
+                                let mut rwtxn = self
+                                    .ctxt
+                                    .env
+                                    .write_txn()
+                                    .map_err(EnvError::from)?;
+                                let forgotten = self
+                                    .ctxt
+                                    .net
+                                    .forget_peer(&mut rwtxn, &peer_address)?;
+                                rwtxn.commit().map_err(RwTxnError::from)?;
+                                if forgotten {
+                                    tracing::warn!(
+                                        %peer_address,
+                                        "forgot peer: it runs another network"
+                                    );
+                                }
+                                continue;
+                            }
                             let Some(received_msg_successfully) =
                                 received_msg_successfully
                             else {
