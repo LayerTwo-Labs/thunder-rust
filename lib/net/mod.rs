@@ -204,6 +204,22 @@ const FORKNET_SEED_PEER_ADDRS: &[PeerAddress<&'static str>] = {
     ]
 };
 
+/// Add every seed address the network names that the database does not hold.
+/// A datadir made before a seed existed would otherwise never learn it.
+fn ensure_seed_peers(
+    known_peers: &DatabaseUnique<SerdeBincode<PeerAddress>, Unit>,
+    rwtxn: &mut RwTxn,
+    network: Network,
+) -> Result<(), DbError> {
+    for seed_peer_addr in seed_peer_addrs(network) {
+        let seed_peer_addr = PeerAddress::to_owned(seed_peer_addr);
+        if known_peers.try_get(rwtxn, &seed_peer_addr)?.is_none() {
+            known_peers.put(rwtxn, &seed_peer_addr, &())?;
+        }
+    }
+    Ok(())
+}
+
 const fn seed_peer_addrs(
     network: Network,
 ) -> &'static [PeerAddress<&'static str>] {
@@ -480,21 +496,9 @@ impl Net {
         let known_peers =
             match DatabaseUnique::open(env, &rwtxn, "known_peers")? {
                 Some(known_peers) => known_peers,
-                None => {
-                    let known_peers =
-                        DatabaseUnique::create(env, &mut rwtxn, "known_peers")?;
-                    for seed_peer_addr in seed_peer_addrs(network) {
-                        let seed_peer_addr =
-                            PeerAddress::to_owned(seed_peer_addr);
-                        known_peers.put(
-                            &mut rwtxn,
-                            &(seed_peer_addr.to_owned()),
-                            &(),
-                        )?;
-                    }
-                    known_peers
-                }
+                None => DatabaseUnique::create(env, &mut rwtxn, "known_peers")?,
             };
+        let () = ensure_seed_peers(&known_peers, &mut rwtxn, network)?;
         for peer in add_peers {
             known_peers.put(&mut rwtxn, &peer, &())?;
         }
@@ -694,5 +698,62 @@ impl Net {
                     tracing::warn!("Failed to push tx {txid} to peer at {addr}")
                 }
             })
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use heed::types::{SerdeBincode, Unit};
+    use sneed::DatabaseUnique;
+
+    use crate::{
+        net::{PeerAddress, ensure_seed_peers, seed_peer_addrs},
+        types::Network,
+    };
+
+    fn temp_env(
+        test_name: &str,
+    ) -> anyhow::Result<(temp_dir::TempDir, sneed::Env)> {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let temp_dir = temp_dir::TempDir::with_prefix(format!(
+            "thunder-{test_name}-{}-{nanos}",
+            std::process::id()
+        ))?;
+        let mut opts = heed::EnvOpenOptions::new();
+        opts.map_size(16 * 1024 * 1024).max_dbs(2);
+        let env = unsafe { sneed::Env::open(&opts, temp_dir.path()) }?;
+        Ok((temp_dir, env))
+    }
+
+    /// A datadir made before a seed existed still learns it, and a second
+    /// start writes no duplicate.
+    #[test]
+    fn seeds_reach_an_existing_database() -> anyhow::Result<()> {
+        let (_temp_dir, env) = temp_env("seed-peers")?;
+        let network = Network::Betanet;
+        let known_peers = {
+            let mut rwtxn = env.write_txn()?;
+            let known_peers: DatabaseUnique<SerdeBincode<PeerAddress>, Unit> =
+                DatabaseUnique::create(&env, &mut rwtxn, "known_peers")?;
+            ensure_seed_peers(&known_peers, &mut rwtxn, network)?;
+            ensure_seed_peers(&known_peers, &mut rwtxn, network)?;
+            rwtxn.commit()?;
+            known_peers
+        };
+        let rotxn = env.read_txn()?;
+        for seed_peer_addr in seed_peer_addrs(network) {
+            let seed_peer_addr = PeerAddress::to_owned(seed_peer_addr);
+            anyhow::ensure!(
+                known_peers.try_get(&rotxn, &seed_peer_addr)?.is_some(),
+                "the seed {seed_peer_addr} never reached the database"
+            );
+        }
+        assert_eq!(
+            known_peers.len(&rotxn)?,
+            seed_peer_addrs(network).len() as u64
+        );
+        Ok(())
     }
 }
