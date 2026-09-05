@@ -113,6 +113,8 @@ pub enum Command {
     },
     /// Get the height of the latest failed withdrawal bundle
     LatestFailedWithdrawalBundleHeight,
+    /// List the transactions the mempool holds
+    ListMempool,
     /// List peers
     ListPeers,
     /// List all UTXOs
@@ -297,6 +299,10 @@ where
             let height =
                 rpc_client.latest_failed_withdrawal_bundle_height().await?;
             serde_json::to_string_pretty(&height)?
+        }
+        Command::ListMempool => {
+            let txs = rpc_client.list_mempool().await?;
+            serde_json::to_string_pretty(&txs)?
         }
         Command::ListPeers => {
             let peers = rpc_client.list_peers().await?;
