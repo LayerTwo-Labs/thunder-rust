@@ -239,17 +239,8 @@ where
             if main_state_tip_info.block_hash == common_ancestor {
                 break;
             }
-            let main_state_prev_tip_info = if main_state_tip_info
-                .prev_block_hash
-                == bitcoin::BlockHash::all_zeros()
-            {
-                None
-            } else {
-                Some(archive.get_main_header_info(
-                    &rwtxn,
-                    &main_state_tip_info.prev_block_hash,
-                )?)
-            };
+            let main_state_prev_tip_info = archive
+                .main_parent_header_info(&rwtxn, &main_state_tip_info)?;
             let bmm_commitment = archive
                 .get_main_block_info(&rwtxn, &main_state_tip_info.block_hash)?
                 .bmm_commitment;
@@ -436,13 +427,8 @@ where
                 let bmm_commitment = archive
                     .get_main_block_info(&rwtxn, &block_hash)?
                     .bmm_commitment;
-                let parent_info = if header_info.prev_block_hash
-                    != bitcoin::BlockHash::all_zeros()
-                {
-                    Some(archive.get_main_header_info(&rwtxn, &block_hash)?)
-                } else {
-                    None
-                };
+                let parent_info =
+                    archive.main_parent_header_info(&rwtxn, &header_info)?;
                 let () = archive
                     .side_tips()
                     .disconnect_mainchain_tip(

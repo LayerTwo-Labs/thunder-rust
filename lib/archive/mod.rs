@@ -1266,6 +1266,20 @@ impl Archive {
         )
     }
 
+    /// Header info of the parent of `header_info`, or `None` for the genesis
+    /// block.
+    pub fn main_parent_header_info(
+        &self,
+        rotxn: &RoTxn,
+        header_info: &BlockHeaderInfo,
+    ) -> Result<Option<BlockHeaderInfo>, Error> {
+        if header_info.prev_block_hash == bitcoin::BlockHash::all_zeros() {
+            return Ok(None);
+        }
+        self.get_main_header_info(rotxn, &header_info.prev_block_hash)
+            .map(Some)
+    }
+
     /// Return a fallible iterator over ancestors of a mainchain block,
     /// starting with the specified block's header
     pub fn main_ancestors<'a>(
@@ -1747,6 +1761,28 @@ pub(crate) mod test {
         }
         assert_eq!(walk(&rwtxn)?, heights);
 
+        // A disconnect must return the mainchain tip to the parent, so the
+        // block it removed connects again.
+        let genesis = main_header_info(0);
+        let child = main_header_info(1);
+        assert!(archive.main_parent_header_info(&rwtxn, &genesis)?.is_none());
+        let parent = archive.main_parent_header_info(&rwtxn, &child)?;
+        assert_eq!(
+            parent.map(|info| info.block_hash),
+            Some(genesis.block_hash)
+        );
+        archive
+            .side_tips()
+            .connect_mainchain_tip(&mut rwtxn, genesis, None)?;
+        archive
+            .side_tips()
+            .connect_mainchain_tip(&mut rwtxn, child, None)?;
+        archive
+            .side_tips()
+            .disconnect_mainchain_tip(&mut rwtxn, parent, None)?;
+        archive
+            .side_tips()
+            .connect_mainchain_tip(&mut rwtxn, child, None)?;
         Ok(())
     }
 }
