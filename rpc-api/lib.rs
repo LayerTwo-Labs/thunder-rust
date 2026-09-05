@@ -25,9 +25,9 @@ pub mod node {
     use l2l_openapi::open_api;
     use serde::{Deserialize, Serialize};
     use thunder_types::{
-        Address, Authorized, Block, BlockHash, MerkleRoot, OutPoint, Output,
-        OutputContent, Pointed, PointedOutput, SpentOutput, Transaction, Txid,
-        WithdrawalBundle,
+        Address, Authorized, Block, BlockHash, M6id, MerkleRoot, OutPoint,
+        Output, OutputContent, Pointed, PointedOutput, SpentOutput,
+        Transaction, Txid, WithdrawalBundle,
         net::{Peer, PeerAddress},
         schema as thunder_schema,
     };
@@ -70,6 +70,27 @@ pub mod node {
         async fn stop(&self);
     }
 
+    /// One transaction of a block, with the fields its body omits
+    #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+    pub struct BlockIndexTx {
+        pub txid: Txid,
+        /// Canonical size in bytes
+        pub size: u64,
+        /// Borsh encoding, as hex
+        pub raw: String,
+    }
+
+    /// Everything about a block that its body does not carry
+    #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+    pub struct GetBlockIndexResponse {
+        /// Transactions in body order
+        pub txs: Vec<BlockIndexTx>,
+        /// Outputs that mainchain deposits created
+        pub deposits: Vec<(OutPoint, Output)>,
+        /// Outputs that a withdrawal bundle removed
+        pub bundle_spends: Vec<(OutPoint, M6id)>,
+    }
+
     #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
     pub struct GetTransactionResponse {
         pub tx: Transaction,
@@ -104,6 +125,26 @@ pub mod node {
             &self,
             block_hash: thunder_types::BlockHash,
         ) -> RpcResult<Option<thunder_types::Block>>;
+
+        /// Get the block hash at the specified height in the current chain,
+        /// if it exists
+        #[open_api_method(output_schema(
+            PartialSchema = "schema::Optional<thunder_types::BlockHash>"
+        ))]
+        #[method(name = "get_block_hash")]
+        async fn get_block_hash(
+            &self,
+            height: u32,
+        ) -> RpcResult<Option<thunder_types::BlockHash>>;
+
+        /// Get the transaction ids, sizes and encodings of a block, with the
+        /// mainchain deposits and withdrawal bundle spends it applied
+        #[open_api_method(output_schema(ToSchema))]
+        #[method(name = "get_block_index")]
+        async fn get_block_index(
+            &self,
+            block_hash: thunder_types::BlockHash,
+        ) -> RpcResult<GetBlockIndexResponse>;
 
         /// Get mainchain blocks that commit to a specified block hash
         #[open_api_method(output_schema(

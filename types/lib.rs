@@ -120,6 +120,25 @@ enum WithdrawalBundleErrorInner {
 #[error("Withdrawal bundle error")]
 pub struct WithdrawalBundleError(#[from] WithdrawalBundleErrorInner);
 
+/// Coin movements that a block body does not carry: a mainchain deposit, and
+/// the outputs a withdrawal bundle removed
+#[derive(
+    Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema,
+)]
+pub struct BlockIndexEvents {
+    /// Outputs that mainchain deposits created
+    pub deposits: Vec<(transaction::OutPoint, transaction::Output)>,
+    /// Outputs that a withdrawal bundle removed, with the bundle that took them
+    pub bundle_spends: Vec<(transaction::OutPoint, M6id)>,
+}
+
+impl BlockIndexEvents {
+    /// True when the block moved no coins outside its body
+    pub fn is_empty(&self) -> bool {
+        self.deposits.is_empty() && self.bundle_spends.is_empty()
+    }
+}
+
 #[serde_as]
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 pub struct WithdrawalBundle {
