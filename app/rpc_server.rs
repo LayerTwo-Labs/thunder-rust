@@ -7,12 +7,12 @@ use jsonrpsee::{
     types::ErrorObject,
 };
 use thunder::types::{
-    Address, Block, Pointed, PointedOutput, SpentOutput, Txid,
+    Address, Block, M6id, Pointed, PointedOutput, SpentOutput, Txid,
     WithdrawalBundle,
     net::{Peer, PeerAddress},
     wallet::Balance,
 };
-use thunder_app_rpc_api as rpc_api;
+use thunder_app_rpc_api::{self as rpc_api, typewit::const_marker::Bool};
 use tower_http::{
     cors::CorsLayer,
     request_id::{
@@ -118,6 +118,78 @@ impl rpc_api::node::PrivateRpcServer for RpcServerImpl<true> {
 }
 
 #[async_trait]
+impl<const ENABLE_PRIVATE_API: bool>
+    rpc_api::node::get_block::RpcServer<Bool<false>>
+    for RpcServerImpl<ENABLE_PRIVATE_API>
+{
+    async fn get_block(
+        &self,
+        block_hash: thunder::types::BlockHash,
+        _verbose: Bool<false>,
+    ) -> RpcResult<
+        Option<<Bool<false> as rpc_api::node::get_block::Verbosity>::Response>,
+    > {
+        let Some(header) = self
+            .app
+            .node
+            .try_get_header(block_hash)
+            .map_err(custom_err)?
+        else {
+            return Ok(None);
+        };
+        let body = self.app.node.get_body(block_hash).map_err(custom_err)?;
+        let block = thunder::types::Block { header, body };
+        Ok(Some(block))
+    }
+}
+
+#[async_trait]
+impl<const ENABLE_PRIVATE_API: bool>
+    rpc_api::node::get_block::RpcServer<Bool<true>>
+    for RpcServerImpl<ENABLE_PRIVATE_API>
+{
+    async fn get_block(
+        &self,
+        block_hash: thunder::types::BlockHash,
+        _verbose: Bool<true>,
+    ) -> RpcResult<
+        Option<<Bool<true> as rpc_api::node::get_block::Verbosity>::Response>,
+    > {
+        let Some(header) = self
+            .app
+            .node
+            .try_get_header(block_hash)
+            .map_err(custom_err)?
+        else {
+            return Ok(None);
+        };
+        let thunder::types::Body {
+            coinbase,
+            transactions,
+            authorizations,
+        } = self.app.node.get_body(block_hash).map_err(custom_err)?;
+        let transactions_verbose = transactions
+            .into_iter()
+            .map(|tx| {
+                Ok(thunder_app_rpc_api::node::TransactionVerbose {
+                    canonical_bytes: tx.canonical_bytes()?,
+                    tx,
+                })
+            })
+            .collect::<std::io::Result<_>>()
+            .map_err(custom_err)?;
+        let body = thunder_app_rpc_api::node::get_block::BodyVerbose {
+            coinbase,
+            transactions: transactions_verbose,
+            authorizations,
+        };
+        let block_verbose =
+            thunder_app_rpc_api::node::get_block::BlockVerbose { header, body };
+        Ok(Some(block_verbose))
+    }
+}
+
+#[async_trait]
 impl<const ENABLE_PRIVATE_API: bool> rpc_api::node::RpcServer
     for RpcServerImpl<ENABLE_PRIVATE_API>
 {
@@ -138,23 +210,6 @@ impl<const ENABLE_PRIVATE_API: bool> rpc_api::node::RpcServer
             })
             .await
             .unwrap()
-    }
-
-    async fn get_block(
-        &self,
-        block_hash: thunder::types::BlockHash,
-    ) -> RpcResult<Option<thunder::types::Block>> {
-        let Some(header) = self
-            .app
-            .node
-            .try_get_header(block_hash)
-            .map_err(custom_err)?
-        else {
-            return Ok(None);
-        };
-        let body = self.app.node.get_body(block_hash).map_err(custom_err)?;
-        let block = thunder::types::Block { header, body };
-        Ok(Some(block))
     }
 
     async fn get_block_hash(
@@ -240,6 +295,25 @@ impl<const ENABLE_PRIVATE_API: bool> rpc_api::node::RpcServer
             .map(|(outpoint, output)| PointedOutput { outpoint, output })
             .collect();
         Ok(res)
+    }
+
+    async fn get_withdrawal_bundle(
+        &self,
+        m6id: M6id,
+    ) -> RpcResult<Option<rpc_api::node::GetWithdrawalBundleResponse>> {
+        let Some((bundle_info, bundle_status)) = self
+            .app
+            .node
+            .try_get_withdrawal_bundle(&m6id)
+            .map_err(custom_err)?
+        else {
+            return Ok(None);
+        };
+        let response = rpc_api::node::GetWithdrawalBundleResponse {
+            info: bundle_info,
+            status: bundle_status,
+        };
+        Ok(Some(response))
     }
 
     async fn getblockcount(&self) -> RpcResult<u32> {
@@ -576,6 +650,11 @@ pub async fn run_server(
             let rpc_server_impl = RpcServerImpl::<false> { app: app.clone() };
             let mut rpc_module =
                 rpc_api::open_api::RpcServer::into_rpc(rpc_server_impl.clone());
+            rpc_module.merge(
+                rpc_api::node::get_block::untyped::RpcServer::into_rpc(
+                    rpc_server_impl.clone(),
+                ),
+            )?;
             rpc_module
                 .merge(rpc_api::node::RpcServer::into_rpc(rpc_server_impl))?;
             server.start(rpc_module)
@@ -585,6 +664,11 @@ pub async fn run_server(
             let mut rpc_module = rpc_api::open_api::RpcServer::into_rpc(
                 PrivateOnlyRpcServerImpl,
             );
+            rpc_module.merge(
+                rpc_api::node::get_block::untyped::RpcServer::into_rpc(
+                    rpc_server_impl.clone(),
+                ),
+            )?;
             rpc_module.merge(rpc_api::node::PrivateRpcServer::into_rpc(
                 rpc_server_impl.clone(),
             ))?;
@@ -610,6 +694,11 @@ pub async fn run_server(
         rpc_module.merge(rpc_api::node::PrivateRpcServer::into_rpc(
             rpc_server_impl.clone(),
         ))?;
+        rpc_module.merge(
+            rpc_api::node::get_block::untyped::RpcServer::into_rpc(
+                rpc_server_impl.clone(),
+            ),
+        )?;
         rpc_module.merge(rpc_api::node::RpcServer::into_rpc(
             rpc_server_impl.clone(),
         ))?;

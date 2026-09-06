@@ -30,6 +30,7 @@ pub use hashes::{
 };
 pub mod net;
 pub mod schema;
+pub mod state;
 pub mod transaction;
 pub use transaction::{
     Authorized, AuthorizedTransaction, Content as OutputContent,
@@ -79,7 +80,9 @@ pub enum WithdrawalBundleEventStatus {
     Submitted,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema,
+)]
 pub enum WithdrawalBundleStatus {
     Confirmed,
     /// Formerly pending bundle
