@@ -313,6 +313,7 @@ where
 #[test]
 fn check_schemas() -> anyhow::Result<()> {
     let () = check_schema::<crate::node::PrivateRpcDoc>()?;
+    let () = check_schema::<crate::node::get_block::RpcDoc>()?;
     let () = check_schema::<crate::node::RpcDoc>()?;
     let () = check_schema::<crate::wallet::RpcDoc>()?;
     Ok(())

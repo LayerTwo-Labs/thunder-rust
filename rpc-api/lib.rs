@@ -1,5 +1,8 @@
 //! RPC API
 
+/// Exported for convenience
+pub use typewit;
+
 mod schema;
 
 pub mod open_api {
@@ -28,8 +31,11 @@ pub mod node {
         Address, Authorization, Authorized, Block, BlockHash, Body, Header,
         InPoint, M6id, MerkleRoot, OutPoint, Output, OutputContent, Pointed,
         PointedOutput, SpentOutput, Transaction, Txid, WithdrawalBundle,
+        WithdrawalBundleStatus,
         net::{Peer, PeerAddress, PeerConnectionStatus},
+        state::WithdrawalBundleInfo,
     };
+    use typewit::const_marker::Bool;
     use utoipa::ToSchema;
 
     use crate::{open_api, schema};
@@ -64,21 +70,217 @@ pub mod node {
     }
 
     #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+    pub struct TransactionVerbose {
+        #[serde(flatten)]
+        pub tx: Transaction,
+        #[serde(with = "const_hex")]
+        pub canonical_bytes: Vec<u8>,
+    }
+
+    pub mod get_block {
+        use jsonrpsee::{core::RpcResult, proc_macros::rpc};
+        use serde::{Deserialize, Serialize, de::DeserializeOwned};
+        use thunder_types::{Authorization, Header, Output};
+        use utoipa::ToSchema;
+
+        use crate::node::TransactionVerbose;
+
+        #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+        pub struct BodyVerbose {
+            pub coinbase: Vec<Output>,
+            pub transactions: Vec<TransactionVerbose>,
+            pub authorizations: Vec<Authorization>,
+        }
+
+        #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+        pub struct BlockVerbose {
+            pub header: Header,
+            pub body: BodyVerbose,
+        }
+
+        pub mod verbosity {
+            use serde::{Serialize, de::DeserializeOwned};
+            use thunder_types::Block;
+            use typewit::const_marker::Bool;
+
+            use crate::node::get_block::BlockVerbose;
+
+            mod private {
+                pub trait Sealed {}
+            }
+
+            pub trait Verbosity: Serialize + private::Sealed {
+                type Response: DeserializeOwned + Serialize;
+            }
+
+            impl<const B: bool> private::Sealed for Bool<B> {}
+
+            impl Verbosity for Bool<true> {
+                type Response = BlockVerbose;
+            }
+
+            impl Verbosity for Bool<false> {
+                type Response = Block;
+            }
+
+            impl private::Sealed for Option<Bool<false>> {}
+
+            impl Verbosity for Option<Bool<false>> {
+                type Response = <Bool<false> as Verbosity>::Response;
+            }
+        }
+        pub use verbosity::Verbosity;
+
+        #[rpc(client, server, server_bounds(
+            V: DeserializeOwned + Verbosity,
+            <V as Verbosity>::Response: Clone + 'static,
+        ))]
+        pub trait Rpc<V>
+        where
+            V: Verbosity,
+        {
+            /// Get the block with specified block hash, if it exists
+            #[method(name = "get_block")]
+            async fn get_block(
+                &self,
+                block_hash: thunder_types::BlockHash,
+                verbose: V,
+            ) -> RpcResult<Option<V::Response>>;
+        }
+
+        pub mod untyped {
+            use jsonrpsee::{
+                core::{RpcResult, async_trait},
+                proc_macros::rpc,
+            };
+            use l2l_openapi::open_api;
+            use serde::Serialize;
+            use thunder_types::{
+                Address, Authorization, Block, BlockHash, Body, Header,
+                MerkleRoot, Output, OutputContent, Transaction, Txid,
+            };
+            use typewit::const_marker::Bool;
+            use utoipa::ToSchema;
+
+            use crate::{
+                node::{
+                    TransactionVerbose,
+                    get_block::{
+                        BlockVerbose, BodyVerbose, RpcServer as GetBlock,
+                    },
+                },
+                schema,
+            };
+
+            mod private {
+                pub trait Sealed {}
+            }
+
+            impl<S> private::Sealed for S where
+                S: GetBlock<Bool<false>> + GetBlock<Bool<true>>
+            {
+            }
+
+            #[derive(Clone, Serialize, ToSchema)]
+            #[serde(untagged)]
+            pub enum Response {
+                NonVerbose(Block),
+                Verbose(BlockVerbose),
+            }
+
+            /// This trait exists only as a bound, and should not be implemented
+            /// manually
+            #[open_api(ref_schemas[
+                Address, Authorization, Block, BlockHash, BlockVerbose, Body,
+                BodyVerbose, Header, MerkleRoot, Output, OutputContent,
+                Transaction, TransactionVerbose, Txid, schema::BitcoinAddr,
+                schema::BitcoinBlockHash, schema::BitcoinOutPoint,
+                schema::UtreexoNodeHash, schema::UtreexoProof,
+            ])]
+            #[rpc(server, server_bounds(Self: private::Sealed))]
+            pub trait Rpc {
+                /// Get the block with specified block hash, if it exists
+                #[method(name = "get_block")]
+                async fn get_block(
+                    &self,
+                    block_hash: thunder_types::BlockHash,
+                    verbose: Option<bool>,
+                ) -> RpcResult<Option<Response>>;
+            }
+
+            #[async_trait]
+            impl<S> RpcServer for S
+            where
+                S: GetBlock<Bool<false>> + GetBlock<Bool<true>>,
+            {
+                async fn get_block(
+                    &self,
+                    block_hash: thunder_types::BlockHash,
+                    verbose: Option<bool>,
+                ) -> RpcResult<Option<Response>> {
+                    match verbose {
+                        Some(true) => {
+                            <Self as GetBlock<Bool<true>>>::get_block(
+                                self,
+                                block_hash,
+                                Bool::<true>,
+                            )
+                            .await
+                            .map(|res| res.map(Response::Verbose))
+                        }
+                        Some(false) | None => {
+                            <Self as GetBlock<Bool<false>>>::get_block(
+                                self,
+                                block_hash,
+                                Bool::<false>,
+                            )
+                            .await
+                            .map(|res| res.map(Response::NonVerbose))
+                        }
+                    }
+                }
+            }
+        }
+        pub use untyped::RpcDoc;
+    }
+
+    #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
     pub struct GetTransactionResponse {
         pub tx: Transaction,
         /// Block hash, if in the active chain
         pub block_hash: Option<BlockHash>,
     }
 
-    #[open_api(ref_schemas[
-        Address, Authorization, BlockHash, Body, Header, InPoint, M6id,
-        MerkleRoot, OutPoint, Output, OutputContent, PeerConnectionStatus,
-        SpentOutput, Transaction, Txid, schema::BitcoinAddr,
-        schema::BitcoinBlockHash, schema::BitcoinOutPoint,
-        schema::BitcoinTransaction, schema::SocketAddr,
-        schema::UtreexoNodeHash, schema::UtreexoProof,
-    ])]
-    #[rpc(client, server, server_bounds(Self: open_api::RpcServer))]
+    #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+    pub struct GetWithdrawalBundleResponse {
+        pub info: WithdrawalBundleInfo,
+        pub status: WithdrawalBundleStatus,
+    }
+
+    #[open_api(
+        merge_apis[get_block::RpcDoc],
+        ref_schemas[
+            Address, Authorization, BlockHash, Body, Header, InPoint, M6id,
+            MerkleRoot, OutPoint, Output, OutputContent, PeerConnectionStatus,
+            SpentOutput, Transaction, Txid, WithdrawalBundle,
+            WithdrawalBundleInfo, WithdrawalBundleStatus, schema::BitcoinAddr,
+            schema::BitcoinBlockHash, schema::BitcoinOutPoint,
+            schema::BitcoinTransaction, schema::SocketAddr,
+            schema::UtreexoNodeHash, schema::UtreexoProof,
+        ],
+    )]
+    #[rpc(
+        client,
+        client_bounds(
+            Self:
+                get_block::RpcClient<Bool<false>>
+                + get_block::RpcClient<Bool<true>>
+        ),
+        server,
+        server_bounds(
+            Self: open_api::RpcServer + get_block::untyped::RpcServer,
+        ),
+    )]
     pub trait Rpc {
         /// Connect a block template for which a BMM request was included in the
         /// specified mainchain block. Returns `true` if it was accepted as the new
@@ -93,13 +295,6 @@ pub mod node {
             ))]
             main_block_hash: bitcoin::BlockHash,
         ) -> RpcResult<bool>;
-
-        /// Get the block with specified block hash, if it exists
-        #[method(name = "get_block")]
-        async fn get_block(
-            &self,
-            block_hash: thunder_types::BlockHash,
-        ) -> RpcResult<Option<thunder_types::Block>>;
 
         /// Get the block hash at the specified height in the active chain,
         /// if it exists
@@ -160,6 +355,13 @@ pub mod node {
             &self,
             addresses: HashSet<Address>,
         ) -> RpcResult<Vec<PointedOutput>>;
+
+        /// Get withdrawal bundle by M6id
+        #[method(name = "get_withdrawal_bundle")]
+        async fn get_withdrawal_bundle(
+            &self,
+            m6id: M6id,
+        ) -> RpcResult<Option<GetWithdrawalBundleResponse>>;
 
         /// Get the current block count
         #[method(name = "getblockcount")]

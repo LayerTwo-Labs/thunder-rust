@@ -8,11 +8,13 @@ version.workspace = true
 
 [dependencies]
 bitcoin = { workspace = true, features = ["serde"] }
+const-hex = { workspace = true, features = ["serde"] }
 jsonrpsee = { workspace = true, features = ["client", "macros", "server"] }
 l2l-openapi = { workspace = true }
 serde = {workspace = true }
 serde_json = { workspace = true }
 thunder_types = { path = "../types" }
+typewit = { workspace = true, features = ["serde"] }
 utoipa = { workspace = true }
 
 [dev-dependencies]

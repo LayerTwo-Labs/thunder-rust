@@ -82,6 +82,7 @@ tracing-appender = "0.2.3"
 tracing-indicatif = "0.3.8"
 tracing-subscriber = "0.3.20"
 transitive = "1.0.1"
+typewit = { version = "1.15", default-features = false }
 utoipa = { version = "5.2.0", default-features = false }
 url = { version = "2.5.4", default-features = false }
 uuid = "1.13.1"
@@ -96,7 +97,7 @@ path = "bip300301_enforcer/integration_tests"
 
 [workspace.dependencies.l2l-openapi]
 git = "https://github.com/Ash-L2L/l2l-openapi"
-rev = "caa8c1c248aca1827b57007dcfcd8ff70d607e8e"
+rev = "a97f7923ce4b62587aebc7561d713bb2ebc89e52"
 
 [workspace.dependencies.rustreexo]
 git = "https://github.com/mit-dci/rustreexo"

@@ -10,6 +10,9 @@ use bitcoin::amount::CheckedSum;
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::Stream;
 use sneed::{DbError, Env, EnvError, RwTxnError};
+use thunder_types::{
+    M6id, WithdrawalBundleStatus, state::WithdrawalBundleInfo,
+};
 use tokio::sync::Mutex;
 use tonic::transport::Channel;
 
@@ -17,7 +20,7 @@ use crate::{
     archive::Archive,
     mempool::{self, MemPool},
     net::{DialKnownPeersHandle, Net},
-    state::State,
+    state::{self, State},
     types::{
         Accumulator, Address, AmountOverflowError, AmountUnderflowError,
         Authorized, AuthorizedTransaction, BlockHash, BmmResult, Body,
@@ -556,6 +559,19 @@ where
         } else {
             Ok(None)
         }
+    }
+
+    pub fn try_get_withdrawal_bundle(
+        &self,
+        m6id: &M6id,
+    ) -> Result<Option<(WithdrawalBundleInfo, WithdrawalBundleStatus)>, Error>
+    {
+        let rotxn = self.env.read_txn()?;
+        let res = self
+            .state
+            .try_get_withdrawal_bundle(&rotxn, m6id)
+            .map_err(state::Error::from)?;
+        Ok(res)
     }
 
     pub fn try_get_pending_withdrawal_bundle(
