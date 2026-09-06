@@ -216,7 +216,7 @@ pub async fn resolve_peer_address<S>(
     peer_addr: PeerAddress<S>,
 ) -> std::io::Result<ResolvedPeerAddress<S>>
 where
-    S: std::fmt::Display + tokio::net::ToSocketAddrs,
+    S: std::fmt::Display,
 {
     match peer_addr.host {
         url::Host::Ipv4(ipv4) => Ok(ResolvedPeerAddress::Static(
@@ -226,7 +226,9 @@ where
             SocketAddr::new(IpAddr::V6(ipv6), peer_addr.port),
         )),
         url::Host::Domain(domain) => {
-            let mut addrs: Vec<_> = tokio::net::lookup_host(&domain)
+            // `lookup_host` reads a `host:port` pair, not a bare name.
+            let host_port = format!("{domain}:{}", peer_addr.port);
+            let mut addrs: Vec<_> = tokio::net::lookup_host(host_port)
                 .await?
                 .filter_map(|addr| {
                     if addr.ip().is_unspecified() {
@@ -672,5 +674,27 @@ impl Net {
                     tracing::warn!("Failed to push tx {txid} to peer at {addr}")
                 }
             })
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    use crate::{net::resolve_peer_address, types::net::PeerAddress};
+
+    /// A seed names a host and a port, and the resolver keeps both.
+    #[tokio::test]
+    async fn a_seed_name_resolves_with_its_port() -> anyhow::Result<()> {
+        let peer_addr: PeerAddress = "localhost:4009".parse()?;
+        let resolved = resolve_peer_address(peer_addr).await?;
+        assert_eq!(resolved.port(), 4009);
+        assert!(
+            resolved
+                .ip_addrs()
+                .any(|addr| addr == IpAddr::V4(Ipv4Addr::LOCALHOST)
+                    || addr == IpAddr::V6(Ipv6Addr::LOCALHOST))
+        );
+        Ok(())
     }
 }
