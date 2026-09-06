@@ -161,19 +161,10 @@ pub fn make_server_endpoint(
 pub type PeerInfoRx =
     mpsc::UnboundedReceiver<(SocketAddr, Option<PeerConnectionInfo>)>;
 
-const ALPHANET_SEED_PEER_ADDRS: &[PeerAddress<&'static str>] = {
-    // seed.alpha.ecash.drivecha.in
-    const DRIVECHA_IN: PeerAddress<&'static str> = PeerAddress {
-        host: url::Host::Ipv4(Ipv4Addr::new(157, 180, 96, 24)),
-        port: DEFAULT_PORT,
-    };
-    // seed.alpha.ecash.ninja
-    const ECASH_NINJA: PeerAddress<&'static str> = PeerAddress {
-        host: url::Host::Domain("seed.alpha.ecash.ninja"),
-        port: DEFAULT_PORT,
-    };
-    &[DRIVECHA_IN, ECASH_NINJA]
-};
+const ALPHANET_SEED_PEER_ADDRS: &[PeerAddress<&'static str>] = &[PeerAddress {
+    host: url::Host::Domain("seed.alpha.ecash.eu.com"),
+    port: DEFAULT_PORT,
+}];
 
 const SIGNET_SEED_PEER_ADDRS: &[PeerAddress<&'static str>] = {
     const SIGNET_MINING_SERVER: PeerAddress<&'static str> = PeerAddress {
