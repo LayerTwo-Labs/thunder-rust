@@ -29,6 +29,7 @@ futures = { workspace = true, features = ["alloc"] }
 governor = { workspace = true, features = ["quanta", "std"] }
 hashlink = { workspace = true, features = ["serde_impl"] }
 heed = { workspace = true }
+hickory-resolver = { workspace = true, features = ["system-config", "tokio"] }
 jsonrpsee = { workspace = true }
 nonempty = { workspace = true, features = ["serialize"] }
 parking_lot = { workspace = true }
@@ -47,7 +48,7 @@ sneed = { workspace = true, features = ["observe"] }
 thiserror = { workspace = true }
 thunder_types = { path = "../types", features = ["heed"] }
 tiny-bip39 = { workspace = true }
-tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 tokio-stream = { workspace = true, features = ["sync"] }
 tokio-util = { workspace = true, features = ["join-map",  "rt"] }
 tonic = { workspace = true }

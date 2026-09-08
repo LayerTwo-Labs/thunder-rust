@@ -36,6 +36,7 @@ futures = { version = "0.3.30", default-features = false }
 governor = { version = "0.8.1", default-features = false }
 hashlink = "0.12.1"
 heed = "0.22.0"
+hickory-resolver = { version = "0.26", default-features = false }
 http = "1.2.0"
 human-size = "0.4.3"
 jsonrpsee = { version = "0.26.0", features = ["tracing"] }

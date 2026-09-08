@@ -79,9 +79,12 @@ impl rpc_api::open_api::RpcServer for RpcServerImpl<true> {
 #[async_trait]
 impl rpc_api::node::PrivateRpcServer for RpcServerImpl<true> {
     async fn connect_peer(&self, addr: PeerAddress) -> RpcResult<()> {
-        let resolved_addr = thunder::net::resolve_peer_address(addr)
-            .await
-            .map_err(custom_err)?;
+        let resolved_addr = thunder::net::resolve_peer_address(
+            self.app.node.dns_resolver(),
+            addr,
+        )
+        .await
+        .map_err(custom_err)?;
         self.app
             .node
             .connect_peer(resolved_addr)
