@@ -557,6 +557,8 @@ pub enum Error {
     ReceiveResponse(#[from] connection::ReceiveResponse),
     #[error("Failed to push blocking task")]
     SendBlockingTask,
+    #[error("mempool error")]
+    MemPool(#[from] crate::mempool::Error),
     #[error(transparent)]
     SendHeartbeat(#[from] request_queue::SendHeartbeat),
     #[error("Failed to push info message")]
@@ -574,6 +576,7 @@ impl Recoverable for Error {
         match self {
             Self::Archive(_)
             | Self::DbEnv(_)
+            | Self::MemPool(_)
             | Self::MissingPeerState(_)
             | Self::SendBlockingTask
             | Self::SendInfo

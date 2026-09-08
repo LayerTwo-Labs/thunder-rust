@@ -25,7 +25,7 @@ use tokio_stream::StreamNotifyClose;
 
 use crate::{
     archive::{self, Archive},
-    mempool::MemPool,
+    mempool::{self, MemPool},
     net::{
         self, Net, PeerConnectionInfo, PeerConnectionMessage, PeerInfoRx,
         PeerRequest, PeerResponse, PeerStateId, error::peer::Recoverable as _,
@@ -80,8 +80,23 @@ fn connect_tip_(
         let () = archive.put_body(rwtxn, block_hash, body)?;
     }
     let () = archive.put_accumulator(rwtxn, block_hash, &accumulator)?;
+    // A mempool transaction that spends an input this block spends under
+    // another txid is a double spend, so it goes with its children. The
+    // block's own transactions leave their children behind, because a child of
+    // a confirmed parent spends a confirmed output.
     for transaction in &body.transactions {
-        let () = mempool.delete(rwtxn, transaction.txid())?;
+        let txid = transaction.txid();
+        for (outpoint, _) in &transaction.inputs {
+            match mempool.spender(rwtxn, outpoint)? {
+                Some(spender) if spender != txid => {
+                    let () = mempool.delete(rwtxn, spender)?;
+                }
+                Some(_) | None => (),
+            }
+        }
+    }
+    for transaction in &body.transactions {
+        let () = mempool.delete_confirmed(rwtxn, transaction.txid())?;
     }
     let () = mempool.regenerate_proofs(rwtxn, &accumulator)?;
     Ok(())
@@ -203,7 +218,7 @@ pub(in crate::node) fn disconnect_tip_(
         };
     }
     for transaction in tip_body.authorized_transactions().iter().rev() {
-        mempool.put(rwtxn, transaction)?;
+        mempool.put_disconnected(rwtxn, transaction)?;
     }
     let accumulator = state.get_accumulator(rwtxn)?;
     mempool.regenerate_proofs(rwtxn, &accumulator)?;
@@ -212,6 +227,24 @@ pub(in crate::node) fn disconnect_tip_(
 
 fn is_fatal_reorg_error(err: &Error) -> bool {
     !matches!(err, Error::State(_))
+}
+
+/// A peer sends a transaction this node refuses. The peer is at fault, so the
+/// net task must stay up. A database error belongs to this node, and it must
+/// stop the task.
+fn is_fatal_peer_tx_error(err: &Error) -> bool {
+    match err {
+        // The transaction spends an output no source holds, so no proof exists
+        // for it. A mempool transaction that drops out leaves its children in
+        // that state.
+        Error::State(_) => false,
+        Error::MemPool(err) => !matches!(
+            err,
+            mempool::Error::TooManyAncestors { .. }
+                | mempool::Error::UtxoDoubleSpent
+        ),
+        _ => true,
+    }
 }
 
 /// Re-org to the specified tip, if it is better than the current tip.
@@ -1241,17 +1274,47 @@ impl NetTask {
                                 .env
                                 .write_txn()
                                 .map_err(EnvError::from)?;
-                            let () = self.ctxt.state.regenerate_proof(
-                                &rwtxn,
-                                &mut new_tx.transaction,
-                            )?;
-                            self.ctxt.mempool.put(&mut rwtxn, &new_tx)?;
-                            rwtxn.commit().map_err(RwTxnError::from)?;
-                            // broadcast
-                            let () = self
-                                .ctxt
-                                .net
-                                .push_tx(HashSet::from_iter([addr]), &new_tx);
+                            let unconfirmed =
+                                self.ctxt.mempool.unconfirmed_outputs(
+                                    &rwtxn,
+                                    &new_tx.transaction,
+                                )?;
+                            let accepted =
+                                match self.ctxt.state.regenerate_proof(
+                                    &rwtxn,
+                                    &unconfirmed,
+                                    &mut new_tx.transaction,
+                                ) {
+                                    Ok(()) => self
+                                        .ctxt
+                                        .mempool
+                                        .put(&mut rwtxn, &new_tx)
+                                        .map_err(Error::from),
+                                    Err(err) => Err(Error::from(err)),
+                                };
+                            match accepted {
+                                Ok(()) => {
+                                    rwtxn.commit().map_err(RwTxnError::from)?;
+                                    // broadcast
+                                    let () = self.ctxt.net.push_tx(
+                                        HashSet::from_iter([addr]),
+                                        &new_tx,
+                                    );
+                                }
+                                Err(err) if !is_fatal_peer_tx_error(&err) => {
+                                    // Drop the write, so the rows that `put`
+                                    // wrote before it refused never land.
+                                    drop(rwtxn);
+                                    // A peer that relays a transaction back is
+                                    // normal traffic, not a fault.
+                                    tracing::debug!(
+                                        %addr,
+                                        "this node refuses a peer's \
+                                         transaction: {err}"
+                                    );
+                                }
+                                Err(err) => return Err(err),
+                            }
                         }
                         PeerConnectionInfo::Response(boxed) => {
                             let (resp, req) = *boxed;
@@ -1405,5 +1468,26 @@ mod test {
     #[test]
     fn infrastructure_error_is_fatal() {
         assert!(is_fatal_reorg_error(&Error::PeerInfoRxClosed));
+    }
+
+    // a peer that pushes a chain past the ancestor limit, a double spend, or a
+    // transaction whose parent just left the mempool, must not stop the net
+    // task
+    #[test]
+    fn a_peer_transaction_this_node_refuses_is_not_fatal() {
+        use crate::{mempool, node::net_task::is_fatal_peer_tx_error};
+
+        assert!(!is_fatal_peer_tx_error(&Error::MemPool(
+            mempool::Error::TooManyAncestors {
+                count: mempool::MAX_UNCONFIRMED_ANCESTORS,
+            }
+        )));
+        assert!(!is_fatal_peer_tx_error(&Error::MemPool(
+            mempool::Error::UtxoDoubleSpent
+        )));
+        assert!(!is_fatal_peer_tx_error(&Error::State(
+            state::Error::NotEnoughValueIn
+        )));
+        assert!(is_fatal_peer_tx_error(&Error::PeerInfoRxClosed));
     }
 }

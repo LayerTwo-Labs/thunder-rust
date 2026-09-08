@@ -297,6 +297,13 @@ pub mod wallet {
         #[method(name = "get_wallet_utxos")]
         async fn get_wallet_utxos(&self) -> RpcResult<Vec<PointedOutput>>;
 
+        /// Get the unconfirmed wallet UTXOs that the wallet may spend. The
+        /// `--spend-unconfirmed` option decides which ones qualify.
+        #[method(name = "get_unconfirmed_wallet_utxos")]
+        async fn get_unconfirmed_wallet_utxos(
+            &self,
+        ) -> RpcResult<Vec<PointedOutput>>;
+
         /// Attempt to mine a sidechain block
         #[open_api_method(output_schema(ToSchema))]
         #[method(name = "mine")]

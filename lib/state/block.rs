@@ -1,5 +1,7 @@
 //! Connect and disconnect blocks
 
+use std::collections::HashMap;
+
 use sneed::{RoTxn, RwTxn, db::error::Error as DbError};
 
 use crate::{
@@ -7,7 +9,7 @@ use crate::{
     types::{
         AccumulatorDiff, AmountOverflowError, Authorization, Body,
         FilledTransaction, GetAddress as _, GetValue as _, Header, InPoint,
-        MerkleRoot, OutPoint, OutPointKey, PointedOutput, SpentOutput,
+        MerkleRoot, OutPoint, OutPointKey, Output, PointedOutput, SpentOutput,
         UtreexoNodeHash, Verify as _,
     },
 };
@@ -59,6 +61,10 @@ pub fn prevalidate(
     let mut filled_transactions: Vec<FilledTransaction> =
         Vec::with_capacity(body.transactions.len());
     let mut total_fees = bitcoin::Amount::ZERO;
+    // Outputs that earlier transactions in this body made. A transaction may
+    // spend one of them, and the accumulator holds no leaf for it, so it is
+    // never a proof target.
+    let mut body_outputs = HashMap::<OutPoint, Output>::new();
     for transaction in &body.transactions {
         let txid = transaction.txid();
         let mut spent_utxos = Vec::with_capacity(transaction.inputs.len());
@@ -66,13 +72,22 @@ pub fn prevalidate(
             Vec::<UtreexoNodeHash>::with_capacity(transaction.inputs.len());
         for (outpoint, utxo_hash) in &transaction.inputs {
             let key = OutPointKey::from(outpoint);
-            let spent_output =
-                state.utxos.try_get(rotxn, &key)?.ok_or(error::NoUtxo {
-                    outpoint: *outpoint,
-                })?;
+            match state.utxos.try_get(rotxn, &key)? {
+                Some(spent_output) => {
+                    spent_utxos.push(spent_output);
+                    spent_utxo_hashes.push(utxo_hash.into());
+                }
+                None => {
+                    let spent_output = body_outputs
+                        .get(outpoint)
+                        .cloned()
+                        .ok_or(error::NoUtxo {
+                            outpoint: *outpoint,
+                        })?;
+                    spent_utxos.push(spent_output);
+                }
+            }
             all_input_keys.push(OutPointKey::from(outpoint));
-            spent_utxos.push(spent_output);
-            spent_utxo_hashes.push(utxo_hash.into());
             accumulator_diff_txs.push((false, utxo_hash.into()));
         }
         for (vout, output) in transaction.outputs.iter().enumerate() {
@@ -86,6 +101,7 @@ pub fn prevalidate(
             };
             accumulator_diff_txs.push((true, (&pointed_output).into()));
         }
+        body_outputs.extend(transaction.outputs_by_outpoint());
         if !accumulator.verify(&transaction.proof, &spent_utxo_hashes)? {
             return Err(Error::UtreexoProofFailed { txid });
         }
@@ -303,11 +319,43 @@ pub fn validate(
         .try_get(rotxn, &())
         .map_err(DbError::from)?
         .unwrap_or_default();
-    let filled_transactions: Vec<_> = body
-        .transactions
-        .iter()
-        .map(|t| state.fill_transaction(rotxn, t))
-        .collect::<Result<_, _>>()?;
+    // Outputs that earlier transactions in this body made, and the proof
+    // targets each transaction keeps. An input that this body answers has no
+    // leaf in the accumulator, so it is never a proof target.
+    let mut body_outputs = HashMap::<OutPoint, Output>::new();
+    let mut proof_targets: Vec<Vec<UtreexoNodeHash>> =
+        Vec::with_capacity(body.transactions.len());
+    let mut filled_transactions: Vec<FilledTransaction> =
+        Vec::with_capacity(body.transactions.len());
+    for transaction in &body.transactions {
+        let mut spent_utxos = Vec::with_capacity(transaction.inputs.len());
+        let mut spent_utxo_hashes =
+            Vec::<UtreexoNodeHash>::with_capacity(transaction.inputs.len());
+        for (outpoint, utxo_hash) in &transaction.inputs {
+            let key = OutPointKey::from(outpoint);
+            match state.utxos.try_get(rotxn, &key)? {
+                Some(spent_output) => {
+                    spent_utxos.push(spent_output);
+                    spent_utxo_hashes.push(utxo_hash.into());
+                }
+                None => {
+                    let spent_output = body_outputs
+                        .get(outpoint)
+                        .cloned()
+                        .ok_or(error::NoUtxo {
+                            outpoint: *outpoint,
+                        })?;
+                    spent_utxos.push(spent_output);
+                }
+            }
+        }
+        body_outputs.extend(transaction.outputs_by_outpoint());
+        proof_targets.push(spent_utxo_hashes);
+        filled_transactions.push(FilledTransaction {
+            spent_utxos,
+            transaction: transaction.clone(),
+        });
+    }
     let merkle_root = Body::compute_merkle_root(
         body.coinbase.as_slice(),
         filled_transactions.as_slice(),
@@ -339,15 +387,12 @@ pub fn validate(
     // Gather all input keys to check double-spends via sort-and-scan
     let total_inputs = body.inputs_len();
     let mut all_input_keys = Vec::with_capacity(total_inputs);
-    for filled_transaction in &filled_transactions {
+    for (filled_transaction, spent_utxo_hashes) in
+        filled_transactions.iter().zip(&proof_targets)
+    {
         let txid = filled_transaction.transaction.txid();
-        // hashes of spent utxos, used to verify the utreexo proof
-        let mut spent_utxo_hashes = Vec::<UtreexoNodeHash>::with_capacity(
-            filled_transaction.transaction.inputs.len(),
-        );
         for (outpoint, utxo_hash) in &filled_transaction.transaction.inputs {
             all_input_keys.push(OutPointKey::from(outpoint));
-            spent_utxo_hashes.push(utxo_hash.into());
             accumulator_diff.remove(utxo_hash.into());
         }
         for (vout, output) in
@@ -368,7 +413,7 @@ pub fn validate(
             .ok_or(AmountOverflowError)?;
         // verify utreexo proof
         if !accumulator
-            .verify(&filled_transaction.transaction.proof, &spent_utxo_hashes)?
+            .verify(&filled_transaction.transaction.proof, spent_utxo_hashes)?
         {
             return Err(Error::UtreexoProofFailed { txid });
         }
@@ -625,7 +670,12 @@ pub fn disconnect_tip(
 
 #[cfg(test)]
 mod test {
-    use crate::state::test::{fresh_state, value_output};
+    use std::collections::HashMap;
+
+    use crate::{
+        state::test::{fresh_state, value_output},
+        types::FilledTransaction,
+    };
 
     #[test]
     fn validation_rejects_outpoint_utxo_hash_mismatch() -> anyhow::Result<()> {
@@ -726,7 +776,11 @@ mod test {
         //   builds from the SUPPLIED utxo_hash.
         let filled = {
             let rotxn = env.read_txn()?;
-            state.fill_transaction(&rotxn, &body.transactions[0])?
+            state.fill_transaction(
+                &rotxn,
+                &HashMap::new(),
+                &body.transactions[0],
+            )?
         };
 
         // tx validation REJECTS the outpoint/utxo_hash mismatch.
@@ -762,6 +816,197 @@ mod test {
                 and utxo_hash (B) refer to different UTXOs",
             );
         }
+        Ok(())
+    }
+
+    /// Build a block that carries a parent and its child, and the state that
+    /// validates it. `order` names the body order.
+    fn chained_block(
+        test_name: &str,
+        child_first: bool,
+    ) -> anyhow::Result<(
+        temp_dir::TempDir,
+        sneed::Env,
+        crate::state::State,
+        crate::types::Header,
+        crate::types::Body,
+    )> {
+        use bitcoin::hashes::Hash as _;
+
+        use crate::types::{
+            Accumulator, AccumulatorDiff, Body, Header, OutPoint, OutPointKey,
+            PointedOutput, Transaction, UtreexoNodeHash,
+            authorization::{SigningKey, authorize, get_address},
+            hash,
+        };
+
+        let (temp_dir, env, state) = fresh_state(test_name)?;
+        let owner = SigningKey::from_bytes(&[0x33; 32]);
+        let owner_addr = get_address(&owner.verifying_key());
+
+        // One confirmed deposit funds the chain.
+        let deposit_outpoint = OutPoint::Deposit(bitcoin::OutPoint {
+            txid: bitcoin::Txid::from_byte_array([0xCC; 32]),
+            vout: 0,
+        });
+        let deposit_output = value_output(owner_addr, 10_000);
+        let deposit_pointed = PointedOutput {
+            outpoint: deposit_outpoint,
+            output: deposit_output.clone(),
+        };
+        let deposit_leaf: UtreexoNodeHash = (&deposit_pointed).into();
+        let deposit_hash = hash(&deposit_pointed);
+
+        let mut accumulator = Accumulator::default();
+        {
+            let mut diff = AccumulatorDiff::default();
+            diff.insert(deposit_leaf);
+            accumulator.apply_diff(diff)?;
+        }
+        {
+            let mut rwtxn = env.write_txn()?;
+            state.utxos.put(
+                &mut rwtxn,
+                &OutPointKey::from(&deposit_outpoint),
+                &deposit_output,
+            )?;
+            state
+                .utreexo_accumulator
+                .put(&mut rwtxn, &(), &accumulator)?;
+            rwtxn.commit()?;
+        }
+
+        // Parent spends the deposit. Child spends the parent's output.
+        let parent_output = value_output(owner_addr, 9_000);
+        let parent = Transaction {
+            inputs: vec![(deposit_outpoint, deposit_hash)],
+            proof: accumulator.prove(&[deposit_leaf])?,
+            outputs: vec![parent_output.clone()],
+        };
+        let parent_outpoint = OutPoint::Regular {
+            txid: parent.txid(),
+            vout: 0,
+        };
+        let parent_pointed = PointedOutput {
+            outpoint: parent_outpoint,
+            output: parent_output.clone(),
+        };
+        let child_output = value_output(owner_addr, 8_000);
+        let child = Transaction {
+            inputs: vec![(parent_outpoint, hash(&parent_pointed))],
+            // The accumulator holds no leaf for the parent's output, so the
+            // child proves nothing.
+            proof: accumulator.prove(&[])?,
+            outputs: vec![child_output.clone()],
+        };
+
+        let authorized_parent = authorize(&[(owner_addr, &owner)], parent)?;
+        let authorized_child = authorize(&[(owner_addr, &owner)], child)?;
+        let body = if child_first {
+            Body::new(vec![authorized_child, authorized_parent], Vec::new())
+        } else {
+            Body::new(vec![authorized_parent, authorized_child], Vec::new())
+        };
+
+        // The parent's output is made and spent inside the block, so the
+        // accumulator only loses the deposit and gains the child's output.
+        let mut post_accumulator = Accumulator::default();
+        {
+            let mut diff = AccumulatorDiff::default();
+            diff.insert(deposit_leaf);
+            post_accumulator.apply_diff(diff)?;
+            let mut diff = AccumulatorDiff::default();
+            diff.remove(deposit_leaf);
+            diff.insert(
+                (&PointedOutput {
+                    outpoint: OutPoint::Regular {
+                        txid: body.transactions
+                            [if child_first { 1 } else { 0 }]
+                        .txid(),
+                        vout: 0,
+                    },
+                    output: parent_output.clone(),
+                })
+                    .into(),
+            );
+            diff.remove(
+                (&PointedOutput {
+                    outpoint: parent_outpoint,
+                    output: parent_output,
+                })
+                    .into(),
+            );
+            diff.insert(
+                (&PointedOutput {
+                    outpoint: OutPoint::Regular {
+                        txid: body.transactions
+                            [if child_first { 0 } else { 1 }]
+                        .txid(),
+                        vout: 0,
+                    },
+                    output: child_output,
+                })
+                    .into(),
+            );
+            post_accumulator.apply_diff(diff)?;
+        }
+
+        let filled = vec![
+            FilledTransaction {
+                spent_utxos: vec![if child_first {
+                    parent_pointed.output.clone()
+                } else {
+                    deposit_output.clone()
+                }],
+                transaction: body.transactions[0].clone(),
+            },
+            FilledTransaction {
+                spent_utxos: vec![if child_first {
+                    deposit_output
+                } else {
+                    parent_pointed.output
+                }],
+                transaction: body.transactions[1].clone(),
+            },
+        ];
+        let header = Header {
+            merkle_root: Body::compute_merkle_root(
+                body.coinbase.as_slice(),
+                filled.as_slice(),
+            )?,
+            prev_side_hash: None,
+            prev_main_hash: bitcoin::BlockHash::from_byte_array([0u8; 32]),
+            roots: post_accumulator.get_roots(),
+        };
+        Ok((temp_dir, env, state, header, body))
+    }
+
+    #[test]
+    fn a_block_carries_a_parent_and_its_child() -> anyhow::Result<()> {
+        let (_temp_dir, env, state, header, body) =
+            chained_block("a_block_carries_a_parent_and_its_child", false)?;
+        let rotxn = env.read_txn()?;
+        let (fees, _) = state.validate_block(&rotxn, &header, &body)?;
+        anyhow::ensure!(fees == bitcoin::Amount::from_sat(2_000));
+        let () = state
+            .prevalidate_block(&rotxn, &header, &body)
+            .map(|_| ())?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_child_before_its_parent_is_rejected() -> anyhow::Result<()> {
+        let (_temp_dir, env, state, header, body) =
+            chained_block("a_child_before_its_parent_is_rejected", true)?;
+        let rotxn = env.read_txn()?;
+        anyhow::ensure!(
+            state.validate_block(&rotxn, &header, &body).is_err(),
+            "a body that puts a child before its parent must not validate",
+        );
+        anyhow::ensure!(
+            state.prevalidate_block(&rotxn, &header, &body).is_err(),
+            "prevalidate must reject the same body",
+        );
         Ok(())
     }
 }

@@ -8,6 +8,7 @@ mod block_template;
 mod ibd;
 mod integration_test;
 mod setup;
+mod spend_unconfirmed;
 mod unknown_withdrawal;
 mod util;
 

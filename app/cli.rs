@@ -152,6 +152,12 @@ pub(super) struct Cli {
     /// Socket address to host the RPC server
     #[arg(default_value_t = DEFAULT_RPC_ADDR, long, short)]
     rpc_addr: SocketAddr,
+    /// Spend the wallet's own unconfirmed change. The wallet takes an output
+    /// only when it funded every input of the transaction that made it, so an
+    /// unconfirmed payment from someone else waits for a block. This is the
+    /// rule that Bitcoin Core calls `-spendzeroconfchange`.
+    #[arg(default_value_t = true, long, action = clap::ArgAction::Set)]
+    spend_zero_conf_change: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -170,6 +176,7 @@ pub struct Config {
     pub peers: Vec<thunder::types::net::PeerAddress>,
     pub private_rpc_addr: SocketAddr,
     pub rpc_addr: SocketAddr,
+    pub spend_zero_conf_change: bool,
 }
 
 impl Cli {
@@ -209,6 +216,7 @@ impl Cli {
             peers: self.peers,
             private_rpc_addr: self.private_rpc_addr,
             rpc_addr: self.rpc_addr,
+            spend_zero_conf_change: self.spend_zero_conf_change,
         })
     }
 }

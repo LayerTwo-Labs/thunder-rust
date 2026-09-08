@@ -609,6 +609,22 @@ impl Transaction {
     pub fn canonical_size(&self) -> u64 {
         (borsh::object_length(self).unwrap() / 8) as u64
     }
+
+    /// The outputs this transaction creates, each with its outpoint.
+    pub fn outputs_by_outpoint(
+        &self,
+    ) -> impl Iterator<Item = (OutPoint, Output)> + '_ {
+        let txid = self.txid();
+        self.outputs.iter().enumerate().map(move |(vout, output)| {
+            (
+                OutPoint::Regular {
+                    txid,
+                    vout: vout as u32,
+                },
+                output.clone(),
+            )
+        })
+    }
 }
 
 /// Representation of a spent output

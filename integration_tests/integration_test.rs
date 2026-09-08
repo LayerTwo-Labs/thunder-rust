@@ -15,6 +15,7 @@ use crate::{
     block_template::block_template_trial,
     ibd::ibd_trial,
     setup::{Init, PostSetup},
+    spend_unconfirmed::{spend_unconfirmed_off_trial, spend_unconfirmed_trial},
     unknown_withdrawal::unknown_withdrawal_trial,
     util::BinPaths,
 };
@@ -146,6 +147,7 @@ fn deposit_withdraw_roundtrip_trial(
                 Init {
                     thunder_app: bin_paths.thunder()?.clone(),
                     data_dir_suffix: None,
+                    extra_args: Vec::new(),
                 },
                 res_tx,
             )
@@ -174,6 +176,16 @@ pub fn tests(
             failure_collector.clone(),
         ),
         ibd_trial(
+            bin_paths.clone(),
+            file_registry.clone(),
+            failure_collector.clone(),
+        ),
+        spend_unconfirmed_trial(
+            bin_paths.clone(),
+            file_registry.clone(),
+            failure_collector.clone(),
+        ),
+        spend_unconfirmed_off_trial(
             bin_paths.clone(),
             file_registry.clone(),
             failure_collector.clone(),
