@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -69,6 +69,8 @@ pub enum Error {
     NoSeed,
     #[error("not enough funds")]
     NotEnoughFunds,
+    #[error("no transfer destination")]
+    NoTransferDestination,
     #[error("utxo does not exist")]
     NoUtxo,
     #[error("failed to parse mnemonic seed phrase")]
@@ -303,6 +305,29 @@ impl Wallet {
         value: bitcoin::Amount,
         fee: bitcoin::Amount,
     ) -> Result<Transaction, Error> {
+        self.create_transaction_many(
+            accumulator,
+            &BTreeMap::from([(address, value)]),
+            fee,
+        )
+    }
+
+    /// Pay each address in `dests`, and pay the change to a new address
+    pub fn create_transaction_many(
+        &self,
+        accumulator: &Accumulator,
+        dests: &BTreeMap<Address, bitcoin::Amount>,
+        fee: bitcoin::Amount,
+    ) -> Result<Transaction, Error> {
+        if dests.is_empty() {
+            return Err(Error::NoTransferDestination);
+        }
+        let value = dests
+            .values()
+            .try_fold(bitcoin::Amount::ZERO, |total, value| {
+                total.checked_add(*value)
+            })
+            .ok_or(AmountOverflowError)?;
         let (total, coins) = self
             .select_coins(value.checked_add(fee).ok_or(AmountOverflowError)?)?;
         let change = total - value - fee;
@@ -316,21 +341,21 @@ impl Wallet {
         let input_utxo_hashes: Vec<UtreexoNodeHash> =
             inputs.iter().map(|(_, hash)| hash.into()).collect();
         let proof = accumulator.prove(&input_utxo_hashes)?;
-        let outputs = vec![
-            Output {
-                address,
-                content: OutputContent::Value(value),
-            },
-            Output {
-                address: self.get_new_address()?,
-                content: OutputContent::Value(change),
-            },
-        ]
-        .into();
+        let mut outputs: Vec<Output> = dests
+            .iter()
+            .map(|(address, value)| Output {
+                address: *address,
+                content: OutputContent::Value(*value),
+            })
+            .collect();
+        outputs.push(Output {
+            address: self.get_new_address()?,
+            content: OutputContent::Value(change),
+        });
         Ok(Transaction {
             inputs: inputs.into(),
             proof,
-            outputs,
+            outputs: outputs.into(),
         })
     }
 
