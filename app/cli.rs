@@ -28,6 +28,7 @@ pub struct Config {
     pub private_rpc_addr: SocketAddr,
     pub rpc_addr: SocketAddr,
     pub server_names: HashSet<String>,
+    pub wallet_dir: PathBuf,
 }
 
 impl Config {
@@ -49,6 +50,7 @@ impl Config {
             private_rpc_addr,
             rpc_addr,
             server_names,
+            wallet_dir,
         } = self;
         let add_peers = std::fmt::from_fn(|f| {
             f.debug_set()
@@ -77,6 +79,7 @@ impl Config {
             %private_rpc_addr,
             %rpc_addr,
             ?server_names,
+            wallet_dir = %wallet_dir.display(),
             msg,
         )
     }
@@ -180,7 +183,8 @@ pub(super) struct Cli {
     /// seed peers.
     #[arg(long = "add-peer")]
     add_peers: Vec<thunder::types::net::PeerAddress>,
-    /// Data directory for storing blockchain and wallet data
+    /// Data directory for storing blockchain data.
+    /// Wallet data is stored here by default.
     #[command(flatten)]
     datadir: DatadirArg,
     /// If specified, the gui will not launch.
@@ -228,16 +232,19 @@ pub(super) struct Cli {
     /// This option can be specified multiple times.
     #[arg(long = "server-name")]
     server_names: Vec<String>,
+    /// Data directory for storing wallet data
+    #[arg(long)]
+    wallet_dir: Option<PathBuf>,
 }
 
 impl Cli {
     pub fn get_config(self) -> anyhow::Result<Config> {
+        let datadir = self.datadir.0;
         let log_dir = match self.log_dir {
             None => {
                 let version_dir_name =
                     format!("v{}", env!("CARGO_PKG_VERSION"));
-                let log_dir =
-                    self.datadir.0.join("logs").join(version_dir_name);
+                let log_dir = datadir.join("logs").join(version_dir_name);
                 Some(log_dir)
             }
             Some(log_dir) => {
@@ -253,9 +260,10 @@ impl Cli {
         } else {
             saturating_pred_level(self.log_level)
         };
+        let wallet_dir = self.wallet_dir.unwrap_or_else(|| datadir.clone());
         Ok(Config {
             add_peers: HashSet::from_iter(self.add_peers),
-            datadir: self.datadir.0,
+            datadir,
             headless: self.headless,
             log_dir,
             log_level,
@@ -268,6 +276,7 @@ impl Cli {
             private_rpc_addr: self.private_rpc_addr,
             rpc_addr: self.rpc_addr,
             server_names: HashSet::from_iter(self.server_names),
+            wallet_dir,
         })
     }
 }
