@@ -193,6 +193,8 @@ pub mod node {
 }
 
 pub mod wallet {
+    use std::collections::BTreeMap;
+
     use jsonrpsee::{core::RpcResult, proc_macros::rpc};
     use l2l_openapi::open_api;
     use serde::{Deserialize, Serialize};
@@ -246,6 +248,15 @@ pub mod wallet {
             &self,
             dest: Address,
             value_sats: u64,
+            fee_sats: u64,
+        ) -> RpcResult<Txid>;
+
+        /// Create a tx that transfers funds to each address in `dests`,
+        /// which maps an address to a value in sats
+        #[method(name = "create_transfer_many")]
+        async fn create_transfer_many(
+            &self,
+            dests: BTreeMap<Address, u64>,
             fee_sats: u64,
         ) -> RpcResult<Txid>;
 

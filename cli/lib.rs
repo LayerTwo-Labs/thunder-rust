@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, time::Duration};
+use std::{collections::BTreeMap, marker::PhantomData, time::Duration};
 
 use clap::{Parser, Subcommand};
 use http::HeaderMap;
@@ -51,6 +51,14 @@ pub enum Command {
         dest: Address,
         #[arg(long)]
         value_sats: u64,
+        #[arg(long)]
+        fee_sats: u64,
+    },
+    /// Create a tx that transfers funds to each address in a JSON map of
+    /// address to value in sats, such as `{"<address>": 1000}`
+    CreateTransferMany {
+        #[arg(value_parser = JsonParser::<BTreeMap<Address, u64>>::parse)]
+        dests: BTreeMap<Address, u64>,
         #[arg(long)]
         fee_sats: u64,
     },
@@ -212,6 +220,10 @@ where
             let txid = rpc_client
                 .create_transfer(dest, value_sats, fee_sats)
                 .await?;
+            format!("{txid}")
+        }
+        Command::CreateTransferMany { dests, fee_sats } => {
+            let txid = rpc_client.create_transfer_many(dests, fee_sats).await?;
             format!("{txid}")
         }
         Command::CreateWithdrawal {
@@ -394,5 +406,30 @@ impl Cli {
         let client = builder.build(self.rpc_url)?;
         let result = handle_command(&client, self.command).await?;
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser as _;
+
+    use super::*;
+
+    #[test]
+    fn parse_create_transfer_many() {
+        let address = Address([1u8; 20]);
+        let cli = Cli::parse_from([
+            "thunder-cli",
+            "create-transfer-many",
+            &format!("{{\"{address}\": 1000}}"),
+            "--fee-sats",
+            "500",
+        ]);
+        let Command::CreateTransferMany { dests, fee_sats } = cli.command
+        else {
+            panic!("expected create-transfer-many");
+        };
+        assert_eq!(dests, BTreeMap::from([(address, 1000)]));
+        assert_eq!(fee_sats, 500);
     }
 }

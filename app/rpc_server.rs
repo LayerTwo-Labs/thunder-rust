@@ -1,4 +1,7 @@
-use std::{collections::HashSet, net::SocketAddr};
+use std::{
+    collections::{BTreeMap, HashSet},
+    net::SocketAddr,
+};
 
 use bitcoin::Amount;
 use jsonrpsee::{
@@ -330,6 +333,33 @@ impl rpc_api::wallet::RpcServer for RpcServerImpl<true> {
                 &accumulator,
                 dest,
                 Amount::from_sat(value_sats),
+                Amount::from_sat(fee_sats),
+            )
+            .map_err(custom_err)?;
+        let txid = tx.txid();
+        let () = self.app.sign_and_send(tx).map_err(custom_err)?;
+        Ok(txid)
+    }
+
+    async fn create_transfer_many(
+        &self,
+        dests: BTreeMap<Address, u64>,
+        fee_sats: u64,
+    ) -> RpcResult<Txid> {
+        let dests = dests
+            .into_iter()
+            .map(|(address, value_sats)| {
+                (address, Amount::from_sat(value_sats))
+            })
+            .collect();
+        let accumulator =
+            self.app.node.get_tip_accumulator().map_err(custom_err)?;
+        let tx = self
+            .app
+            .wallet
+            .create_transaction_many(
+                &accumulator,
+                &dests,
                 Amount::from_sat(fee_sats),
             )
             .map_err(custom_err)?;
