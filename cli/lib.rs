@@ -9,7 +9,9 @@ use thunder_app_rpc_api::{
     typewit::const_marker::Bool,
     wallet::RpcClient as _,
 };
-use thunder_types::{Address, M6id, Txid, net::PeerAddress};
+use thunder_types::{
+    Address, M6id, Txid, net::PeerAddress, wallet::TransferDests,
+};
 use tracing_subscriber::layer::SubscriberExt as _;
 
 struct JsonParser<T>(PhantomData<T>);
@@ -52,6 +54,14 @@ pub enum Command {
         dest: Address,
         #[arg(long)]
         value_sats: u64,
+        #[arg(long)]
+        fee_sats: u64,
+    },
+    /// Create a tx that transfers funds to each address in a JSON map of
+    /// address to value in sats, such as `{"<address>": 1000}`
+    CreateTransferMany {
+        #[arg(value_parser = JsonParser::<TransferDests>::parse)]
+        dests: TransferDests,
         #[arg(long)]
         fee_sats: u64,
     },
@@ -223,6 +233,10 @@ where
             let txid = rpc_client
                 .create_transfer(dest, value_sats, fee_sats)
                 .await?;
+            format!("{txid}")
+        }
+        Command::CreateTransferMany { dests, fee_sats } => {
+            let txid = rpc_client.create_transfer_many(dests, fee_sats).await?;
             format!("{txid}")
         }
         Command::CreateWithdrawal {
@@ -421,5 +435,47 @@ impl Cli {
         let client = builder.build(self.rpc_url)?;
         let result = handle_command(&client, self.command).await?;
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use clap::Parser as _;
+
+    use super::*;
+
+    #[test]
+    fn parse_create_transfer_many() {
+        let address = Address([1u8; 20]);
+        let cli = Cli::parse_from([
+            "thunder-cli",
+            "create-transfer-many",
+            &format!("{{\"{address}\": 1000}}"),
+            "--fee-sats",
+            "500",
+        ]);
+        let Command::CreateTransferMany { dests, fee_sats } = cli.command
+        else {
+            panic!("expected create-transfer-many");
+        };
+        assert_eq!(dests.0, BTreeMap::from([(address, 1000)]));
+        assert_eq!(fee_sats, 500);
+    }
+
+    // Without `MapPreventDuplicates`, serde keeps the last value for a
+    // repeated key and drops the first payment.
+    #[test]
+    fn refuse_a_repeated_address() {
+        let address = Address([1u8; 20]);
+        let result = Cli::try_parse_from([
+            "thunder-cli",
+            "create-transfer-many",
+            &format!("{{\"{address}\": 1000, \"{address}\": 5000}}"),
+            "--fee-sats",
+            "500",
+        ]);
+        assert!(result.is_err());
     }
 }
