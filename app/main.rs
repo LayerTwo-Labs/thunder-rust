@@ -215,6 +215,7 @@ fn main() -> anyhow::Result<()> {
         config.log_level,
         config.log_level_file,
     )?;
+    let () = config.log_all_fields("Loaded config");
 
     let (app_tx, app_rx) = oneshot::channel::<anyhow::Error>();
 

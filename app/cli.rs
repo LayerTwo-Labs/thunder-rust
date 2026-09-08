@@ -11,6 +11,77 @@ use thunder::types::{Network, THIS_SIDECHAIN};
 
 use crate::util::saturating_pred_level;
 
+#[derive(Clone, Debug)]
+pub struct Config {
+    pub add_peers: HashSet<thunder::types::net::PeerAddress>,
+    pub datadir: PathBuf,
+    pub headless: bool,
+    /// If None, logging to file should be disabled.
+    pub log_dir: Option<PathBuf>,
+    pub log_level: tracing::Level,
+    pub log_level_file: tracing::Level, // Level for logs that get written to file
+    pub mainchain_grpc_url: url::Url,
+    pub mnemonic_seed_phrase_path: Option<PathBuf>,
+    pub net_addr: SocketAddr,
+    pub network: Network,
+    pub network_magic_override: Option<thunder::net::peer_message::MagicBytes>,
+    pub private_rpc_addr: SocketAddr,
+    pub rpc_addr: SocketAddr,
+    pub server_names: HashSet<String>,
+}
+
+impl Config {
+    /// Log all fields at info level
+    #[track_caller]
+    pub fn log_all_fields(&self, msg: &str) {
+        let Self {
+            add_peers,
+            datadir,
+            headless,
+            log_dir,
+            log_level,
+            log_level_file,
+            mainchain_grpc_url,
+            mnemonic_seed_phrase_path,
+            net_addr,
+            network,
+            network_magic_override,
+            private_rpc_addr,
+            rpc_addr,
+            server_names,
+        } = self;
+        let add_peers = std::fmt::from_fn(|f| {
+            f.debug_set()
+                .entries(add_peers.iter().map(|peer_addr| {
+                    std::fmt::from_fn(|f| std::fmt::Display::fmt(peer_addr, f))
+                }))
+                .finish()
+        });
+        tracing::info!(
+            %add_peers,
+            datadir = %datadir.display(),
+            %headless,
+            log_dir = log_dir.as_ref().map(|path|
+                tracing::field::display(path.display())
+            ),
+            %log_level,
+            %log_level_file,
+            %mainchain_grpc_url,
+            mnemonic_seed_phrase_path = mnemonic_seed_phrase_path.as_ref()
+                .map(|path| tracing::field::display(path.display())),
+            %net_addr,
+            %network,
+            network_magic_override = network_magic_override.map(|magic|
+                tracing::field::display(const_hex::encode(magic))
+            ),
+            %private_rpc_addr,
+            %rpc_addr,
+            ?server_names,
+            msg,
+        )
+    }
+}
+
 const fn ipv4_socket_addr(ipv4_octets: [u8; 4], port: u16) -> SocketAddr {
     let [a, b, c, d] = ipv4_octets;
     let ipv4 = Ipv4Addr::new(a, b, c, d);
@@ -157,25 +228,6 @@ pub(super) struct Cli {
     /// This option can be specified multiple times.
     #[arg(long = "server-name")]
     server_names: Vec<String>,
-}
-
-#[derive(Clone, Debug)]
-pub struct Config {
-    pub add_peers: HashSet<thunder::types::net::PeerAddress>,
-    pub datadir: PathBuf,
-    pub headless: bool,
-    /// If None, logging to file should be disabled.
-    pub log_dir: Option<PathBuf>,
-    pub log_level: tracing::Level,
-    pub log_level_file: tracing::Level, // Level for logs that get written to file
-    pub mainchain_grpc_url: url::Url,
-    pub mnemonic_seed_phrase_path: Option<PathBuf>,
-    pub net_addr: SocketAddr,
-    pub network: Network,
-    pub network_magic_override: Option<thunder::net::peer_message::MagicBytes>,
-    pub private_rpc_addr: SocketAddr,
-    pub rpc_addr: SocketAddr,
-    pub server_names: HashSet<String>,
 }
 
 impl Cli {
