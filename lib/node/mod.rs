@@ -197,6 +197,10 @@ where
         f(&self.cusf_mainchain)
     }
 
+    pub fn dns_resolver(&self) -> &Arc<hickory_resolver::TokioResolver> {
+        &self.net.dns_resolver
+    }
+
     /// Invalidate a block.
     /// This will delete the header and body, and mark invalid, the specified
     /// block and any descendants.
