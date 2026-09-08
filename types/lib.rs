@@ -446,6 +446,27 @@ impl AccumulatorDiff {
         (self.insertions, self.deletions)
     }
 
+    /// Splits the diff into the insertions and the deletions, in that order.
+    pub fn into_parts(self) -> (Vec<UtreexoNodeHash>, Vec<UtreexoNodeHash>) {
+        let Self {
+            diff,
+            insertions: n_insertions,
+            deletions: n_deletions,
+        } = self;
+        let (mut insertions, mut deletions) = (
+            Vec::with_capacity(n_insertions),
+            Vec::with_capacity(n_deletions),
+        );
+        for (utxo_hash, insert) in diff {
+            if insert {
+                insertions.push(utxo_hash);
+            } else {
+                deletions.push(utxo_hash);
+            }
+        }
+        (insertions, deletions)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.diff.is_empty()
     }
@@ -460,22 +481,7 @@ impl Accumulator {
         &mut self,
         diff: AccumulatorDiff,
     ) -> Result<(), UtreexoError> {
-        let AccumulatorDiff {
-            diff,
-            insertions: n_insertions,
-            deletions: n_deletions,
-        } = diff;
-        let (mut insertions, mut deletions) = (
-            Vec::with_capacity(n_insertions),
-            Vec::with_capacity(n_deletions),
-        );
-        for (utxo_hash, insert) in diff {
-            if insert {
-                insertions.push(utxo_hash);
-            } else {
-                deletions.push(utxo_hash);
-            }
-        }
+        let (insertions, deletions) = diff.into_parts();
         tracing::trace!(
             leaves = %self.0.leaves,
             roots = ?self.get_roots(),
@@ -787,10 +793,10 @@ impl Body {
     where
         FilledTx: Borrow<FilledTransaction>,
     {
-        // New leaves for the accumulator
-        let mut accumulator_add = Vec::<UtreexoNodeHash>::new();
-        // Accumulator leaves to delete
-        let mut accumulator_del = Vec::<UtreexoNodeHash>::new();
+        // A leaf that a transaction makes and a later transaction in the same
+        // body spends never reaches the accumulator, so the diff cancels the
+        // pair instead of asking rustreexo to add and delete it at once.
+        let mut diff = AccumulatorDiff::default();
         let merkle_root = Self::compute_merkle_root(coinbase, txs)?;
         for (vout, output) in coinbase.iter().enumerate() {
             let outpoint = OutPoint::Coinbase {
@@ -801,13 +807,13 @@ impl Body {
                 outpoint,
                 output: output.clone(),
             };
-            accumulator_add.push((&pointed_output).into());
+            diff.insert((&pointed_output).into());
         }
         for tx in txs {
             let tx = tx.borrow();
             let txid = tx.transaction.txid();
             for (_, utxo_hash) in tx.transaction.inputs.iter() {
-                accumulator_del.push(utxo_hash.into());
+                diff.remove(utxo_hash.into());
             }
             for (vout, output) in tx.transaction.outputs.iter().enumerate() {
                 let outpoint = OutPoint::Regular {
@@ -818,9 +824,10 @@ impl Body {
                     outpoint,
                     output: output.clone(),
                 };
-                accumulator_add.push((&pointed_output).into());
+                diff.insert((&pointed_output).into());
             }
         }
+        let (accumulator_add, accumulator_del) = diff.into_parts();
         let () = memforest
             .modify(&accumulator_add, &accumulator_del)
             .map_err(UtreexoError)?;
@@ -1030,5 +1037,111 @@ mod withdrawal_bundle_order_regression {
                 "m6id must not depend on aggregation order"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod same_block_chain {
+    use bitcoin::hashes::Hash as _;
+
+    use crate::{
+        Accumulator, AccumulatorDiff, Body, FilledTransaction, OutPoint,
+        Output, OutputContent, PointedOutput, Transaction,
+        authorization::{SigningKey, get_address},
+        hash,
+    };
+
+    /// The block template and block validation must reach the same roots for
+    /// a block that carries a parent and its child. The template walks
+    /// `modify_memforest`; validation walks `AccumulatorDiff`. A leaf the
+    /// block makes and spends reaches neither.
+    #[test]
+    fn the_template_and_validation_agree() -> anyhow::Result<()> {
+        let address =
+            get_address(&SigningKey::from_bytes(&[0x77; 32]).verifying_key());
+        let value_output = |sats: u64| Output {
+            address,
+            content: OutputContent::Value(bitcoin::Amount::from_sat(sats)),
+        };
+
+        let deposit_outpoint = OutPoint::Deposit(bitcoin::OutPoint {
+            txid: bitcoin::Txid::from_byte_array([0xDD; 32]),
+            vout: 0,
+        });
+        let deposit_output = value_output(10_000);
+        let deposit_pointed = PointedOutput {
+            outpoint: deposit_outpoint,
+            output: deposit_output.clone(),
+        };
+
+        let parent_output = value_output(9_000);
+        let parent = Transaction {
+            inputs: vec![(deposit_outpoint, hash(&deposit_pointed))],
+            proof: Default::default(),
+            outputs: vec![parent_output.clone()],
+        };
+        let parent_outpoint = OutPoint::Regular {
+            txid: parent.txid(),
+            vout: 0,
+        };
+        let parent_pointed = PointedOutput {
+            outpoint: parent_outpoint,
+            output: parent_output.clone(),
+        };
+        let child_output = value_output(8_000);
+        let child = Transaction {
+            inputs: vec![(parent_outpoint, hash(&parent_pointed))],
+            proof: Default::default(),
+            outputs: vec![child_output.clone()],
+        };
+        let child_pointed = PointedOutput {
+            outpoint: OutPoint::Regular {
+                txid: child.txid(),
+                vout: 0,
+            },
+            output: child_output,
+        };
+
+        let seed = || -> anyhow::Result<Accumulator> {
+            let mut accumulator = Accumulator::default();
+            let mut diff = AccumulatorDiff::default();
+            diff.insert((&deposit_pointed).into());
+            accumulator.apply_diff(diff)?;
+            Ok(accumulator)
+        };
+
+        let mut from_template = seed()?;
+        let _ = Body::modify_memforest(
+            &[],
+            &[
+                FilledTransaction {
+                    spent_utxos: vec![deposit_output],
+                    transaction: parent,
+                },
+                FilledTransaction {
+                    spent_utxos: vec![parent_output],
+                    transaction: child,
+                },
+            ],
+            &mut from_template.0,
+        )?;
+
+        let mut from_validation = seed()?;
+        {
+            let mut diff = AccumulatorDiff::default();
+            diff.remove((&deposit_pointed).into());
+            diff.insert((&parent_pointed).into());
+            diff.remove((&parent_pointed).into());
+            diff.insert((&child_pointed).into());
+            from_validation.apply_diff(diff)?;
+        }
+
+        anyhow::ensure!(
+            from_template.get_roots() == from_validation.get_roots(),
+            "template gave {:?}, validation gave {:?}",
+            from_template.get_roots(),
+            from_validation.get_roots(),
+        );
+        Ok(())
     }
 }

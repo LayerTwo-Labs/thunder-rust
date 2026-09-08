@@ -104,6 +104,8 @@ pub enum Command {
     GetWalletAddresses,
     /// Get wallet UTXOs
     GetWalletUtxos,
+    /// Get the unconfirmed wallet UTXOs that the wallet may spend
+    GetUnconfirmedWalletUtxos,
     /// Get the current block count
     GetBlockcount,
     /// Invalidate a block, potentially re-orging to a valid ancestor of the
@@ -283,6 +285,10 @@ where
         }
         Command::GetWalletUtxos => {
             let utxos = rpc_client.get_wallet_utxos().await?;
+            serde_json::to_string_pretty(&utxos)?
+        }
+        Command::GetUnconfirmedWalletUtxos => {
+            let utxos = rpc_client.get_unconfirmed_wallet_utxos().await?;
             serde_json::to_string_pretty(&utxos)?
         }
         Command::GetBlockcount => {

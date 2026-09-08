@@ -2,7 +2,7 @@ use std::task::Poll;
 
 use eframe::egui::{self, RichText};
 use strum::{EnumIter, IntoEnumIterator};
-use thunder::{util::Watchable, wallet::Wallet};
+use thunder::{types::wallet::Balance, util::Watchable, wallet::Wallet};
 use util::{BITCOIN_LOGO_FA, BITCOIN_ORANGE, show_btc_amount};
 
 use crate::{app::App, line_buffer::LineBuffer, util::PromiseStream};
@@ -86,7 +86,7 @@ struct BottomPanel {
     initialized: Option<BottomPanelInitialized>,
     /// None if uninitialized
     /// Some(None) if failed to initialize
-    balance: Option<Option<bitcoin::Amount>>,
+    balance: Option<Option<Balance>>,
 }
 
 impl BottomPanel {
@@ -107,8 +107,12 @@ impl BottomPanel {
         let rt_guard = initialized.app.runtime.enter();
         match initialized.wallet_updated.poll_next() {
             Some(Poll::Ready(())) => {
-                self.balance = match initialized.app.wallet.get_balance() {
-                    Ok(balance) => Some(Some(balance.total)),
+                self.balance = match initialized
+                    .app
+                    .wallet
+                    .get_balance(initialized.app.spend_zero_conf_change)
+                {
+                    Ok(balance) => Some(Some(balance)),
                     Err(err) => {
                         let err = anyhow::Error::from(err);
                         tracing::error!("Failed to update balance: {err:#}");
@@ -122,7 +126,7 @@ impl BottomPanel {
     }
 
     fn show_balance(&self, ui: &mut egui::Ui) {
-        match self.balance {
+        match &self.balance {
             Some(Some(balance)) => {
                 ui.monospace(
                     RichText::new(BITCOIN_LOGO_FA.to_string())
@@ -130,8 +134,26 @@ impl BottomPanel {
                 );
                 ui.monospace_selectable_singleline(
                     false,
-                    format!("Balance: {}", show_btc_amount(balance)),
+                    format!("Balance: {}", show_btc_amount(balance.total)),
                 );
+                if balance.unconfirmed != bitcoin::Amount::ZERO {
+                    ui.monospace_selectable_singleline(
+                        false,
+                        format!(
+                            "Unconfirmed: {}",
+                            show_btc_amount(balance.unconfirmed)
+                        ),
+                    );
+                }
+                if balance.available != balance.total {
+                    ui.monospace_selectable_singleline(
+                        false,
+                        format!(
+                            "Available: {}",
+                            show_btc_amount(balance.available)
+                        ),
+                    );
+                }
             }
             Some(None) => {
                 ui.monospace_selectable_singleline(

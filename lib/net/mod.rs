@@ -18,6 +18,7 @@ use tracing::instrument;
 
 use crate::{
     archive::Archive,
+    mempool::MemPool,
     state::State,
     types::{
         AuthorizedTransaction, Network, VERSION, Version,
@@ -289,6 +290,7 @@ pub struct Net {
     pub server: Endpoint,
     archive: Archive,
     magic_bytes: peer_message::MagicBytes,
+    mempool: MemPool,
     state: State,
     active_peers: Arc<RwLock<HashMap<SocketAddr, PeerConnectionHandle>>>,
     // None indicates that the stream has ended
@@ -400,6 +402,7 @@ impl Net {
             archive: self.archive.clone(),
             magic_bytes: self.magic_bytes,
             resolved_address: resolved_addr,
+            mempool: self.mempool.clone(),
             state: self.state.clone(),
         };
 
@@ -457,6 +460,7 @@ impl Net {
         archive: Archive,
         magic_bytes_override: Option<peer_message::MagicBytes>,
         network: Network,
+        mempool: MemPool,
         state: State,
         bind_addr: SocketAddr,
         add_peers: HashSet<PeerAddress>,
@@ -512,6 +516,7 @@ impl Net {
             server,
             archive,
             magic_bytes,
+            mempool,
             state,
             active_peers,
             peer_info_tx,
@@ -597,6 +602,7 @@ impl Net {
             archive: self.archive.clone(),
             magic_bytes: self.magic_bytes,
             resolved_address: addr.into(),
+            mempool: self.mempool.clone(),
             state: self.state.clone(),
         };
         let (connection_handle, info_rx) =

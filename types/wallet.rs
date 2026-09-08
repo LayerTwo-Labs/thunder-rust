@@ -13,4 +13,13 @@ pub struct Balance {
     )]
     #[schema(value_type = u64)]
     pub available: Amount,
+    /// Value in outputs that the mempool holds and no block carries yet. It
+    /// always counts toward `total`. It counts toward `available` only when
+    /// `--spend-zero-conf-change` lets the wallet take it.
+    #[serde(
+        rename = "unconfirmed_sats",
+        with = "bitcoin::amount::serde::as_sat"
+    )]
+    #[schema(value_type = u64)]
+    pub unconfirmed: Amount,
 }

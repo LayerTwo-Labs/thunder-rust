@@ -53,6 +53,12 @@ impl TxBuilder {
             ui.monospace("outpoint");
             ui.monospace("value");
             ui.end_row();
+            // A mempool transaction may spend a chosen coin between two
+            // frames, which drops it from the spendable set. Drop it here, so
+            // the grid, the value and the transaction all agree.
+            self.base_tx
+                .inputs
+                .retain(|(outpoint, _)| utxos_read.contains_key(outpoint));
             let mut remove = None;
             for (vout, (outpoint, _)) in self.base_tx.inputs.iter().enumerate()
             {
