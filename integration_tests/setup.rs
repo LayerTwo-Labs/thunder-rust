@@ -5,6 +5,7 @@ use std::{
 };
 
 use bip300301_enforcer_integration_tests::{
+    mine,
     setup::{PostSetup as EnforcerPostSetup, Sidechain},
     util::AbortOnDrop,
 };
@@ -97,12 +98,18 @@ impl PostSetup {
         &self,
         post_setup: &mut EnforcerPostSetup,
     ) -> Result<(), BmmError> {
-        use bip300301_enforcer_integration_tests::mine::mine;
+        use bip300301_enforcer_lib::proto::mainchain::{
+            AckAllProposalsPolicy, WithdrawalBundlePolicy,
+        };
+        let mining_policy = mine::MiningPolicy {
+            ack: AckAllProposalsPolicy::ACK_ALL_PROPOSALS_POLICY_ALL,
+            bundle: WithdrawalBundlePolicy::WITHDRAWAL_BUNDLE_POLICY_ALL,
+        };
         let ((), ()) = future::try_join(
             self.rpc_client.mine(None).map_err(BmmError::from),
             async {
                 sleep(Duration::from_secs(1)).await;
-                mine::<Self>(post_setup, 1, Some(true))
+                mine::mine::<Self>(post_setup, 1, mining_policy)
                     .await
                     .map_err(BmmError::from)
             },
