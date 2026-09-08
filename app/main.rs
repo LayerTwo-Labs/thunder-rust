@@ -1,4 +1,4 @@
-use std::{path::Path, sync::Arc};
+use std::{net::SocketAddr, path::Path, sync::Arc};
 
 use clap::Parser as _;
 use mimalloc::MiMalloc;
@@ -174,8 +174,13 @@ fn set_tracing_subscriber(
     Ok((line_buffer, rolling_log_guard))
 }
 
+#[derive(Debug)]
+struct EguiAppConfig {
+    rpc_addr: SocketAddr,
+}
+
 fn run_egui_app(
-    config: &crate::cli::Config,
+    config: EguiAppConfig,
     line_buffer: LineBuffer,
     app: Result<crate::app::App, crate::app::Error>,
 ) -> Result<(), eframe::Error> {
@@ -213,7 +218,17 @@ fn main() -> anyhow::Result<()> {
 
     let (app_tx, app_rx) = oneshot::channel::<anyhow::Error>();
 
-    let app = app::App::new(&config).inspect(|app| {
+    let app_config = app::Config {
+        add_peers: config.add_peers,
+        datadir: config.datadir,
+        mainchain_grpc_url: config.mainchain_grpc_url,
+        mnemonic_seed_phrase_path: config.mnemonic_seed_phrase_path,
+        net_addr: config.net_addr,
+        network: config.network,
+        network_magic_override: config.network_magic_override,
+        server_names: config.server_names,
+    };
+    let app = app::App::new(app_config).inspect(|app| {
         // spawn rpc server
         app.runtime.spawn({
             let app = app.clone();
@@ -242,9 +257,12 @@ fn main() -> anyhow::Result<()> {
                 Arc::new(rt)
             }
         };
+        let egui_app_config = EguiAppConfig {
+            rpc_addr: config.rpc_addr,
+        };
         let _rt_guard = rt.enter();
         // For GUI mode we want the GUI to start, even if the app fails to start.
-        return run_egui_app(&config, line_buffer, app)
+        return run_egui_app(egui_app_config, line_buffer, app)
             .map_err(|e| anyhow::anyhow!("failed to run egui app: {e:#}"));
     }
 

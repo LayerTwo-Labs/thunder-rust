@@ -121,9 +121,12 @@ fn configure_client() -> Result<ClientConfig, error::ConfigureClient> {
 }
 
 /// Returns default server configuration along with its certificate.
-fn configure_server() -> Result<(ServerConfig, Vec<u8>), Error> {
-    let cert_key =
-        rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
+fn configure_server(
+    mut server_names: HashSet<String>,
+) -> Result<(ServerConfig, Vec<u8>), Error> {
+    server_names.insert("localhost".to_owned());
+    let server_names = Vec::from_iter(server_names);
+    let cert_key = rcgen::generate_simple_self_signed(server_names)?;
     let keypair_der = cert_key.key_pair.serialize_der();
     let priv_key = rustls::pki_types::PrivateKeyDer::Pkcs8(keypair_der.into());
     let cert_der = cert_key.cert.der().to_vec();
@@ -146,11 +149,10 @@ fn configure_server() -> Result<(ServerConfig, Vec<u8>), Error> {
 /// - server certificate serialized into DER format
 pub fn make_server_endpoint(
     bind_addr: SocketAddr,
+    server_names: HashSet<String>,
 ) -> Result<(Endpoint, Vec<u8>), Error> {
-    let (server_config, server_cert) = configure_server()?;
-
+    let (server_config, server_cert) = configure_server(server_names)?;
     tracing::info!("creating server endpoint: binding to {bind_addr}",);
-
     let mut endpoint =
         Endpoint::server(server_config, bind_addr).map_err(Error::Quinn)?;
     let client_cfg = configure_client()?;
@@ -394,7 +396,13 @@ impl Net {
         if addr.ip().is_unspecified() {
             return Err(error::ConnectPeer::UnspecfiedPeerIP(addr.ip()));
         }
-        let connecting = self.server.connect(addr, "localhost")?;
+        let connecting = {
+            let server_name = match resolved_addr.host() {
+                url::Host::Domain(domain) => domain.as_str(),
+                url::Host::Ipv4(_) | url::Host::Ipv6(_) => "localhost",
+            };
+            self.server.connect(addr, server_name)?
+        };
         let connection_ctxt = PeerConnectionCtxt {
             env,
             archive: self.archive.clone(),
@@ -461,8 +469,9 @@ impl Net {
         state: State,
         bind_addr: SocketAddr,
         add_peers: HashSet<PeerAddress>,
+        server_names: HashSet<String>,
     ) -> Result<(Self, PeerInfoRx, DialKnownPeersHandle), Error> {
-        let (server, _) = make_server_endpoint(bind_addr)?;
+        let (server, _) = make_server_endpoint(bind_addr, server_names)?;
         let active_peers = Arc::new(RwLock::new(HashMap::new()));
         let mut rwtxn = env.write_txn()?;
         let known_peers =

@@ -2,7 +2,7 @@ use std::{
     borrow::BorrowMut,
     collections::{HashMap, HashSet},
     net::SocketAddr,
-    path::Path,
+    path::PathBuf,
     sync::Arc,
 };
 
@@ -36,13 +36,14 @@ use mainchain_task::MainchainTaskHandle;
 mod net_task;
 use net_task::NetTaskHandle;
 
-#[derive(Clone, Debug)]
-pub struct Config<'a> {
-    pub datadir: &'a Path,
+#[derive(Debug)]
+pub struct Config {
+    pub datadir: PathBuf,
     pub bind_addr: SocketAddr,
     pub magic_bytes_override: Option<crate::net::peer_message::MagicBytes>,
     pub network: Network,
-    pub peers: &'a [PeerAddress],
+    pub add_peers: HashSet<PeerAddress>,
+    pub server_names: HashSet<String>,
 }
 
 /// Handles for spawned tasks / task sets
@@ -71,7 +72,7 @@ where
     MainchainTransport: proto::Transport,
 {
     pub fn new(
-        config: Config<'_>,
+        config: Config,
         cusf_mainchain: mainchain::ValidatorClient<MainchainTransport>,
         cusf_mainchain_wallet: Option<
             mainchain::WalletClient<MainchainTransport>,
@@ -90,7 +91,8 @@ where
             bind_addr,
             magic_bytes_override,
             network,
-            peers,
+            add_peers,
+            server_names,
         } = config;
         let env_path = datadir.join("data.mdb");
         // let _ = std::fs::remove_dir_all(&env_path);
@@ -148,7 +150,8 @@ where
             network,
             state.clone(),
             bind_addr,
-            peers.iter().cloned().collect(),
+            add_peers,
+            server_names,
         )?;
         let net_task_handle = NetTaskHandle::new(
             runtime,
