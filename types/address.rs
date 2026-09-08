@@ -6,8 +6,19 @@ use utoipa::ToSchema;
 
 use crate::{THIS_SIDECHAIN, error::ParseAddress as ParseAddressError};
 
+// `Ord` sorts by the 20 bytes, so a `BTreeMap` of transfer destinations
+// gives a fixed output order.
 #[derive(
-    BorshDeserialize, BorshSerialize, Clone, Copy, Eq, Hash, PartialEq, ToSchema,
+    BorshDeserialize,
+    BorshSerialize,
+    Clone,
+    Copy,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    ToSchema,
 )]
 #[schema(value_type = String)]
 pub struct Address(pub [u8; 20]);

@@ -8,6 +8,7 @@ mod block_template;
 mod ibd;
 mod integration_test;
 mod setup;
+mod transfer_many;
 mod unknown_withdrawal;
 mod util;
 
