@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     ops::Deref,
     path::PathBuf,
@@ -103,6 +104,11 @@ fn parse_network_magic(s: &str) -> Result<[u8; 4], const_hex::FromHexError> {
 #[derive(Clone, Debug, Parser)]
 #[command(author, version, about, long_about = None)]
 pub(super) struct Cli {
+    /// Additional peers to dial on startup, as `host:port`. May be given
+    /// more than once, and is dialed in addition to the network's built-in
+    /// seed peers.
+    #[arg(long = "add-peer")]
+    add_peers: Vec<thunder::types::net::PeerAddress>,
     /// Data directory for storing blockchain and wallet data
     #[command(flatten)]
     datadir: DatadirArg,
@@ -141,21 +147,21 @@ pub(super) struct Cli {
     /// Manually provide the network magic bytes
     #[arg(long, value_parser = parse_network_magic)]
     network_magic: Option<[u8; 4]>,
-    /// Additional peers to dial on startup, as `host:port`. May be given
-    /// more than once, and is dialed in addition to the network's built-in
-    /// seed peers.
-    #[arg(long = "add-peer")]
-    peers: Vec<thunder::types::net::PeerAddress>,
     /// Socket address to host the private RPC server
     #[arg(default_value_t = DEFAULT_RPC_ADDR, long, short)]
     private_rpc_addr: SocketAddr,
     /// Socket address to host the RPC server
     #[arg(default_value_t = DEFAULT_RPC_ADDR, long, short)]
     rpc_addr: SocketAddr,
+    /// Host name used by the p2p server.
+    /// This option can be specified multiple times.
+    #[arg(long = "server-name")]
+    server_names: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Config {
+    pub add_peers: HashSet<thunder::types::net::PeerAddress>,
     pub datadir: PathBuf,
     pub headless: bool,
     /// If None, logging to file should be disabled.
@@ -167,9 +173,9 @@ pub struct Config {
     pub net_addr: SocketAddr,
     pub network: Network,
     pub network_magic_override: Option<thunder::net::peer_message::MagicBytes>,
-    pub peers: Vec<thunder::types::net::PeerAddress>,
     pub private_rpc_addr: SocketAddr,
     pub rpc_addr: SocketAddr,
+    pub server_names: HashSet<String>,
 }
 
 impl Cli {
@@ -196,6 +202,7 @@ impl Cli {
             saturating_pred_level(self.log_level)
         };
         Ok(Config {
+            add_peers: HashSet::from_iter(self.add_peers),
             datadir: self.datadir.0,
             headless: self.headless,
             log_dir,
@@ -206,9 +213,9 @@ impl Cli {
             net_addr: self.net_addr,
             network: self.network,
             network_magic_override: self.network_magic,
-            peers: self.peers,
             private_rpc_addr: self.private_rpc_addr,
             rpc_addr: self.rpc_addr,
+            server_names: HashSet::from_iter(self.server_names),
         })
     }
 }
