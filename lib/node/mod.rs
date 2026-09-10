@@ -61,8 +61,8 @@ struct TaskHandles {
 pub struct Node<MainchainTransport = Channel> {
     archive: Archive,
     cusf_mainchain: mainchain::ValidatorClient<MainchainTransport>,
-    cusf_mainchain_wallet:
-        Option<Arc<Mutex<mainchain::WalletClient<MainchainTransport>>>>,
+    cusf_mainchain_block_producer:
+        Option<Arc<Mutex<mainchain::BlockProducerClient<MainchainTransport>>>>,
     env: sneed::Env<heed::WithoutTls>,
     mempool: MemPool,
     net: Net,
@@ -77,8 +77,8 @@ where
     pub fn new(
         config: Config,
         cusf_mainchain: mainchain::ValidatorClient<MainchainTransport>,
-        cusf_mainchain_wallet: Option<
-            mainchain::WalletClient<MainchainTransport>,
+        cusf_mainchain_block_producer: Option<
+            mainchain::BlockProducerClient<MainchainTransport>,
         >,
         runtime: &tokio::runtime::Runtime,
     ) -> Result<Self, Error>
@@ -172,12 +172,12 @@ where
             mainchain: mainchain_task_handle,
             net: net_task_handle,
         };
-        let cusf_mainchain_wallet =
-            cusf_mainchain_wallet.map(|wallet| Arc::new(Mutex::new(wallet)));
+        let cusf_mainchain_block_producer = cusf_mainchain_block_producer
+            .map(|block_producer| Arc::new(Mutex::new(block_producer)));
         Ok(Self {
             archive,
             cusf_mainchain,
-            cusf_mainchain_wallet,
+            cusf_mainchain_block_producer,
             env,
             mempool,
             net,
@@ -729,19 +729,31 @@ where
         };
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         let bundle = self.state.try_get_pending_withdrawal_bundle(&rotxn)?;
-        if let Some((bundle, _)) = bundle
-            && let Some(cusf_mainchain_wallet) =
-                self.cusf_mainchain_wallet.as_ref()
-        {
+        if let Some((bundle, _)) = bundle {
             let m6id = bundle.compute_m6id();
+            if let Some(cusf_mainchain_block_producer) =
+                self.cusf_mainchain_block_producer.as_ref()
             {
-                let mut cusf_mainchain_wallet_lock =
-                    cusf_mainchain_wallet.lock().await;
-                let () = cusf_mainchain_wallet_lock
-                    .broadcast_withdrawal_bundle(bundle.tx())
-                    .await?;
+                {
+                    let mut cusf_mainchain_block_producer_lock =
+                        cusf_mainchain_block_producer.lock().await;
+                    let () = cusf_mainchain_block_producer_lock
+                        .propose_withdrawal_bundle(bundle.tx())
+                        .await?;
+                }
+                tracing::trace!(%m6id, "Proposed withdrawal bundle");
+            } else {
+                // Without the mainchain's block producer service there is
+                // nowhere to send the bundle, and it stays pending for every
+                // block that follows. Say so, or the withdrawal simply never
+                // completes and nothing explains why.
+                tracing::warn!(
+                    %m6id,
+                    "Withdrawal bundle is pending, but the mainchain node \
+                     does not serve BlockProducerService, so the bundle \
+                     cannot be proposed and the withdrawal cannot complete",
+                );
             }
-            tracing::trace!(%m6id, "Broadcast withdrawal bundle");
         }
         Ok(true)
     }
