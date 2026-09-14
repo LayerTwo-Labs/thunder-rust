@@ -14,7 +14,8 @@ use thunder::{
     miner::{self, Miner},
     node::{self, Node},
     types::{
-        self, Address, FilledTransaction, OutPoint, Output, Transaction,
+        self, Address, Coinbase, FilledTransaction, OutPoint, Output,
+        Transaction,
         proto::mainchain::{
             self,
             generated::{
@@ -353,9 +354,9 @@ impl App {
             utxos,
             task: Arc::new(task),
             transaction: Arc::new(RwLock::new(Transaction {
-                inputs: vec![],
+                inputs: vec![].into(),
                 proof: Proof::default(),
-                outputs: vec![],
+                outputs: vec![].into(),
             })),
             runtime: Arc::new(runtime),
             local_pool,
@@ -486,12 +487,18 @@ impl App {
             const NUM_TRANSACTIONS: usize = 1000;
             let (txs, tx_fees) =
                 self.node.get_transactions(NUM_TRANSACTIONS)?;
-            let coinbase = match tx_fees {
-                bitcoin::Amount::ZERO => Vec::new(),
-                _ => vec![types::Output {
-                    address: self.wallet.get_new_address()?,
-                    content: types::OutputContent::Value(tx_fees),
-                }],
+            let coinbase = {
+                let outputs = match tx_fees {
+                    bitcoin::Amount::ZERO => Vec::new(),
+                    _ => vec![types::Output {
+                        address: self.wallet.get_new_address()?,
+                        content: types::OutputContent::Value(tx_fees),
+                    }],
+                };
+                Coinbase {
+                    memo: Vec::new(),
+                    outputs: outputs.into(),
+                }
             };
             let (merkle_root, roots) = {
                 let mut accumulator = if let Some(tip_hash) = tip_hash {
@@ -539,7 +546,7 @@ impl App {
             });
             (bribe, header, body, tx_fees)
         } else {
-            let coinbase = Vec::new();
+            let coinbase = Default::default();
             let (merkle_root, roots) = {
                 let mut accumulator =
                     if let Some(prev_side_hash) = prev_side_hash {

@@ -16,7 +16,7 @@ pub use address::Address;
 pub mod authorization;
 pub use authorization::Authorization;
 pub mod block;
-pub use block::{Block, Body, Header};
+pub use block::{Block, Body, Coinbase, Header};
 pub mod error;
 pub use error::{
     AmountOverflow as AmountOverflowError,

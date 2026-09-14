@@ -7,68 +7,38 @@ use utoipa::ToSchema;
 
 use crate::{
     authorization::Authorization,
+    block::coinbase::Coinbase,
     error,
     hashes::{self, Hash, MerkleRoot, UtreexoNodeHash},
     transaction::{
         AuthorizedTransaction, FilledTransaction, GetValue, OutPoint, Output,
         PointedOutput, Transaction,
     },
+    util,
 };
 
 /// Hash to get a [`CmbtNode`] inner commitment for a leaf value
-#[derive(Debug)]
-struct CbmtLeafPreCommitment<'a> {
+#[derive(BorshSerialize, Debug)]
+struct CbmtLeafPreCommitment {
+    #[borsh(serialize_with = "util::borsh::serialize::bitcoin_amount")]
     fee: bitcoin::Amount,
     /// Sum of canonical tx sizes for child txs
     canonical_size: u64,
-    tx: &'a Transaction,
-}
-
-impl<'a> BorshSerialize for CbmtLeafPreCommitment<'a> {
-    fn serialize<W: std::io::Write>(
-        &self,
-        writer: &mut W,
-    ) -> std::io::Result<()> {
-        let Self {
-            fee,
-            canonical_size,
-            tx,
-        } = self;
-        BorshSerialize::serialize(&fee.to_sat(), writer)?;
-        BorshSerialize::serialize(canonical_size, writer)?;
-        BorshSerialize::serialize(tx, writer)
-    }
+    tx_merkle_root: MerkleRoot,
 }
 
 /// Hash to get a [`CmbtNode`] inner commitment for a non-leaf value
-#[derive(Debug)]
+#[derive(BorshSerialize, Debug)]
 struct CbmtNodePreCommitment {
     /// left child inner commitment
     left_commitment: Hash,
     /// Sum of child tx fees
+    #[borsh(serialize_with = "util::borsh::serialize::bitcoin_amount")]
     fees: bitcoin::Amount,
     /// Sum of canonical sizes of child txs
     canonical_size: u64,
     /// right child inner commitment
     right_commitment: Hash,
-}
-
-impl BorshSerialize for CbmtNodePreCommitment {
-    fn serialize<W: std::io::Write>(
-        &self,
-        writer: &mut W,
-    ) -> std::io::Result<()> {
-        let Self {
-            left_commitment,
-            fees,
-            canonical_size,
-            right_commitment,
-        } = self;
-        BorshSerialize::serialize(left_commitment, writer)?;
-        BorshSerialize::serialize(&fees.to_sat(), writer)?;
-        BorshSerialize::serialize(canonical_size, writer)?;
-        BorshSerialize::serialize(right_commitment, writer)
-    }
 }
 
 // Internal node of a CBMT
@@ -131,7 +101,7 @@ type CbmtWithFeeTotal = merkle_cbt::CBMT<CbmtNode, MergeFeeSizeTotal>;
 
 #[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct Body {
-    pub coinbase: Vec<Output>,
+    pub coinbase: Coinbase,
     pub transactions: Vec<Transaction>,
     pub authorizations: Vec<Authorization>,
 }
@@ -139,7 +109,7 @@ pub struct Body {
 impl Body {
     pub fn new(
         authorized_transactions: Vec<AuthorizedTransaction>,
-        coinbase: Vec<Output>,
+        coinbase: Coinbase,
     ) -> Self {
         let mut authorizations = Vec::with_capacity(
             authorized_transactions
@@ -179,61 +149,74 @@ impl Body {
     }
 
     pub fn compute_merkle_root<FilledTx>(
-        coinbase: &[Output],
+        coinbase: &Coinbase,
         txs: &[FilledTx],
     ) -> Result<MerkleRoot, error::ComputeMerkleRoot>
     where
         FilledTx: Borrow<FilledTransaction>,
     {
         let CbmtNode {
-            commitment: txs_root,
+            commitment: txs_commitment,
             ..
         } = {
             let n_txs = txs.len();
-            let leaves: Vec<_> =
-                txs.iter()
-                    .enumerate()
-                    .map(|(idx, tx)| {
-                        let tx = tx.borrow();
-                        let fees = tx.get_fee().map_err(|err| {
-                            error::compute_merkle_root::Inner::TxFee {
+            let leaves: Vec<_> = txs
+                .iter()
+                .enumerate()
+                .map(|(idx, tx)| {
+                    let tx = tx.borrow();
+                    let fees = tx.get_fee().map_err(|err| {
+                        error::compute_merkle_root::Inner::TxFee {
+                            txid: tx.transaction.txid(),
+                            source: err,
+                        }
+                    })?;
+                    let canonical_size =
+                        tx.transaction.canonical_size().map_err(|err| {
+                            error::compute_merkle_root::Inner::TxCanonicalSize {
                                 txid: tx.transaction.txid(),
                                 source: err,
                             }
                         })?;
-                        let canonical_size = tx.transaction.canonical_size()
-                        .map_err(|err|
-                            error::compute_merkle_root::Inner::TxCanonicalSize {
-                                txid: tx.transaction.txid(),
-                                source: err,
-                            })?;
-                        let leaf_pre_commitment = CbmtLeafPreCommitment {
-                            fee: fees,
-                            canonical_size,
-                            tx: &tx.transaction,
-                        };
-                        Ok::<_, error::ComputeMerkleRoot>(CbmtNode {
-                            commitment: hashes::hash(&leaf_pre_commitment),
-                            fees,
-                            canonical_size,
-                            // see https://github.com/nervosnetwork/merkle-tree/blob/5d1898263e7167560fdaa62f09e8d52991a1c712/README.md#tree-struct
-                            index: (idx + n_txs) - 1,
-                        })
+                    let tx_merkle_root = tx
+                        .transaction
+                        .compute_merkle_root()
+                        .map_err(|err| {
+                        error::compute_merkle_root::Inner::TxMerkleRoot {
+                            txid: tx.transaction.txid(),
+                            source: err,
+                        }
+                    })?;
+                    let leaf_pre_commitment = CbmtLeafPreCommitment {
+                        fee: fees,
+                        canonical_size,
+                        tx_merkle_root,
+                    };
+                    Ok::<_, error::ComputeMerkleRoot>(CbmtNode {
+                        commitment: hashes::hash(&leaf_pre_commitment),
+                        fees,
+                        canonical_size,
+                        // see https://github.com/nervosnetwork/merkle-tree/blob/5d1898263e7167560fdaa62f09e8d52991a1c712/README.md#tree-struct
+                        index: (idx + n_txs) - 1,
                     })
-                    .collect::<Result<_, _>>()?;
+                })
+                .collect::<Result<_, _>>()?;
             CbmtWithFeeTotal::build_merkle_root(leaves.as_slice())
         };
-        // FIXME: Compute actual merkle root instead of just a hash.
-        let coinbase_root = hashes::hash(&coinbase);
-        // TODO: Should this include `total_fees`?
-        let root =
-            hashes::hash_with_scratch_buffer(&(coinbase_root, txs_root)).into();
+        let coinbase_commitment = coinbase
+            .compute_merkle_root()
+            .map_err(error::compute_merkle_root::Inner::CoinbaseMerkleRoot)?;
+        let root = hashes::hash_with_scratch_buffer(&(
+            coinbase_commitment,
+            txs_commitment,
+        ))
+        .into();
         Ok(root)
     }
 
     // Modifies the memforest, without checking tx proofs
     pub fn modify_memforest<FilledTx>(
-        coinbase: &[Output],
+        coinbase: &Coinbase,
         txs: &[FilledTx],
         memforest: &mut MemForest<UtreexoNodeHash>,
     ) -> Result<MerkleRoot, error::ModifyMemForest>
@@ -245,7 +228,7 @@ impl Body {
         // Accumulator leaves to delete
         let mut accumulator_del = Vec::<UtreexoNodeHash>::new();
         let merkle_root = Self::compute_merkle_root(coinbase, txs)?;
-        for (vout, output) in coinbase.iter().enumerate() {
+        for (vout, output) in coinbase.outputs.iter().enumerate() {
             let outpoint = OutPoint::Coinbase {
                 merkle_root,
                 vout: vout as u32,
@@ -289,12 +272,12 @@ impl Body {
     }
 
     pub fn get_outputs(
-        coinbase: &[Output],
+        coinbase: &Coinbase,
         txs: &[FilledTransaction],
     ) -> Result<HashMap<OutPoint, Output>, error::ComputeMerkleRoot> {
         let mut res = HashMap::new();
         let merkle_root = Self::compute_merkle_root(coinbase, txs)?;
-        for (vout, output) in coinbase.iter().enumerate() {
+        for (vout, output) in coinbase.outputs.iter().enumerate() {
             let vout = vout as u32;
             let outpoint = OutPoint::Coinbase { merkle_root, vout };
             res.insert(outpoint, output.clone());
@@ -315,6 +298,7 @@ impl Body {
     ) -> Result<bitcoin::Amount, error::AmountOverflow> {
         use bitcoin::amount::CheckedSum as _;
         self.coinbase
+            .outputs
             .iter()
             .map(|output| output.get_value())
             .checked_sum()

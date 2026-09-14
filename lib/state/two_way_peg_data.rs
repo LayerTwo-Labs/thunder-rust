@@ -1138,8 +1138,8 @@ mod test {
             },
         },
         types::{
-            AccumulatorDiff, Address, InPoint, M6id, OutPoint, OutPointKey,
-            Output, OutputContent, Txid, WithdrawalBundle,
+            AccumulatorDiff, Address, Coinbase, InPoint, M6id, OutPoint,
+            OutPointKey, Output, OutputContent, Txid, WithdrawalBundle,
             WithdrawalBundleEvent, WithdrawalBundleEventStatus,
             WithdrawalBundleStatus,
             proto::mainchain::{BlockEvent, BlockInfo, Deposit, TwoWayPegData},
@@ -1381,12 +1381,13 @@ mod test {
 
         let (_temp_dir, env, state) = fresh_state("deposit_reorg_round_trips")?;
         let empty_body = Body {
-            coinbase: Vec::new(),
+            coinbase: Coinbase::default(),
             transactions: Vec::new(),
             authorizations: Vec::new(),
         };
         let no_txs: &[FilledTransaction] = &[];
-        let merkle_root = Body::compute_merkle_root(&[], no_txs)?;
+        let merkle_root =
+            Body::compute_merkle_root(&empty_body.coinbase, no_txs)?;
         let main0 = bitcoin::BlockHash::from_byte_array([10; 32]);
         let main1 = bitcoin::BlockHash::from_byte_array([11; 32]);
 

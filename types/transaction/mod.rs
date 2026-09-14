@@ -10,10 +10,12 @@ use crate::{
     address::Address,
     authorization::Authorization,
     error,
-    hashes::{Hash, M6id, Txid, hash_with_scratch_buffer},
+    hashes::{Hash, M6id, MerkleRoot, Txid, hash_with_scratch_buffer},
     schema,
 };
 
+pub mod inputs;
+pub use inputs::Inputs;
 pub mod outpoint;
 pub use outpoint::{OutPoint, OutPointKey};
 pub mod output;
@@ -21,6 +23,8 @@ pub use output::{
     Content as OutputContent, Output, Pointed as PointedOutput,
     PointedOutputRef,
 };
+pub mod outputs;
+pub use outputs::Outputs;
 
 pub trait GetAddress {
     fn get_address(&self) -> Address;
@@ -52,12 +56,12 @@ pub enum InPoint {
 )]
 pub struct Transaction {
     #[schema(value_type = Vec<(OutPoint, String)>)]
-    pub inputs: Vec<(OutPoint, Hash)>,
+    pub inputs: Inputs<(OutPoint, Hash)>,
     /// Utreexo proof for inputs
     #[borsh(skip)]
     #[schema(value_type = schema::UtreexoProof)]
     pub proof: UtreexoProof,
-    pub outputs: Vec<Output>,
+    pub outputs: Outputs,
 }
 
 impl Transaction {
@@ -76,6 +80,21 @@ impl Transaction {
     #[inline(always)]
     pub fn canonical_size(&self) -> borsh::io::Result<u64> {
         borsh::object_length(self).map(|size| size as u64)
+    }
+
+    pub(crate) fn compute_merkle_root(
+        &self,
+    ) -> Result<MerkleRoot, outputs::error::ComputeMerkleRoot> {
+        let Self {
+            inputs,
+            proof: _,
+            outputs,
+        } = self;
+        let inputs_commitment = inputs.compute_merkle_root();
+        let outputs_commitment = outputs.compute_merkle_root()?;
+        let res =
+            hash_with_scratch_buffer(&(inputs_commitment, outputs_commitment));
+        Ok(res.into())
     }
 }
 
@@ -166,7 +185,8 @@ mod test {
     use crate::{
         address::Address,
         transaction::{
-            FilledTransaction, GetValue, Output, OutputContent, Transaction,
+            FilledTransaction, GetValue, Output, OutputContent, Outputs,
+            Transaction,
         },
     };
 
@@ -195,7 +215,7 @@ mod test {
         };
         let withdrawal_tx = |funding| FilledTransaction {
             transaction: Transaction {
-                outputs: vec![withdrawal.clone()],
+                outputs: Outputs(vec![withdrawal.clone()]),
                 ..Default::default()
             },
             spent_utxos: vec![value_output(funding)],
