@@ -35,9 +35,9 @@ pub mod schema;
 pub mod state;
 pub mod transaction;
 pub use transaction::{
-    Authorized, AuthorizedTransaction, Content as OutputContent,
-    FilledTransaction, GetAddress, GetValue, InPoint, OutPoint, OutPointKey,
-    Output, Pointed, PointedOutput, PointedOutputRef, SpentOutput, Transaction,
+    Authorized, AuthorizedTransaction, FilledTransaction, GetAddress, GetValue,
+    InPoint, OutPoint, OutPointKey, Output, OutputContent, PointedOutput,
+    PointedOutputRef, SpentOutput, Transaction,
 };
 mod util;
 pub mod wallet;
