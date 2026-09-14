@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 #[error("Bitcoin amount overflow")]
 pub struct AmountOverflow;
 
@@ -66,6 +66,10 @@ pub mod compute_merkle_root {
 
     #[derive(Debug, Error)]
     pub(crate) enum Inner {
+        #[error("failed to compute merkle root for coinbase tx")]
+        CoinbaseMerkleRoot(
+            #[source] crate::transaction::outputs::error::ComputeMerkleRoot,
+        ),
         #[error("failed to compute canonical size for tx ({txid})")]
         TxCanonicalSize {
             txid: Txid,
@@ -73,12 +77,23 @@ pub mod compute_merkle_root {
         },
         #[error("failed to compute fee for tx ({txid})")]
         TxFee { txid: Txid, source: ComputeFee },
+        #[error("failed to compute merkle root for tx ({txid})")]
+        TxMerkleRoot {
+            txid: Txid,
+            source: crate::transaction::outputs::error::ComputeMerkleRoot,
+        },
     }
 
     #[derive(Debug, Error)]
     #[error("failed to compute merkle root")]
     #[repr(transparent)]
-    pub struct Error(#[from] Inner);
+    pub struct Error(Box<Inner>);
+
+    impl From<Inner> for Error {
+        fn from(err: Inner) -> Self {
+            Self(Box::new(err))
+        }
+    }
 }
 pub use compute_merkle_root::Error as ComputeMerkleRoot;
 

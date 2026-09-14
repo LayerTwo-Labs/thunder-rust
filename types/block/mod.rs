@@ -9,6 +9,8 @@ use crate::{
 
 pub mod body;
 pub use body::Body;
+pub mod coinbase;
+pub use coinbase::Coinbase;
 
 #[derive(
     BorshSerialize,

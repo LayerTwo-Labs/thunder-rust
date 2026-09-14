@@ -57,7 +57,7 @@ impl BlockExplorer {
                 let body_size =
                     bincode::serialize(&body).unwrap_or(vec![]).len();
                 let coinbase_value: Amount =
-                    body.coinbase.iter().map(GetValue::get_value).sum();
+                    body.coinbase.outputs.iter().map(GetValue::get_value).sum();
                 let num_transactions = body.transactions.len();
                 let body_size = if let Ok(body_size) =
                     SpecificSize::new(body_size as f64, Byte)

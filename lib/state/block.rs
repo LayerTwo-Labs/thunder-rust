@@ -99,7 +99,7 @@ pub fn prevalidate(
         filled_transactions.push(filled_tx);
     }
     let computed_merkle_root = Body::compute_merkle_root(
-        body.coinbase.as_slice(),
+        &body.coinbase,
         filled_transactions.as_slice(),
     )?;
     if computed_merkle_root != header.merkle_root {
@@ -118,9 +118,9 @@ pub fn prevalidate(
     }
     let mut coinbase_value = bitcoin::Amount::ZERO;
     let mut accumulator_diff = AccumulatorDiff::with_capacity(
-        body.coinbase.len() + accumulator_diff_txs.len(),
+        body.coinbase.outputs.len() + accumulator_diff_txs.len(),
     );
-    for (vout, output) in body.coinbase.iter().enumerate() {
+    for (vout, output) in body.coinbase.outputs.iter().enumerate() {
         coinbase_value = coinbase_value
             .checked_add(output.get_value())
             .ok_or(AmountOverflowError)?;
@@ -199,7 +199,7 @@ pub fn connect_prevalidated(
     }
 
     // Apply UTXO set changes
-    for (vout, output) in body.coinbase.iter().enumerate() {
+    for (vout, output) in body.coinbase.outputs.iter().enumerate() {
         let outpoint = OutPoint::Coinbase {
             merkle_root: pre.computed_merkle_root,
             vout: vout as u32,
@@ -309,7 +309,7 @@ pub fn validate(
         .map(|t| state.fill_transaction(rotxn, t))
         .collect::<Result<_, _>>()?;
     let merkle_root = Body::compute_merkle_root(
-        body.coinbase.as_slice(),
+        &body.coinbase,
         filled_transactions.as_slice(),
     )?;
     if merkle_root != header.merkle_root {
@@ -321,7 +321,7 @@ pub fn validate(
     }
     let mut accumulator_diff = AccumulatorDiff::default();
     let mut coinbase_value = bitcoin::Amount::ZERO;
-    for (vout, output) in body.coinbase.iter().enumerate() {
+    for (vout, output) in body.coinbase.outputs.iter().enumerate() {
         coinbase_value = coinbase_value
             .checked_add(output.get_value())
             .ok_or(AmountOverflowError)?;
@@ -425,7 +425,7 @@ pub fn connect(
         .try_get(rwtxn, &())?
         .unwrap_or_default();
     let mut accumulator_diff = AccumulatorDiff::default();
-    for (vout, output) in body.coinbase.iter().enumerate() {
+    for (vout, output) in body.coinbase.outputs.iter().enumerate() {
         let outpoint = OutPoint::Coinbase {
             merkle_root: header.merkle_root,
             vout: vout as u32,
@@ -487,10 +487,8 @@ pub fn connect(
         };
         filled_txs.push(filled_tx);
     }
-    let merkle_root = Body::compute_merkle_root(
-        body.coinbase.as_slice(),
-        filled_txs.as_slice(),
-    )?;
+    let merkle_root =
+        Body::compute_merkle_root(&body.coinbase, filled_txs.as_slice())?;
     if merkle_root != header.merkle_root {
         let err = Error::InvalidBody {
             expected: header.merkle_root,
@@ -575,6 +573,7 @@ pub fn disconnect_tip(
     })?;
     // delete coinbase UTXOs, last-to-first
     body.coinbase
+        .outputs
         .iter()
         .enumerate()
         .rev()
@@ -625,6 +624,8 @@ pub fn disconnect_tip(
 
 #[cfg(test)]
 mod test {
+    use thunder_types::Coinbase;
+
     use crate::state::test::{fresh_state, value_output};
 
     #[test]
@@ -710,15 +711,15 @@ mod test {
         let proof_for_b = pre_accumulator.prove(&[leaf_b])?;
         let output_c = value_output(attacker_addr, 9_000);
         let tx = Transaction {
-            inputs: vec![(outpoint_a, hash_b)],
+            inputs: vec![(outpoint_a, hash_b)].into(),
             proof: proof_for_b,
-            outputs: vec![output_c.clone()],
+            outputs: vec![output_c.clone()].into(),
         };
         // Sign with A's key (the spender of outpoint A authorizes the tx).
         let authorized = authorize(&[(attacker_addr, &attacker)], tx)?;
 
         // Assemble body.
-        let body = Body::new(vec![authorized], Vec::new());
+        let body = Body::new(vec![authorized], Coinbase::default());
 
         // Compute the header the validator expects:
         //   merkle_root from the filled tx, roots = post-block accumulator
@@ -731,8 +732,7 @@ mod test {
 
         // tx validation REJECTS the outpoint/utxo_hash mismatch.
         anyhow::ensure!(state.validate_filled_transaction(&filled).is_err());
-        let merkle_root =
-            Body::compute_merkle_root(body.coinbase.as_slice(), &[filled])?;
+        let merkle_root = Body::compute_merkle_root(&body.coinbase, &[filled])?;
         let mut post_accumulator = seeded_accumulator()?;
         {
             let mut diff = AccumulatorDiff::default();

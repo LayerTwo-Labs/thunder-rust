@@ -260,9 +260,10 @@ impl Wallet {
                 address: self.get_new_address()?,
                 content: OutputContent::Value(change),
             },
-        ];
+        ]
+        .into();
         Ok(Transaction {
-            inputs,
+            inputs: inputs.into(),
             proof,
             outputs,
         })
@@ -297,9 +298,10 @@ impl Wallet {
                 address: self.get_new_address()?,
                 content: OutputContent::Value(change),
             },
-        ];
+        ]
+        .into();
         Ok(Transaction {
-            inputs,
+            inputs: inputs.into(),
             proof,
             outputs,
         })

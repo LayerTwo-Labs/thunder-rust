@@ -26,6 +26,15 @@ pub struct Output {
     pub content: Content,
 }
 
+impl Output {
+    /// Canonical size in bytes. The canonical encoding is used for hashing,
+    /// but other encodings may be used at eg. networking, rpc levels.
+    #[inline(always)]
+    pub(crate) fn canonical_size(&self) -> borsh::io::Result<u64> {
+        borsh::object_length(self).map(|size| size as u64)
+    }
+}
+
 impl GetValue for Output {
     #[inline(always)]
     fn get_value(&self) -> bitcoin::Amount {

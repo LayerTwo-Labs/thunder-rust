@@ -4,12 +4,11 @@ use std::{collections::HashSet, num::NonZeroUsize};
 
 use borsh::BorshSerialize;
 use serde::{Deserialize, Serialize};
+use thunder_types::Block;
 
 use crate::{
     net::peer::{PeerState, PeerStateId},
-    types::{
-        AuthorizedTransaction, BlockHash, Body, Header, Network, Tip, Txid,
-    },
+    types::{AuthorizedTransaction, BlockHash, Header, Network, Tip, Txid},
 };
 
 pub const MAGIC_BYTES_LEN: usize = 4;
@@ -277,10 +276,7 @@ impl<'de> Deserialize<'de> for RequestMessage {
 #[derive(educe::Educe, Serialize, Deserialize)]
 #[educe(Debug)]
 pub enum ResponseMessage {
-    Block {
-        header: Header,
-        body: Body,
-    },
+    Block(Box<Block>),
     /// Headers, from start to end
     Headers(#[educe(Debug(method(ResponseMessage::fmt_headers)))] Vec<Header>),
     NoBlock {
