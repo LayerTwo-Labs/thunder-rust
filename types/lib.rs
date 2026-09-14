@@ -10,7 +10,6 @@ use hashlink::{LinkedHashMap, linked_hash_map};
 use rustreexo::accumulator::mem_forest::MemForest;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use thiserror::Error;
 use utoipa::ToSchema;
 
 mod address;
@@ -21,7 +20,9 @@ pub mod error;
 pub use error::{
     AmountOverflow as AmountOverflowError,
     AmountUnderflow as AmountUnderflowError, ComputeFee as ComputeFeeError,
-    Utreexo as UtreexoError,
+    ComputeMerkleRoot as ComputeMerkleRootError,
+    ModifyMemForest as ModifyMemForestError, Utreexo as UtreexoError,
+    WithdrawalBundle as WithdrawalBundleError,
 };
 pub mod hashes;
 pub use hashes::{
@@ -112,16 +113,6 @@ pub static OP_DRIVECHAIN_SCRIPT: LazyLock<bitcoin::ScriptBuf> =
         script.push_opcode(bitcoin::opcodes::OP_TRUE);
         script
     });
-
-#[derive(Debug, Error)]
-enum WithdrawalBundleErrorInner {
-    #[error("bundle too heavy: weight `{weight}` > max weight `{max_weight}`")]
-    BundleTooHeavy { weight: u64, max_weight: u64 },
-}
-
-#[derive(Debug, Error)]
-#[error("Withdrawal bundle error")]
-pub struct WithdrawalBundleError(#[from] WithdrawalBundleErrorInner);
 
 #[serde_as]
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
@@ -306,7 +297,7 @@ impl WithdrawalBundle {
         };
         if tx.weight().to_wu() > bitcoin::policy::MAX_STANDARD_TX_WEIGHT as u64
         {
-            Err(WithdrawalBundleErrorInner::BundleTooHeavy {
+            Err(error::withdrawal_bundle::Inner::BundleTooHeavy {
                 weight: tx.weight().to_wu(),
                 max_weight: bitcoin::policy::MAX_STANDARD_TX_WEIGHT as u64,
             })?;
@@ -665,26 +656,6 @@ impl merkle_cbt::merkle_tree::Merge for MergeFeeSizeTotal {
 // Complete binary merkle tree with annotated fee and canonical size totals
 type CbmtWithFeeTotal = merkle_cbt::CBMT<CbmtNode, MergeFeeSizeTotal>;
 
-#[derive(Debug, Error)]
-#[error("failed to compute fee for `{txid}`")]
-struct ComputeMerkleRootErrorInner {
-    txid: Txid,
-    source: ComputeFeeError,
-}
-
-#[derive(Debug, Error)]
-#[error("failed to compute merkle root")]
-#[repr(transparent)]
-pub struct ComputeMerkleRootError(#[from] ComputeMerkleRootErrorInner);
-
-#[derive(Debug, Error)]
-pub enum ModifyMemForestError {
-    #[error(transparent)]
-    ComputeMerkleRoot(#[from] ComputeMerkleRootError),
-    #[error(transparent)]
-    Utreexo(#[from] UtreexoError),
-}
-
 #[derive(BorshSerialize, Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct Body {
     pub coinbase: Vec<Output>,
@@ -752,7 +723,7 @@ impl Body {
                 .map(|(idx, tx)| {
                     let tx = tx.borrow();
                     let fees = tx.get_fee().map_err(|err| {
-                        ComputeMerkleRootErrorInner {
+                        error::compute_merkle_root::Inner {
                             txid: tx.transaction.txid(),
                             source: err,
                         }
