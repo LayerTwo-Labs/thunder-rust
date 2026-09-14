@@ -607,8 +607,9 @@ impl Transaction {
 
     /// Canonical size in bytes. The canonical encoding is used for hashing,
     /// but other encodings may be used at eg. networking, rpc levels.
-    pub fn canonical_size(&self) -> u64 {
-        (borsh::object_length(self).unwrap() / 8) as u64
+    #[inline(always)]
+    pub fn canonical_size(&self) -> borsh::io::Result<u64> {
+        borsh::object_length(self).map(|size| size as u64)
     }
 }
 
