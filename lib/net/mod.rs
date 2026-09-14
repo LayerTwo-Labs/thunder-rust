@@ -165,14 +165,26 @@ pub type PeerInfoRx =
     mpsc::UnboundedReceiver<(SocketAddr, Option<PeerConnectionInfo>)>;
 
 const ALPHANET_SEED_PEER_ADDRS: &[PeerAddress<&'static str>] = {
-    // seed.alpha.ecash.drivecha.in
     const DRIVECHA_IN: PeerAddress<&'static str> = PeerAddress {
-        host: url::Host::Ipv4(Ipv4Addr::new(157, 180, 96, 24)),
+        host: url::Host::Domain("seed.alpha.ecash.drivecha.in"),
         port: DEFAULT_PORT,
     };
     // seed.alpha.ecash.ninja
     const ECASH_NINJA: PeerAddress<&'static str> = PeerAddress {
         host: url::Host::Domain("seed.alpha.ecash.ninja"),
+        port: DEFAULT_PORT,
+    };
+    &[DRIVECHA_IN, ECASH_NINJA]
+};
+
+const BETANET_SEED_PEER_ADDRS: &[PeerAddress<&'static str>] = {
+    const DRIVECHA_IN: PeerAddress<&'static str> = PeerAddress {
+        host: url::Host::Domain("seed.beta.ecash.drivecha.in"),
+        port: DEFAULT_PORT,
+    };
+    // seed.beta.ecash.ninja
+    const ECASH_NINJA: PeerAddress<&'static str> = PeerAddress {
+        host: url::Host::Domain("seed.beta.ecash.ninja"),
         port: DEFAULT_PORT,
     };
     &[DRIVECHA_IN, ECASH_NINJA]
@@ -209,9 +221,10 @@ const fn seed_peer_addrs(
 ) -> &'static [PeerAddress<&'static str>] {
     match network {
         Network::Alphanet => ALPHANET_SEED_PEER_ADDRS,
-        Network::Signet => SIGNET_SEED_PEER_ADDRS,
-        Network::Regtest => &[],
+        Network::Betanet => BETANET_SEED_PEER_ADDRS,
         Network::Forknet => FORKNET_SEED_PEER_ADDRS,
+        Network::Regtest => &[],
+        Network::Signet => SIGNET_SEED_PEER_ADDRS,
     }
 }
 

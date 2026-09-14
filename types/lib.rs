@@ -895,9 +895,10 @@ pub struct Tip {
 pub enum Network {
     #[default]
     Alphanet,
-    Signet,
-    Regtest,
+    Betanet,
     Forknet,
+    Regtest,
+    Signet,
 }
 
 /// Semver-compatible version
