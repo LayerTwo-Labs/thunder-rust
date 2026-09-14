@@ -58,3 +58,47 @@ pub enum ParsePeerAddress {
     #[error(transparent)]
     Parse(#[from] url::ParseError),
 }
+
+pub mod compute_merkle_root {
+    use thiserror::Error;
+
+    use crate::{error::ComputeFee, hashes::Txid};
+
+    #[derive(Debug, Error)]
+    #[error("failed to compute fee for `{txid}`")]
+    pub(crate) struct Inner {
+        pub txid: Txid,
+        pub source: ComputeFee,
+    }
+
+    #[derive(Debug, Error)]
+    #[error("failed to compute merkle root")]
+    #[repr(transparent)]
+    pub struct Error(#[from] Inner);
+}
+pub use compute_merkle_root::Error as ComputeMerkleRoot;
+
+#[derive(Debug, Error)]
+pub enum ModifyMemForest {
+    #[error(transparent)]
+    ComputeMerkleRoot(#[from] ComputeMerkleRoot),
+    #[error(transparent)]
+    Utreexo(#[from] Utreexo),
+}
+
+pub mod withdrawal_bundle {
+    use thiserror::Error;
+
+    #[derive(Debug, Error)]
+    pub(crate) enum Inner {
+        #[error(
+            "bundle too heavy: weight `{weight}` > max weight `{max_weight}`"
+        )]
+        BundleTooHeavy { weight: u64, max_weight: u64 },
+    }
+
+    #[derive(Debug, Error)]
+    #[error("Withdrawal bundle error")]
+    pub struct Error(#[from] Inner);
+}
+pub use withdrawal_bundle::Error as WithdrawalBundle;
