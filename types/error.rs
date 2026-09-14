@@ -65,10 +65,14 @@ pub mod compute_merkle_root {
     use crate::{error::ComputeFee, hashes::Txid};
 
     #[derive(Debug, Error)]
-    #[error("failed to compute fee for `{txid}`")]
-    pub(crate) struct Inner {
-        pub txid: Txid,
-        pub source: ComputeFee,
+    pub(crate) enum Inner {
+        #[error("failed to compute canonical size for tx ({txid})")]
+        TxCanonicalSize {
+            txid: Txid,
+            source: borsh::io::Error,
+        },
+        #[error("failed to compute fee for tx ({txid})")]
+        TxFee { txid: Txid, source: ComputeFee },
     }
 
     #[derive(Debug, Error)]

@@ -717,32 +717,37 @@ impl Body {
             ..
         } = {
             let n_txs = txs.len();
-            let leaves: Vec<_> = txs
-                .iter()
-                .enumerate()
-                .map(|(idx, tx)| {
-                    let tx = tx.borrow();
-                    let fees = tx.get_fee().map_err(|err| {
-                        error::compute_merkle_root::Inner {
-                            txid: tx.transaction.txid(),
-                            source: err,
-                        }
-                    })?;
-                    let canonical_size = tx.transaction.canonical_size();
-                    let leaf_pre_commitment = CbmtLeafPreCommitment {
-                        fee: fees,
-                        canonical_size,
-                        tx: &tx.transaction,
-                    };
-                    Ok::<_, ComputeMerkleRootError>(CbmtNode {
-                        commitment: hashes::hash(&leaf_pre_commitment),
-                        fees,
-                        canonical_size,
-                        // see https://github.com/nervosnetwork/merkle-tree/blob/5d1898263e7167560fdaa62f09e8d52991a1c712/README.md#tree-struct
-                        index: (idx + n_txs) - 1,
+            let leaves: Vec<_> =
+                txs.iter()
+                    .enumerate()
+                    .map(|(idx, tx)| {
+                        let tx = tx.borrow();
+                        let fees = tx.get_fee().map_err(|err| {
+                            error::compute_merkle_root::Inner::TxFee {
+                                txid: tx.transaction.txid(),
+                                source: err,
+                            }
+                        })?;
+                        let canonical_size = tx.transaction.canonical_size()
+                        .map_err(|err|
+                            error::compute_merkle_root::Inner::TxCanonicalSize {
+                                txid: tx.transaction.txid(),
+                                source: err,
+                            })?;
+                        let leaf_pre_commitment = CbmtLeafPreCommitment {
+                            fee: fees,
+                            canonical_size,
+                            tx: &tx.transaction,
+                        };
+                        Ok::<_, ComputeMerkleRootError>(CbmtNode {
+                            commitment: hashes::hash(&leaf_pre_commitment),
+                            fees,
+                            canonical_size,
+                            // see https://github.com/nervosnetwork/merkle-tree/blob/5d1898263e7167560fdaa62f09e8d52991a1c712/README.md#tree-struct
+                            index: (idx + n_txs) - 1,
+                        })
                     })
-                })
-                .collect::<Result<_, _>>()?;
+                    .collect::<Result<_, _>>()?;
             CbmtWithFeeTotal::build_merkle_root(leaves.as_slice())
         };
         // FIXME: Compute actual merkle root instead of just a hash.
