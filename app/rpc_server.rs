@@ -7,8 +7,7 @@ use jsonrpsee::{
     types::ErrorObject,
 };
 use thunder::types::{
-    Address, Block, M6id, Pointed, PointedOutput, SpentOutput, Txid,
-    WithdrawalBundle,
+    Address, Block, M6id, PointedOutput, SpentOutput, Txid, WithdrawalBundle,
     net::{Peer, PeerAddress},
     wallet::Balance,
 };
@@ -255,14 +254,14 @@ impl<const ENABLE_PRIVATE_API: bool> rpc_api::node::RpcServer
     async fn get_stxos(
         &self,
         addresses: HashSet<Address>,
-    ) -> RpcResult<Vec<Pointed<SpentOutput>>> {
+    ) -> RpcResult<Vec<PointedOutput<SpentOutput>>> {
         let res = self
             .app
             .node
             .get_stxos_by_addresses(&addresses)
             .map_err(custom_err)?
             .into_iter()
-            .map(|(outpoint, output)| Pointed { outpoint, output })
+            .map(|(outpoint, output)| PointedOutput { outpoint, output })
             .collect();
         Ok(res)
     }
