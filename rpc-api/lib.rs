@@ -157,8 +157,8 @@ pub mod node {
             use serde::Serialize;
             use thunder_types::{
                 Address, Authorization, Block, BlockHash, Body, Coinbase,
-                Header, MerkleRoot, Output, OutputContent, Transaction, Txid,
-                transaction::Outputs,
+                CoinbaseTxid, Header, MerkleRoot, Output, OutputContent,
+                Transaction, Txid, transaction::Outputs,
             };
             use typewit::const_marker::Bool;
             use utoipa::ToSchema;
@@ -193,11 +193,11 @@ pub mod node {
             /// manually
             #[open_api(ref_schemas[
                 Address, Authorization, Block, BlockHash, BlockVerbose, Body,
-                BodyVerbose, Coinbase, Header, MerkleRoot, Output,
-                OutputContent, Outputs, Transaction, TransactionVerbose, Txid,
-                schema::BitcoinAddr, schema::BitcoinBlockHash,
-                schema::BitcoinOutPoint, schema::UtreexoNodeHash,
-                schema::UtreexoProof,
+                BodyVerbose, Coinbase, CoinbaseTxid, Header, MerkleRoot,
+                Output, OutputContent, Outputs, Transaction,
+                TransactionVerbose, Txid, schema::BitcoinAddr,
+                schema::BitcoinBlockHash, schema::BitcoinOutPoint,
+                schema::UtreexoNodeHash, schema::UtreexoProof,
             ])]
             #[rpc(server, server_bounds(Self: private::Sealed))]
             pub trait Rpc {

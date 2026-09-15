@@ -21,14 +21,13 @@ pub mod error;
 pub use error::{
     AmountOverflow as AmountOverflowError,
     AmountUnderflow as AmountUnderflowError, ComputeFee as ComputeFeeError,
-    ComputeMerkleRoot as ComputeMerkleRootError,
-    ModifyMemForest as ModifyMemForestError, Utreexo as UtreexoError,
+    ComputeMerkleRoot as ComputeMerkleRootError, Utreexo as UtreexoError,
     WithdrawalBundle as WithdrawalBundleError,
 };
 pub mod hashes;
 pub use hashes::{
-    BlockHash, Hash, M6id, MerkleRoot, NonZeroBitcoinBlockHash, Txid,
-    UtreexoNodeHash, hash, hash_with_scratch_buffer,
+    BlockHash, CoinbaseTxid, Hash, M6id, MerkleRoot, NonZeroBitcoinBlockHash,
+    Txid, UtreexoNodeHash, hash, hash_with_scratch_buffer,
 };
 pub mod net;
 pub mod schema;

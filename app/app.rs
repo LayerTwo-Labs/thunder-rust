@@ -35,20 +35,22 @@ use tonic_health::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error(transparent)]
+    ComputeMerkleRoot(#[from] thunder::types::ComputeMerkleRootError),
     #[error("CUSF mainchain proto error")]
     CusfMainchain(#[from] thunder::types::proto::Error),
     #[error("io error")]
     Io(#[from] std::io::Error),
     #[error("miner error")]
     Miner(#[from] miner::Error),
-    #[error(transparent)]
-    ModifyMemForest(#[from] thunder::types::ModifyMemForestError),
     #[error("node error")]
     Node(#[source] Box<node::Error>),
     #[error("No CUSF mainchain wallet client")]
     NoCusfMainchainWalletClient,
     #[error("Failed to request mainchain ancestor info for {block_hash}")]
     RequestMainchainAncestorInfos { block_hash: bitcoin::BlockHash },
+    #[error(transparent)]
+    Utreexo(#[from] thunder::types::UtreexoError),
     #[error("Unable to verify existence of CUSF mainchain service(s) at {url}")]
     VerifyMainchainServices {
         url: Box<url::Url>,
@@ -500,7 +502,9 @@ impl App {
                     outputs: outputs.into(),
                 }
             };
-            let (merkle_root, roots) = {
+            let merkle_root =
+                types::Body::compute_merkle_root(&coinbase, &txs)?;
+            let roots = {
                 let mut accumulator = if let Some(tip_hash) = tip_hash {
                     let rotxn = self
                         .node
@@ -514,18 +518,23 @@ impl App {
                 } else {
                     types::Accumulator::default()
                 };
-                let merkle_root = thunder::types::Body::modify_memforest(
-                    &coinbase,
+                let coinbase_txid = Coinbase::compute_txid(
+                    &merkle_root,
+                    &prev_main_hash,
+                    prev_side_hash.as_ref(),
+                );
+                let () = types::Body::modify_memforest(
+                    coinbase_txid,
+                    coinbase.outputs.as_slice(),
                     &txs,
                     &mut accumulator.0,
                 )?;
-                let roots = accumulator
+                accumulator
                     .0
                     .get_roots()
                     .iter()
                     .map(|root| root.get_data())
-                    .collect();
-                (merkle_root, roots)
+                    .collect()
             };
             let body = types::Body::new(
                 txs.into_iter().map(|tx| tx.into()).collect(),
@@ -547,7 +556,10 @@ impl App {
             (bribe, header, body, tx_fees)
         } else {
             let coinbase = Default::default();
-            let (merkle_root, roots) = {
+            let txs: [FilledTransaction; 0] = [];
+            let merkle_root =
+                types::Body::compute_merkle_root(&coinbase, &txs)?;
+            let roots = {
                 let mut accumulator =
                     if let Some(prev_side_hash) = prev_side_hash {
                         let rotxn = self
@@ -562,18 +574,23 @@ impl App {
                     } else {
                         types::Accumulator::default()
                     };
-                let merkle_root = thunder::types::Body::modify_memforest::<
-                    FilledTransaction,
-                >(
-                    &coinbase, &[], &mut accumulator.0
+                let coinbase_txid = Coinbase::compute_txid(
+                    &merkle_root,
+                    &prev_main_hash,
+                    prev_side_hash.as_ref(),
+                );
+                let () = types::Body::modify_memforest(
+                    coinbase_txid,
+                    coinbase.outputs.as_slice(),
+                    &txs,
+                    &mut accumulator.0,
                 )?;
-                let roots = accumulator
+                accumulator
                     .0
                     .get_roots()
                     .iter()
                     .map(|root| root.get_data())
-                    .collect();
-                (merkle_root, roots)
+                    .collect()
             };
             let body = types::Body::new(Vec::new(), coinbase);
             let header = types::Header {

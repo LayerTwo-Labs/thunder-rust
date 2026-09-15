@@ -5,8 +5,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::{
-    MerkleRoot,
-    hashes::{self, Hash},
+    hashes::{self, Hash, OutputsMerkleRoot},
     transaction::{GetValue, output::Output},
     util,
 };
@@ -179,7 +178,7 @@ impl Outputs {
 
     pub(crate) fn compute_merkle_root(
         &self,
-    ) -> Result<MerkleRoot, error::ComputeMerkleRoot> {
+    ) -> Result<OutputsMerkleRoot, error::ComputeMerkleRoot> {
         let CbmtNode { commitment, .. } = {
             let n_outputs = self.len();
             let leaves: Vec<CmbtNodeResult> = self
