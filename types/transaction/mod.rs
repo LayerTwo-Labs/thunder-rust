@@ -10,7 +10,10 @@ use crate::{
     address::Address,
     authorization::Authorization,
     error,
-    hashes::{Hash, M6id, MerkleRoot, Txid, hash_with_scratch_buffer},
+    hashes::{
+        Hash, InputsMerkleRoot, M6id, OutputsMerkleRoot, TxMerkleRoot, Txid,
+        hash_with_scratch_buffer,
+    },
     schema,
 };
 
@@ -84,16 +87,22 @@ impl Transaction {
 
     pub(crate) fn compute_merkle_root(
         &self,
-    ) -> Result<MerkleRoot, outputs::error::ComputeMerkleRoot> {
+    ) -> Result<TxMerkleRoot, outputs::error::ComputeMerkleRoot> {
         let Self {
             inputs,
             proof: _,
             outputs,
         } = self;
-        let inputs_commitment = inputs.compute_merkle_root();
-        let outputs_commitment = outputs.compute_merkle_root()?;
-        let res =
-            hash_with_scratch_buffer(&(inputs_commitment, outputs_commitment));
+        // Borsh encoding for hashing
+        #[derive(BorshSerialize)]
+        struct HashComponents {
+            inputs_commitment: InputsMerkleRoot,
+            outputs_commitment: OutputsMerkleRoot,
+        }
+        let res = hash_with_scratch_buffer(&HashComponents {
+            inputs_commitment: inputs.compute_merkle_root(),
+            outputs_commitment: outputs.compute_merkle_root()?,
+        });
         Ok(res.into())
     }
 }

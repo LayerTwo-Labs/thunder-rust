@@ -5,8 +5,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::{
-    MerkleRoot,
-    hashes::{self, Hash},
+    hashes::{self, Hash, InputsMerkleRoot},
     transaction::outpoint::OutPoint,
 };
 
@@ -83,7 +82,7 @@ impl<Input> Inputs<Input> {
 }
 
 impl Inputs<(OutPoint, Hash)> {
-    pub(crate) fn compute_merkle_root(&self) -> MerkleRoot {
+    pub(crate) fn compute_merkle_root(&self) -> InputsMerkleRoot {
         let CbmtNode { commitment, .. } = {
             let n_inputs = self.len();
             let leaves: Vec<CbmtNode> = self

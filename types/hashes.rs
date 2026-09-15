@@ -14,205 +14,93 @@ pub type Hash = [u8; BLAKE3_LENGTH];
 
 pub type UtreexoNodeHash = rustreexo::accumulator::node_hash::BitcoinNodeHash;
 
-#[derive(
-    BorshSerialize,
-    BorshDeserialize,
-    Clone,
-    Copy,
-    Deserialize,
-    Eq,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-)]
-pub struct BlockHash(#[serde(with = "hexstr_human_readable")] pub Hash);
+macro_rules! new_hash_wrapper {
+    ($vis:vis $ident:ident) => {
+        #[derive(
+            BorshSerialize,
+            BorshDeserialize,
+            Clone,
+            Copy,
+            Default,
+            Deserialize,
+            Eq,
+            Hash,
+            Ord,
+            PartialEq,
+            PartialOrd,
+            Serialize,
+        )]
+        #[repr(transparent)]
+        #[serde(transparent)]
+        $vis struct $ident(#[serde(with = "hexstr_human_readable")] pub Hash);
 
-impl From<Hash> for BlockHash {
-    fn from(other: Hash) -> Self {
-        Self(other)
+        impl From<Hash> for $ident {
+            fn from(inner: Hash) -> Self {
+                Self(inner)
+            }
+        }
+
+        impl From< $ident > for Hash {
+            fn from(wrapped: $ident) -> Self {
+                wrapped.0
+            }
+        }
+
+        impl<'a> From<&'a $ident> for &'a Hash {
+            fn from(wrapped: &'a $ident) -> Self {
+                &wrapped.0
+            }
+        }
+
+        impl FromStr for $ident {
+            type Err = const_hex::FromHexError;
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                Hash::from_hex(s).map(Self)
+            }
+        }
+
+        impl std::fmt::Debug for $ident {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result
+            {
+                write!(f, "{}", const_hex::encode(self.0))
+            }
+        }
+
+        impl std::fmt::Display for $ident {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result
+            {
+                write!(f, "{}", const_hex::encode(self.0))
+            }
+        }
+
+        impl utoipa::PartialSchema for $ident {
+            fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+                let obj =
+                    utoipa::openapi::Object::with_type(utoipa::openapi::Type::String);
+                utoipa::openapi::RefOr::T(utoipa::openapi::Schema::Object(obj))
+            }
+        }
+
+        impl utoipa::ToSchema for $ident {
+            fn name() -> std::borrow::Cow<'static, str> {
+                std::borrow::Cow::Borrowed(stringify!($ident))
+            }
+        }
     }
 }
 
-impl From<BlockHash> for Hash {
-    fn from(other: BlockHash) -> Self {
-        other.0
-    }
-}
-
-impl From<BlockHash> for Vec<u8> {
-    fn from(other: BlockHash) -> Self {
-        other.0.into()
-    }
-}
-
-impl From<BlockHash> for bitcoin::BlockHash {
-    fn from(other: BlockHash) -> Self {
-        let inner: [u8; 32] = other.into();
-        Self::from_byte_array(inner)
-    }
-}
-
-impl std::fmt::Display for BlockHash {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", const_hex::encode(self.0))
-    }
-}
-
-impl std::fmt::Debug for BlockHash {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", const_hex::encode(self.0))
-    }
-}
-
-impl FromStr for BlockHash {
-    type Err = const_hex::FromHexError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Hash::from_hex(s).map(Self)
-    }
-}
-
-impl utoipa::PartialSchema for BlockHash {
-    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-        let obj =
-            utoipa::openapi::Object::with_type(utoipa::openapi::Type::String);
-        utoipa::openapi::RefOr::T(utoipa::openapi::Schema::Object(obj))
-    }
-}
-
-impl utoipa::ToSchema for BlockHash {
-    fn name() -> std::borrow::Cow<'static, str> {
-        std::borrow::Cow::Borrowed("BlockHash")
-    }
-}
-
-#[derive(
-    BorshSerialize,
-    BorshDeserialize,
-    Clone,
-    Copy,
-    Default,
-    Deserialize,
-    Eq,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-)]
-pub struct MerkleRoot(#[serde(with = "hexstr_human_readable")] Hash);
-
-impl From<Hash> for MerkleRoot {
-    fn from(other: Hash) -> Self {
-        Self(other)
-    }
-}
-
-impl From<MerkleRoot> for Hash {
-    fn from(other: MerkleRoot) -> Self {
-        other.0
-    }
-}
-
-impl std::fmt::Display for MerkleRoot {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", const_hex::encode(self.0))
-    }
-}
-
-impl std::fmt::Debug for MerkleRoot {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", const_hex::encode(self.0))
-    }
-}
-
-impl utoipa::PartialSchema for MerkleRoot {
-    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-        let obj =
-            utoipa::openapi::Object::with_type(utoipa::openapi::Type::String);
-        utoipa::openapi::RefOr::T(utoipa::openapi::Schema::Object(obj))
-    }
-}
-
-impl utoipa::ToSchema for MerkleRoot {
-    fn name() -> std::borrow::Cow<'static, str> {
-        std::borrow::Cow::Borrowed("MerkleRoot")
-    }
-}
-
-#[derive(
-    BorshDeserialize,
-    BorshSerialize,
-    Clone,
-    Copy,
-    Default,
-    Deserialize,
-    Eq,
-    Hash,
-    Serialize,
-    Ord,
-    PartialEq,
-    PartialOrd,
-)]
-#[repr(transparent)]
-#[serde(transparent)]
-pub struct Txid(#[serde(with = "hexstr_human_readable")] pub Hash);
+new_hash_wrapper!(pub BlockHash);
+new_hash_wrapper!(pub(crate) CoinbaseMerkleRoot);
+new_hash_wrapper!(pub(crate) InputsMerkleRoot);
+new_hash_wrapper!(pub(crate) OutputsMerkleRoot);
+new_hash_wrapper!(pub(crate) TxMerkleRoot);
+new_hash_wrapper!(pub MerkleRoot);
+new_hash_wrapper!(pub CoinbaseTxid);
+new_hash_wrapper!(pub Txid);
 
 impl Txid {
     pub fn as_slice(&self) -> &[u8] {
         self.0.as_slice()
-    }
-}
-
-impl From<Hash> for Txid {
-    fn from(other: Hash) -> Self {
-        Self(other)
-    }
-}
-
-impl From<Txid> for Hash {
-    fn from(other: Txid) -> Self {
-        other.0
-    }
-}
-
-impl<'a> From<&'a Txid> for &'a Hash {
-    fn from(other: &'a Txid) -> Self {
-        &other.0
-    }
-}
-
-impl std::fmt::Display for Txid {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", const_hex::encode(self.0))
-    }
-}
-
-impl std::fmt::Debug for Txid {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", const_hex::encode(self.0))
-    }
-}
-
-impl FromStr for Txid {
-    type Err = const_hex::FromHexError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Hash::from_hex(s).map(Self)
-    }
-}
-
-impl utoipa::PartialSchema for Txid {
-    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-        let obj =
-            utoipa::openapi::Object::with_type(utoipa::openapi::Type::String);
-        utoipa::openapi::RefOr::T(utoipa::openapi::Schema::Object(obj))
-    }
-}
-
-impl utoipa::ToSchema for Txid {
-    fn name() -> std::borrow::Cow<'static, str> {
-        std::borrow::Cow::Borrowed("Txid")
     }
 }
 

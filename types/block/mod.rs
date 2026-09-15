@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::{
-    hashes::{self, BlockHash, MerkleRoot, UtreexoNodeHash},
+    hashes::{self, BlockHash, CoinbaseTxid, MerkleRoot, UtreexoNodeHash},
     schema, util,
 };
 
@@ -36,6 +36,20 @@ pub struct Header {
 }
 
 impl Header {
+    pub fn compute_coinbase_txid(&self) -> CoinbaseTxid {
+        let Self {
+            merkle_root,
+            prev_side_hash,
+            prev_main_hash,
+            roots: _,
+        } = self;
+        Coinbase::compute_txid(
+            merkle_root,
+            prev_main_hash,
+            prev_side_hash.as_ref(),
+        )
+    }
+
     pub fn hash(&self) -> BlockHash {
         hashes::hash_with_scratch_buffer(self).into()
     }

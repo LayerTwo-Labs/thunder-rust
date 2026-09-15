@@ -9,7 +9,10 @@ use crate::{
     authorization::Authorization,
     block::coinbase::Coinbase,
     error,
-    hashes::{self, Hash, MerkleRoot, UtreexoNodeHash},
+    hashes::{
+        self, CoinbaseMerkleRoot, CoinbaseTxid, Hash, MerkleRoot, TxMerkleRoot,
+        UtreexoNodeHash,
+    },
     transaction::{
         AuthorizedTransaction, FilledTransaction, GetValue, OutPoint, Output,
         PointedOutput, Transaction,
@@ -24,7 +27,7 @@ struct CbmtLeafPreCommitment {
     fee: bitcoin::Amount,
     /// Sum of canonical tx sizes for child txs
     canonical_size: u64,
-    tx_merkle_root: MerkleRoot,
+    tx_merkle_root: TxMerkleRoot,
 }
 
 /// Hash to get a [`CmbtNode`] inner commitment for a non-leaf value
@@ -206,20 +209,27 @@ impl Body {
         let coinbase_commitment = coinbase
             .compute_merkle_root()
             .map_err(error::compute_merkle_root::Inner::CoinbaseMerkleRoot)?;
-        let root = hashes::hash_with_scratch_buffer(&(
+        // Borsh encoding for hashing
+        #[derive(BorshSerialize)]
+        struct HashComponents {
+            coinbase_commitment: CoinbaseMerkleRoot,
+            txs_commitment: Hash,
+        }
+        let root = hashes::hash_with_scratch_buffer(&HashComponents {
             coinbase_commitment,
             txs_commitment,
-        ))
+        })
         .into();
         Ok(root)
     }
 
     // Modifies the memforest, without checking tx proofs
     pub fn modify_memforest<FilledTx>(
-        coinbase: &Coinbase,
+        coinbase_txid: CoinbaseTxid,
+        coinbase_outputs: &[Output],
         txs: &[FilledTx],
         memforest: &mut MemForest<UtreexoNodeHash>,
-    ) -> Result<MerkleRoot, error::ModifyMemForest>
+    ) -> Result<(), error::Utreexo>
     where
         FilledTx: Borrow<FilledTransaction>,
     {
@@ -227,10 +237,9 @@ impl Body {
         let mut accumulator_add = Vec::<UtreexoNodeHash>::new();
         // Accumulator leaves to delete
         let mut accumulator_del = Vec::<UtreexoNodeHash>::new();
-        let merkle_root = Self::compute_merkle_root(coinbase, txs)?;
-        for (vout, output) in coinbase.outputs.iter().enumerate() {
+        for (vout, output) in coinbase_outputs.iter().enumerate() {
             let outpoint = OutPoint::Coinbase {
-                merkle_root,
+                txid: coinbase_txid,
                 vout: vout as u32,
             };
             let pointed_output = PointedOutput {
@@ -260,7 +269,7 @@ impl Body {
         let () = memforest
             .modify(&accumulator_add, &accumulator_del)
             .map_err(error::Utreexo)?;
-        Ok(merkle_root)
+        Ok(())
     }
 
     pub fn get_inputs(&self) -> Vec<OutPoint> {
@@ -272,14 +281,17 @@ impl Body {
     }
 
     pub fn get_outputs(
+        coinbase_txid: CoinbaseTxid,
         coinbase: &Coinbase,
         txs: &[FilledTransaction],
-    ) -> Result<HashMap<OutPoint, Output>, error::ComputeMerkleRoot> {
+    ) -> HashMap<OutPoint, Output> {
         let mut res = HashMap::new();
-        let merkle_root = Self::compute_merkle_root(coinbase, txs)?;
         for (vout, output) in coinbase.outputs.iter().enumerate() {
             let vout = vout as u32;
-            let outpoint = OutPoint::Coinbase { merkle_root, vout };
+            let outpoint = OutPoint::Coinbase {
+                txid: coinbase_txid,
+                vout,
+            };
             res.insert(outpoint, output.clone());
         }
         for tx in txs {
@@ -290,7 +302,7 @@ impl Body {
                 res.insert(outpoint, output.clone());
             }
         }
-        Ok(res)
+        res
     }
 
     pub fn get_coinbase_value(

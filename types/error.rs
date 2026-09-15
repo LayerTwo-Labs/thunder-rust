@@ -97,14 +97,6 @@ pub mod compute_merkle_root {
 }
 pub use compute_merkle_root::Error as ComputeMerkleRoot;
 
-#[derive(Debug, Error)]
-pub enum ModifyMemForest {
-    #[error(transparent)]
-    ComputeMerkleRoot(#[from] ComputeMerkleRoot),
-    #[error(transparent)]
-    Utreexo(#[from] Utreexo),
-}
-
 pub mod withdrawal_bundle {
     use thiserror::Error;
 

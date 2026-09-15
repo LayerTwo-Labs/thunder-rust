@@ -116,6 +116,7 @@ pub fn prevalidate(
             return Err(Error::UtxoDoubleSpent);
         }
     }
+    let coinbase_txid = header.compute_coinbase_txid();
     let mut coinbase_value = bitcoin::Amount::ZERO;
     let mut accumulator_diff = AccumulatorDiff::with_capacity(
         body.coinbase.outputs.len() + accumulator_diff_txs.len(),
@@ -125,7 +126,7 @@ pub fn prevalidate(
             .checked_add(output.get_value())
             .ok_or(AmountOverflowError)?;
         let outpoint = OutPoint::Coinbase {
-            merkle_root: computed_merkle_root,
+            txid: coinbase_txid,
             vout: vout as u32,
         };
         let pointed_output = PointedOutput {
@@ -197,11 +198,12 @@ pub fn connect_prevalidated(
         };
         return Err(err);
     }
+    let coinbase_txid = header.compute_coinbase_txid();
 
     // Apply UTXO set changes
     for (vout, output) in body.coinbase.outputs.iter().enumerate() {
         let outpoint = OutPoint::Coinbase {
-            merkle_root: pre.computed_merkle_root,
+            txid: coinbase_txid,
             vout: vout as u32,
         };
         state
@@ -319,6 +321,7 @@ pub fn validate(
         };
         return Err(err);
     }
+    let coinbase_txid = header.compute_coinbase_txid();
     let mut accumulator_diff = AccumulatorDiff::default();
     let mut coinbase_value = bitcoin::Amount::ZERO;
     for (vout, output) in body.coinbase.outputs.iter().enumerate() {
@@ -326,7 +329,7 @@ pub fn validate(
             .checked_add(output.get_value())
             .ok_or(AmountOverflowError)?;
         let outpoint = OutPoint::Coinbase {
-            merkle_root,
+            txid: coinbase_txid,
             vout: vout as u32,
         };
         let pointed_output = PointedOutput {
@@ -420,6 +423,7 @@ pub fn connect(
         };
         return Err(Error::InvalidHeader(err));
     }
+    let coinbase_txid = header.compute_coinbase_txid();
     let mut accumulator = state
         .utreexo_accumulator
         .try_get(rwtxn, &())?
@@ -427,7 +431,7 @@ pub fn connect(
     let mut accumulator_diff = AccumulatorDiff::default();
     for (vout, output) in body.coinbase.outputs.iter().enumerate() {
         let outpoint = OutPoint::Coinbase {
-            merkle_root: header.merkle_root,
+            txid: coinbase_txid,
             vout: vout as u32,
         };
         let pointed_output = PointedOutput {
@@ -516,10 +520,11 @@ pub fn disconnect_tip(
         .try_get(rwtxn, &())
         .map_err(DbError::from)?
         .ok_or(Error::NoTip)?;
-    if tip_hash != header.hash() {
+    let block_hash = header.hash();
+    if tip_hash != block_hash {
         let err = error::InvalidHeader::BlockHash {
             expected: tip_hash,
-            computed: header.hash(),
+            computed: block_hash,
         };
         return Err(Error::InvalidHeader(err));
     }
@@ -572,28 +577,31 @@ pub fn disconnect_tip(
             })
     })?;
     // delete coinbase UTXOs, last-to-first
-    body.coinbase
-        .outputs
-        .iter()
-        .enumerate()
-        .rev()
-        .try_for_each(|(vout, output)| {
-            let outpoint = OutPoint::Coinbase {
-                merkle_root: header.merkle_root,
-                vout: vout as u32,
-            };
-            let pointed_output = PointedOutput {
-                outpoint,
-                output: output.clone(),
-            };
-            accumulator_diff.remove((&pointed_output).into());
-            let key = OutPointKey::from(&outpoint);
-            if state.utxos.delete(rwtxn, &key)? {
-                Ok::<_, Error>(())
-            } else {
-                Err(error::NoUtxo { outpoint }.into())
-            }
-        })?;
+    {
+        let coinbase_txid = header.compute_coinbase_txid();
+        body.coinbase
+            .outputs
+            .iter()
+            .enumerate()
+            .rev()
+            .try_for_each(|(vout, output)| {
+                let outpoint = OutPoint::Coinbase {
+                    txid: coinbase_txid,
+                    vout: vout as u32,
+                };
+                let pointed_output = PointedOutput {
+                    outpoint,
+                    output: output.clone(),
+                };
+                accumulator_diff.remove((&pointed_output).into());
+                let key = OutPointKey::from(&outpoint);
+                if state.utxos.delete(rwtxn, &key)? {
+                    Ok::<_, Error>(())
+                } else {
+                    Err(error::NoUtxo { outpoint }.into())
+                }
+            })?;
+    }
     let height = state
         .try_get_height(rwtxn)?
         .expect("Height should not be None");
