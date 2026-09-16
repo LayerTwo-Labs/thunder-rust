@@ -21,6 +21,7 @@ jsonrpsee = { workspace = true, features = ["server"] }
 mimalloc = { workspace = true, features = ["v3"] }
 parking_lot = { workspace = true }
 poll-promise = { workspace = true, features = ["tokio"] }
+rand = { workspace = true, features = ["thread_rng"] }
 rustreexo = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 shlex = { workspace = true }

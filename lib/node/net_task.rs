@@ -38,15 +38,18 @@ use crate::{
     state::{self, State},
     types::{
         BmmResult, Body, Header, MerkleRoot, Tip,
+        authorization::BatchVerificationContext,
         net::ResolvedPeerAddress,
         proto::mainchain::{self, Event as MainchainBlockEvent},
     },
     util::{ErrorChain, join_set},
 };
 
+#[allow(clippy::too_many_arguments)]
 fn connect_tip_(
     rwtxn: &mut RwTxn<'_>,
     archive: &Archive,
+    batch_verification_ctxt: &BatchVerificationContext,
     mempool: &MemPool,
     state: &State,
     header: &Header,
@@ -54,7 +57,12 @@ fn connect_tip_(
     two_way_peg_data: &mainchain::TwoWayPegData,
 ) -> Result<(), Error> {
     let block_hash = header.hash();
-    let prevalidated = state.prevalidate_block(rwtxn, header, body)?;
+    let prevalidated = state.prevalidate_block(
+        rwtxn,
+        batch_verification_ctxt,
+        header,
+        body,
+    )?;
     if tracing::enabled!(tracing::Level::DEBUG) {
         let height = state.try_get_height(rwtxn)?;
         let merkle_root = state.connect_prevalidated_block(
@@ -222,6 +230,7 @@ fn is_fatal_reorg_error(err: &Error) -> bool {
 fn reorg_to_tip<ThreadLocalStorage>(
     env: &sneed::Env<ThreadLocalStorage>,
     archive: &Archive,
+    batch_verification_ctxt: &BatchVerificationContext,
     mempool: &MemPool,
     state: &State,
     new_tip: Tip,
@@ -352,6 +361,7 @@ fn reorg_to_tip<ThreadLocalStorage>(
         let () = match connect_tip_(
             &mut rwtxn,
             archive,
+            batch_verification_ctxt,
             mempool,
             state,
             &header,
@@ -871,6 +881,7 @@ impl NetTask {
             let _: bool = reorg_to_tip(
                 &ctxt.env,
                 &ctxt.archive,
+                &ctxt.net.batch_verification_ctxt,
                 &ctxt.mempool,
                 &ctxt.state,
                 best_side_tip,
@@ -980,7 +991,7 @@ impl NetTask {
 
                 // / Return:
                 // - The value to yield (maybe_socket_addr)
-                // - The state for the next iteration (())
+                // - The rng for the next iteration
                 // Wrapped in Result and Option
                 Result::<_, _>::Ok(Some((maybe_socket_addr, ())))
             };
@@ -1123,6 +1134,7 @@ impl NetTask {
                         reorg_to_tip(
                             &self.ctxt.env,
                             &self.ctxt.archive,
+                            &self.ctxt.net.batch_verification_ctxt,
                             &self.ctxt.mempool,
                             &self.ctxt.state,
                             new_tip,

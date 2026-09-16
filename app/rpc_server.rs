@@ -534,8 +534,11 @@ impl rpc_api::wallet::RpcServer for RpcServerImpl<true> {
         transaction: thunder::types::Transaction,
         broadcast: Option<bool>,
     ) -> RpcResult<thunder::types::AuthorizedTransaction> {
-        let mut authorized =
-            self.app.wallet.authorize(transaction).map_err(custom_err)?;
+        let mut authorized = self
+            .app
+            .wallet
+            .authorize(rand::rng(), transaction)
+            .map_err(custom_err)?;
         if let Some(true) = broadcast {
             let () = self
                 .app

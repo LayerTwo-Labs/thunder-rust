@@ -246,6 +246,7 @@ impl App {
     }
 
     pub fn new(config: Config) -> Result<Self, Error> {
+        let mut rng = rand::rng();
         // Node launches some tokio tasks for p2p networking, that is why we need a tokio runtime
         // here.
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -332,6 +333,7 @@ impl App {
             },
             cusf_mainchain,
             cusf_mainchain_block_producer,
+            &mut rng,
             &runtime,
         )?;
         let utxos = {
@@ -381,7 +383,7 @@ impl App {
     }
 
     pub fn sign_and_send(&self, tx: Transaction) -> Result<(), Error> {
-        let authorized_transaction = self.wallet.authorize(tx)?;
+        let authorized_transaction = self.wallet.authorize(rand::rng(), tx)?;
         self.submit_transaction(authorized_transaction)
     }
 

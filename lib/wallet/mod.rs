@@ -3,28 +3,39 @@ use std::{
     path::Path,
 };
 
+use bip32ish::U31;
 use byteorder::{BigEndian, ByteOrder};
-use ed25519_dalek_bip32::{ChildIndex, DerivationPath, ExtendedSigningKey};
 use fallible_iterator::FallibleIterator as _;
 use futures::{Stream, StreamExt};
 use heed::types::{Bytes, SerdeBincode, U8};
 use sneed::{Env, EnvError, RwTxnError, UnitKey, db::error::Error as DbError};
+use thiserror::Error;
 use tokio_stream::{StreamMap, wrappers::WatchStream};
+use transitive::Transitive;
 
 use crate::{
     types::{
         Accumulator, Address, AmountOverflowError, AmountUnderflowError,
         AuthorizedTransaction, GetValue, InPoint, OutPoint, OutPointKey,
-        Output, OutputContent, PointedOutput, SpentOutput, Transaction,
-        UtreexoError, UtreexoNodeHash, VERSION, Version,
-        authorization::{Authorization, get_address},
+        Output, OutputContent, PointedOutput, SpentOutput, THIS_SIDECHAIN,
+        Transaction, UtreexoError, UtreexoNodeHash, VERSION, Version,
+        authorization::{
+            Authorization, SigningKey, get_address, rand_core::CryptoRng,
+        },
         hash,
         wallet::Balance,
     },
     util::Watchable,
 };
 
-#[derive(Debug, thiserror::Error)]
+pub mod bip32;
+
+#[allow(clippy::duplicated_attributes)]
+#[derive(Debug, Error, Transitive)]
+#[transitive(
+    from(bip32::HardenedDeriveError, bip32::Error),
+    from(bip32::NonHardenedDeriveError, bip32::Error)
+)]
 pub enum Error {
     #[error("address {address} does not exist")]
     AddressDoesNotExist { address: crate::types::Address },
@@ -35,7 +46,7 @@ pub enum Error {
     #[error("authorization error")]
     Authorization(#[from] crate::types::error::Authorization),
     #[error("bip32 error")]
-    Bip32(#[from] ed25519_dalek_bip32::Error),
+    Bip32(#[from] bip32::Error),
     #[error(transparent)]
     Db(#[from] DbError),
     #[error("Database env error")]
@@ -440,10 +451,14 @@ impl Wallet {
         Ok(addresses)
     }
 
-    pub fn authorize(
+    pub fn authorize<R>(
         &self,
+        mut rng: R,
         transaction: Transaction,
-    ) -> Result<AuthorizedTransaction, Error> {
+    ) -> Result<AuthorizedTransaction, Error>
+    where
+        R: CryptoRng,
+    {
         let txn = self.env.read_txn().map_err(EnvError::from)?;
         let mut authorizations = Vec::with_capacity(transaction.inputs.len());
         for (outpoint, _) in &transaction.inputs {
@@ -462,10 +477,13 @@ impl Wallet {
                 })?;
             let index = BigEndian::read_u32(&index);
             let signing_key = self.get_signing_key(&txn, index)?;
-            let signature =
-                crate::types::authorization::sign(&signing_key, &transaction)?;
+            let signature = crate::types::authorization::sign(
+                &mut rng,
+                &signing_key,
+                &transaction,
+            )?;
             authorizations.push(Authorization {
-                verifying_key: signing_key.verifying_key(),
+                verifying_key: signing_key.into(),
                 signature,
             });
         }
@@ -485,7 +503,7 @@ impl Wallet {
         let last_index = BigEndian::read_u32(&last_index);
         let index = last_index + 1;
         let signing_key = self.get_signing_key(&txn, index)?;
-        let address = get_address(&signing_key.verifying_key());
+        let address = get_address(signing_key.into());
         let index = index.to_be_bytes();
         self.index_to_address
             .put(&mut txn, &index, &address)
@@ -529,21 +547,35 @@ impl Wallet {
         &self,
         rotxn: &RoTxn,
         index: u32,
-    ) -> Result<ed25519_dalek::SigningKey, Error> {
+    ) -> Result<SigningKey, Error> {
         let seed = self
             .seed
             .try_get(rotxn, &0)
             .map_err(DbError::from)?
             .ok_or(Error::NoSeed)?;
-        let xpriv = ExtendedSigningKey::from_seed(seed)?;
-        let derivation_path = DerivationPath::new([
-            ChildIndex::Hardened(1),
-            ChildIndex::Hardened(0),
-            ChildIndex::Hardened(0),
-            ChildIndex::Hardened(index),
-        ]);
-        let xsigning_key = xpriv.derive(&derivation_path)?;
-        Ok(xsigning_key.signing_key)
+        let mut xpriv = bip32::new_master_xpriv(seed);
+        // derive via path m/43'/1899'/0'/<SIDECHAIN_NUMBER>'/0'/index
+        // (m / bip43 purpose / eCash Token / purpose (0) / sidechain number /
+        // account / index)
+        {
+            xpriv = xpriv.derive_hardened(U31::new(43).unwrap())?;
+            xpriv = xpriv.derive_hardened(U31::new(1899).unwrap())?;
+            xpriv = xpriv.derive_hardened(U31::new(0).unwrap())?;
+            xpriv = xpriv
+                .derive_hardened(U31::new(THIS_SIDECHAIN as u32).unwrap())?;
+            xpriv = xpriv.derive_hardened(U31::new(0).unwrap())?;
+            match bip32ish::ChildIndex::from(index) {
+                bip32ish::ChildIndex::Hardened { index } => {
+                    xpriv = xpriv.derive_hardened(index)?;
+                }
+                bip32ish::ChildIndex::NonHardened { index } => {
+                    xpriv = xpriv.derive_non_hardened(index)?;
+                }
+            }
+        }
+        let sk = SigningKey::from_scalar(xpriv.secret_scalar)
+            .expect("expected secret scalar to be non-zero");
+        Ok(sk)
     }
 }
 

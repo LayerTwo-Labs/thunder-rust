@@ -5,16 +5,17 @@ use sneed::{RoTxn, RwTxn, db::error::Error as DbError};
 use crate::{
     state::{Error, PrevalidatedBlock, State, error},
     types::{
-        AccumulatorDiff, AmountOverflowError, Authorization, Body,
-        FilledTransaction, GetAddress as _, GetValue as _, Header, InPoint,
-        MerkleRoot, OutPoint, OutPointKey, PointedOutput, SpentOutput,
-        UtreexoNodeHash, Verify as _,
+        AccumulatorDiff, AmountOverflowError, Body, FilledTransaction,
+        GetAddress as _, GetValue as _, Header, InPoint, MerkleRoot, OutPoint,
+        OutPointKey, PointedOutput, SpentOutput, UtreexoNodeHash,
+        authorization::{self, BatchVerificationContext},
     },
 };
 
 /// Prevalidate a block: compute and verify all read-only checks and
 /// prepare data needed for fast connection.
 pub fn prevalidate(
+    batch_verification_ctxt: &BatchVerificationContext,
     state: &State,
     rotxn: &RoTxn,
     header: &Header,
@@ -155,7 +156,9 @@ pub fn prevalidate(
             return Err(Error::WrongPubKeyForAddress);
         }
     }
-    if Authorization::verify_body(body).is_err() {
+    if authorization::verify_authorizations(batch_verification_ctxt, body)
+        .is_err()
+    {
         return Err(Error::Authorization);
     }
     // Check root consistency without committing to DB
@@ -278,6 +281,7 @@ pub fn connect_prevalidated(
 }
 
 pub fn validate(
+    batch_verification_context: &BatchVerificationContext,
     state: &State,
     rotxn: &RoTxn,
     header: &Header,
@@ -397,7 +401,9 @@ pub fn validate(
             return Err(Error::WrongPubKeyForAddress);
         }
     }
-    if Authorization::verify_body(body).is_err() {
+    if authorization::verify_authorizations(batch_verification_context, body)
+        .is_err()
+    {
         return Err(Error::Authorization);
     }
     // Check root consistency without committing to DB
@@ -643,18 +649,22 @@ mod test {
         use crate::types::{
             Accumulator, AccumulatorDiff, Body, Header, OutPoint, OutPointKey,
             PointedOutput, Transaction, UtreexoNodeHash,
-            authorization::{SigningKey, authorize, get_address},
+            authorization::{
+                self, BatchVerificationContext, SigningKey, get_address,
+            },
             hash,
         };
 
         let (_temp_dir, env, state) =
             fresh_state("validation_rejects_outpoint_utxo_hash_mismatch")?;
+        let mut rng = rand::rng();
+        let batch_verification_ctxt = BatchVerificationContext::new(&mut rng);
 
         // Attacker key (owns A). Victim key (owns B).
-        let attacker = SigningKey::from_bytes(&[0x11; 32]);
-        let attacker_addr = get_address(&attacker.verifying_key());
-        let victim = SigningKey::from_bytes(&[0x22; 32]);
-        let victim_addr = get_address(&victim.verifying_key());
+        let attacker = SigningKey::new(&mut rng);
+        let attacker_addr = get_address((&attacker).into());
+        let victim = SigningKey::new(&mut rng);
+        let victim_addr = get_address(victim.into());
 
         // UTXO A (attacker, 10_000) and victim UTXO B (20_000).
         let outpoint_a = OutPoint::Deposit(bitcoin::OutPoint {
@@ -724,7 +734,11 @@ mod test {
             outputs: vec![output_c.clone()].into(),
         };
         // Sign with A's key (the spender of outpoint A authorizes the tx).
-        let authorized = authorize(&[(attacker_addr, &attacker)], tx)?;
+        let authorized = authorization::authorize(
+            &mut rng,
+            &[(attacker_addr, &attacker)],
+            tx,
+        )?;
 
         // Assemble body.
         let body = Body::new(vec![authorized], Coinbase::default());
@@ -765,7 +779,14 @@ mod test {
         {
             let rotxn = env.read_txn()?;
             anyhow::ensure!(
-                state.validate_block(&rotxn, &header, &body).is_err(),
+                state
+                    .validate_block(
+                        &rotxn,
+                        &batch_verification_ctxt,
+                        &header,
+                        &body
+                    )
+                    .is_err(),
                 "BUG: real validate_block accepts an input whose outpoint (A) \
                 and utxo_hash (B) refer to different UTXOs",
             );

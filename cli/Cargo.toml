@@ -15,8 +15,8 @@ jsonrpsee = { workspace = true, features = ["http-client"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_path_to_error = { workspace = true }
-thunder = { path = "../lib" }
 thunder_app_rpc_api = { path = "../rpc-api" }
+thunder_types = { path = "../types" }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
