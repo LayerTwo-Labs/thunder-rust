@@ -280,6 +280,7 @@ allow-git = [
     "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git",
     "https://github.com/mit-dci/rustreexo.git",
     "https://github.com/torkelrogstad/tokio-tracing.git?branch=log-rotation-size",
+    "https://github.com/ZcashFoundation/frost.git?rev=0966bd1529aa062ad3b621af99e277f976b1c0f0",
 ]
 
 [sources.allow-org]

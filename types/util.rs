@@ -86,7 +86,11 @@ pub(crate) mod borsh {
         where
             W: borsh::io::Write,
         {
-            borsh::BorshSerialize::serialize(&sig.to_bytes(), writer)
+            borsh::BorshSerialize::serialize(
+                sig.R().compress().as_bytes(),
+                writer,
+            )?;
+            borsh::BorshSerialize::serialize(sig.z().as_bytes(), writer)
         }
 
         pub fn utreexo_node_hash<W>(
@@ -125,7 +129,10 @@ pub(crate) mod borsh {
         where
             W: borsh::io::Write,
         {
-            borsh::BorshSerialize::serialize(&vk.to_bytes(), writer)
+            borsh::BorshSerialize::serialize(
+                vk.to_element().compress().as_bytes(),
+                writer,
+            )
         }
     }
 }

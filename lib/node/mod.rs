@@ -10,9 +10,6 @@ use bitcoin::amount::CheckedSum;
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::Stream;
 use sneed::{DbError, Env, EnvError, RwTxnError};
-use thunder_types::{
-    M6id, WithdrawalBundleStatus, state::WithdrawalBundleInfo,
-};
 use tokio::sync::Mutex;
 use tonic::transport::Channel;
 
@@ -24,10 +21,13 @@ use crate::{
     types::{
         Accumulator, Address, AmountOverflowError, AmountUnderflowError,
         Authorized, AuthorizedTransaction, BlockHash, BmmResult, Body,
-        FilledTransaction, GetValue, Header, Network, OutPoint, OutPointKey,
-        Output, SpentOutput, Tip, Transaction, Txid, WithdrawalBundle,
+        FilledTransaction, GetValue, Header, M6id, Network, OutPoint,
+        OutPointKey, Output, SpentOutput, Tip, Transaction, Txid,
+        WithdrawalBundle, WithdrawalBundleStatus,
+        authorization::{BatchVerificationContext, rand_core::CryptoRng},
         net::{Peer, PeerAddress, ResolvedPeerAddress},
         proto::{self, mainchain},
+        state::WithdrawalBundleInfo,
     },
     util::Watchable,
 };
@@ -60,6 +60,7 @@ struct TaskHandles {
 #[derive(Clone)]
 pub struct Node<MainchainTransport = Channel> {
     archive: Archive,
+    batch_verification_ctxt: BatchVerificationContext,
     cusf_mainchain: mainchain::ValidatorClient<MainchainTransport>,
     cusf_mainchain_block_producer:
         Option<Arc<Mutex<mainchain::BlockProducerClient<MainchainTransport>>>>,
@@ -74,12 +75,13 @@ impl<MainchainTransport> Node<MainchainTransport>
 where
     MainchainTransport: proto::Transport,
 {
-    pub fn new(
+    pub fn new<R>(
         config: Config,
         cusf_mainchain: mainchain::ValidatorClient<MainchainTransport>,
         cusf_mainchain_block_producer: Option<
             mainchain::BlockProducerClient<MainchainTransport>,
         >,
+        rng: &mut R,
         runtime: &tokio::runtime::Runtime,
     ) -> Result<Self, Error>
     where
@@ -88,6 +90,7 @@ where
         <MainchainTransport as tonic::client::GrpcService<
             tonic::body::Body,
         >>::Future: Send,
+        R: CryptoRng,
 {
         let Config {
             datadir,
@@ -145,10 +148,12 @@ where
                 archive.clone(),
                 cusf_mainchain.clone(),
             );
+        let batch_verification_ctxt = BatchVerificationContext::new(rng);
         let (net, peer_info_rx, dial_known_peers_handle) = Net::new(
             runtime.handle(),
             &env,
             archive.clone(),
+            batch_verification_ctxt,
             magic_bytes_override,
             network,
             state.clone(),
@@ -176,6 +181,7 @@ where
             .map(|block_producer| Arc::new(Mutex::new(block_producer)));
         Ok(Self {
             archive,
+            batch_verification_ctxt,
             cusf_mainchain,
             cusf_mainchain_block_producer,
             env,
@@ -265,8 +271,11 @@ where
                 &rotxn,
                 &mut transaction.borrow_mut().transaction,
             )?;
-            self.state
-                .validate_transaction(&rotxn, transaction.borrow())?;
+            self.state.validate_transaction(
+                &rotxn,
+                &self.batch_verification_ctxt,
+                transaction.borrow(),
+            )?;
             self.mempool.put(&mut rotxn, transaction.borrow())?;
             rotxn.commit().map_err(RwTxnError::from)?;
         }
@@ -480,7 +489,11 @@ where
             }
             if self
                 .state
-                .validate_transaction(&rwtxn, &transaction)
+                .validate_transaction(
+                    &rwtxn,
+                    &self.batch_verification_ctxt,
+                    &transaction,
+                )
                 .is_err()
             {
                 self.mempool

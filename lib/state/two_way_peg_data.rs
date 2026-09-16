@@ -1376,10 +1376,13 @@ mod test {
     #[test]
     fn deposit_reorg_round_trips() -> anyhow::Result<()> {
         use crate::types::{
-            Body, FilledTransaction, Header, proto::mainchain::Deposit,
+            Body, FilledTransaction, Header,
+            authorization::BatchVerificationContext, proto::mainchain::Deposit,
         };
 
         let (_temp_dir, env, state) = fresh_state("deposit_reorg_round_trips")?;
+        let batch_verification_ctxt =
+            BatchVerificationContext::new(&mut rand::rng());
         let empty_body = Body {
             coinbase: Coinbase::default(),
             transactions: Vec::new(),
@@ -1399,7 +1402,12 @@ mod test {
         };
         {
             let mut rwtxn = env.write_txn()?;
-            state.apply_block(&mut rwtxn, &genesis, &empty_body)?;
+            state.apply_block(
+                &mut rwtxn,
+                &batch_verification_ctxt,
+                &genesis,
+                &empty_body,
+            )?;
             state.connect_two_way_peg_data(
                 &mut rwtxn,
                 &TwoWayPegData::default(),
@@ -1436,7 +1444,12 @@ mod test {
         };
         {
             let mut rwtxn = env.write_txn()?;
-            state.apply_block(&mut rwtxn, &block1, &empty_body)?;
+            state.apply_block(
+                &mut rwtxn,
+                &batch_verification_ctxt,
+                &block1,
+                &empty_body,
+            )?;
             state.connect_two_way_peg_data(&mut rwtxn, &deposit_twpd)?;
             anyhow::ensure!(
                 state.utxos.try_get(&rwtxn, &deposit_key)?.is_some()

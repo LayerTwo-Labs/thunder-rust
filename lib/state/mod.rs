@@ -14,12 +14,13 @@ use sneed::{
 use crate::{
     types::{
         Accumulator, Address, AmountOverflowError, AmountUnderflowError,
-        Authorization, Authorized, AuthorizedTransaction, BlockHash, Body,
-        FilledTransaction, GetAddress, GetValue, Header, InPoint, M6id,
-        MerkleRoot, OutPoint, OutPointKey, Output, PointedOutput,
-        PointedOutputRef, SpentOutput, Transaction, UtreexoNodeHash,
-        UtreexoProof, VERSION, Verify, Version, WithdrawalBundle,
-        WithdrawalBundleStatus, proto::mainchain::TwoWayPegData,
+        Authorized, AuthorizedTransaction, BlockHash, Body, FilledTransaction,
+        GetAddress, GetValue, Header, InPoint, M6id, MerkleRoot, OutPoint,
+        OutPointKey, Output, PointedOutput, PointedOutputRef, SpentOutput,
+        Transaction, UtreexoNodeHash, UtreexoProof, VERSION, Version,
+        WithdrawalBundle, WithdrawalBundleStatus,
+        authorization::{self, BatchVerificationContext},
+        proto::mainchain::TwoWayPegData,
         state::WithdrawalBundleInfo,
     },
     util::Watchable,
@@ -407,6 +408,7 @@ impl State {
     pub fn validate_transaction(
         &self,
         rotxn: &RoTxn,
+        batch_verification_ctxt: &BatchVerificationContext,
         transaction: &AuthorizedTransaction,
     ) -> Result<bitcoin::Amount, Error> {
         let filled_transaction =
@@ -420,7 +422,12 @@ impl State {
                 return Err(Error::WrongPubKeyForAddress);
             }
         }
-        if Authorization::verify_transaction(transaction).is_err() {
+        if authorization::verify_authorized_transaction(
+            batch_verification_ctxt,
+            transaction,
+        )
+        .is_err()
+        {
             return Err(Error::Authorization);
         }
         let fee = self.validate_filled_transaction(&filled_transaction)?;
@@ -535,10 +542,11 @@ impl State {
     pub fn validate_block(
         &self,
         rotxn: &RoTxn,
+        batch_verification_ctxt: &BatchVerificationContext,
         header: &Header,
         body: &Body,
     ) -> Result<(bitcoin::Amount, MerkleRoot), Error> {
-        block::validate(self, rotxn, header, body)
+        block::validate(batch_verification_ctxt, self, rotxn, header, body)
     }
 
     pub fn connect_block(
@@ -554,10 +562,11 @@ impl State {
     pub fn prevalidate_block(
         &self,
         rotxn: &RoTxn,
+        batch_verification_ctxt: &BatchVerificationContext,
         header: &Header,
         body: &Body,
     ) -> Result<PrevalidatedBlock, Error> {
-        block::prevalidate(self, rotxn, header, body)
+        block::prevalidate(batch_verification_ctxt, self, rotxn, header, body)
     }
 
     /// Connect a block using prevalidated data to avoid recomputation.
@@ -575,10 +584,16 @@ impl State {
     pub fn apply_block(
         &self,
         rwtxn: &mut RwTxn,
+        batch_verification_ctxt: &BatchVerificationContext,
         header: &Header,
         body: &Body,
     ) -> Result<(), Error> {
-        let pre = self.prevalidate_block(rwtxn, header, body)?;
+        let pre = self.prevalidate_block(
+            rwtxn,
+            batch_verification_ctxt,
+            header,
+            body,
+        )?;
         let _: MerkleRoot =
             self.connect_prevalidated_block(rwtxn, header, body, pre)?;
         Ok(())

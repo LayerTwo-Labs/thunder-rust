@@ -6,11 +6,14 @@ blake3 = { workspace = true }
 borsh = { workspace = true, features = ["derive"] }
 clap = { workspace = true, features = ["derive"], optional = true }
 const-hex = { workspace = true, features = ["serde"] }
-ed25519-dalek = { workspace = true, features = ["batch", "serde"] }
+curve25519-dalek = { workspace = true, features = ["serde"] }
+frost-core = { workspace = true, features = ["internals"] }
+frost-ristretto255 = { workspace = true, features = ["serde"] }
 hashlink = { workspace = true, features = ["serde_impl"] }
 heed = { workspace = true, optional = true }
 merkle-cbt = { workspace = true }
 nonempty = { workspace = true }
+rand = { workspace = true, features = ["chacha"] }
 rayon = { workspace = true }
 rustreexo = { workspace = true, features = ["with-serde"] }
 semver = { workspace = true, features = ["serde"] }

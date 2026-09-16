@@ -12,10 +12,10 @@ pub struct AmountUnderflow;
 pub enum Authorization {
     #[error("borsh serialization error")]
     BorshSerialize(#[from] borsh::io::Error),
-    #[error("ed25519 error")]
-    Ed25519(#[from] ed25519_dalek::SignatureError),
     #[error("not enough authorizations")]
     NotEnoughAuthorizations,
+    #[error("signature verification error")]
+    SignatureVerification(#[from] frost_ristretto255::Error),
     #[error("too many authorizations")]
     TooManyAuthorizations,
     #[error(

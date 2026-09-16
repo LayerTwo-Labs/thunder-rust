@@ -513,14 +513,6 @@ impl Serialize for Accumulator {
     }
 }
 
-pub trait Verify {
-    type Error;
-    fn verify_transaction(
-        transaction: &AuthorizedTransaction,
-    ) -> Result<(), Self::Error>;
-    fn verify_body(body: &Body) -> Result<(), Self::Error>;
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum BmmResult {
     Verified,

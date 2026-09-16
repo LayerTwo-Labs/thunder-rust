@@ -4,12 +4,12 @@ use clap::{Parser, Subcommand};
 use http::HeaderMap;
 use jsonrpsee::{core::client::ClientT, http_client::HttpClientBuilder};
 
-use thunder::types::{Address, M6id, Txid, net::PeerAddress};
 use thunder_app_rpc_api::{
     node::{PrivateRpcClient as _, RpcClient as _, get_block::RpcClient as _},
     typewit::const_marker::Bool,
     wallet::RpcClient as _,
 };
+use thunder_types::{Address, M6id, Txid, net::PeerAddress};
 use tracing_subscriber::layer::SubscriberExt as _;
 
 struct JsonParser<T>(PhantomData<T>);
@@ -79,7 +79,7 @@ pub enum Command {
     GetBestSidechainBlockHash,
     /// Get the block with specified block hash, if it exists
     GetBlock {
-        block_hash: thunder::types::BlockHash,
+        block_hash: thunder_types::BlockHash,
         verbose: Option<bool>,
     },
     /// Get the current block count
@@ -91,7 +91,7 @@ pub enum Command {
     GetBlockTemplate,
     /// Get mainchain blocks that commit to a specified block hash
     GetBmmInclusions {
-        block_hash: thunder::types::BlockHash,
+        block_hash: thunder_types::BlockHash,
     },
     /// Get a new address
     GetNewAddress,
@@ -116,7 +116,7 @@ pub enum Command {
     /// Invalidate a block, potentially re-orging to a valid ancestor of the
     /// current tip.
     InvalidateBlock {
-        block_hash: thunder::types::BlockHash,
+        block_hash: thunder_types::BlockHash,
     },
     /// Get the height of the latest failed withdrawal bundle
     LatestFailedWithdrawalBundleHeight,
@@ -142,8 +142,8 @@ pub enum Command {
     SidechainWealth,
     /// Sign a transaction, and optionally broadcast it.
     SignTransaction {
-        #[arg(value_parser = JsonParser::<thunder::types::Transaction>::parse)]
-        transaction: thunder::types::Transaction,
+        #[arg(value_parser = JsonParser::<thunder_types::Transaction>::parse)]
+        transaction: thunder_types::Transaction,
         #[arg(default_value_t = false)]
         broadcast: bool,
     },
@@ -151,9 +151,9 @@ pub enum Command {
     SubmitTransaction {
         #[arg(
             value_parser =
-                JsonParser::<thunder::types::AuthorizedTransaction>::parse
+                JsonParser::<thunder_types::AuthorizedTransaction>::parse
         )]
-        transaction: thunder::types::AuthorizedTransaction,
+        transaction: thunder_types::AuthorizedTransaction,
     },
     /// Stop the node
     Stop,
