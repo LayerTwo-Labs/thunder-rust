@@ -176,40 +176,47 @@ impl Outputs {
         self.0.as_slice()
     }
 
+    fn merkle_leaves(
+        &self,
+    ) -> Result<Vec<CmbtNodeResult>, error::ComputeMerkleRoot> {
+        let n_outputs = self.len();
+        self.iter()
+            .enumerate()
+            .map(|(idx, output)| -> Result<_, error::ComputeMerkleRoot> {
+                let value = output.get_value();
+                let canonical_size =
+                    output.canonical_size().map_err(|err| {
+                        error::ComputeMerkleRoot::TxCanonicalSize {
+                            index: idx,
+                            source: err,
+                        }
+                    })?;
+                let leaf_pre_commitment = CbmtLeafPreCommitment {
+                    value,
+                    canonical_size,
+                    output,
+                };
+                Ok(CmbtNodeResult {
+                    value: Ok(CbmtNode {
+                        commitment: hashes::hash(&leaf_pre_commitment),
+                        value,
+                        canonical_size,
+                    }),
+                    // see https://github.com/nervosnetwork/merkle-tree/blob/5d1898263e7167560fdaa62f09e8d52991a1c712/README.md#tree-struct
+                    index: (idx + n_outputs) - 1,
+                })
+            })
+            .collect::<Result<_, _>>()
+    }
+
     pub(crate) fn compute_merkle_root(
         &self,
     ) -> Result<OutputsMerkleRoot, error::ComputeMerkleRoot> {
         let CbmtNode { commitment, .. } = {
-            let n_outputs = self.len();
-            let leaves: Vec<CmbtNodeResult> = self
-                .iter()
-                .enumerate()
-                .map(|(idx, output)| -> Result<_, error::ComputeMerkleRoot> {
-                    let value = output.get_value();
-                    let canonical_size =
-                        output.canonical_size().map_err(|err| {
-                            error::ComputeMerkleRoot::TxCanonicalSize {
-                                index: idx,
-                                source: err,
-                            }
-                        })?;
-                    let leaf_pre_commitment = CbmtLeafPreCommitment {
-                        value,
-                        canonical_size,
-                        output,
-                    };
-                    Ok(CmbtNodeResult {
-                        value: Ok(CbmtNode {
-                            commitment: hashes::hash(&leaf_pre_commitment),
-                            value,
-                            canonical_size,
-                        }),
-                        // see https://github.com/nervosnetwork/merkle-tree/blob/5d1898263e7167560fdaa62f09e8d52991a1c712/README.md#tree-struct
-                        index: (idx + n_outputs) - 1,
-                    })
-                })
-                .collect::<Result<_, _>>()?;
-            CbmtWithValueSizeTotal::build_merkle_root(leaves.as_slice()).value?
+            CbmtWithValueSizeTotal::build_merkle_root(
+                self.merkle_leaves()?.as_slice(),
+            )
+            .value?
         };
         Ok(commitment.into())
     }
@@ -264,5 +271,60 @@ impl<'a> IntoIterator for &'a Outputs {
     #[inline(always)]
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::{
+        address::Address,
+        transaction::{
+            output::{self, Output},
+            outputs::{CbmtWithValueSizeTotal, Outputs},
+        },
+    };
+
+    #[test]
+    fn test_merkle_proof() -> anyhow::Result<()> {
+        use rand::{
+            Rng as _, RngExt as _, SeedableRng as _, rngs::ChaCha20Rng,
+        };
+        const N_OUTPUTS: usize = 10;
+        let max_output_value = bitcoin::Amount::from_sat(
+            bitcoin::Amount::MAX_MONEY.to_sat() / N_OUTPUTS as u64,
+        );
+        let mut rng = ChaCha20Rng::from_rng(&mut rand::rng());
+        let outputs: Outputs = (0..N_OUTPUTS)
+            .map(|_| {
+                let mut address = Address([0; 20]);
+                rng.fill_bytes(&mut address.0);
+                let value_sats = rng.random_range(1..max_output_value.to_sat());
+                let value = bitcoin::Amount::from_sat(value_sats);
+                Output {
+                    address,
+                    content: output::Content::Value(value),
+                }
+            })
+            .collect::<Vec<_>>()
+            .into();
+        let merkle_leaves = outputs.merkle_leaves()?;
+        let merkle_tree =
+            CbmtWithValueSizeTotal::build_merkle_tree(merkle_leaves.as_slice());
+        let merkle_root = merkle_tree.root();
+        let root_commitment = match &merkle_root.value {
+            Ok(root) => root.commitment,
+            Err(err) => return Err(anyhow::Error::new(*err)),
+        };
+        anyhow::ensure!(root_commitment == outputs.compute_merkle_root()?.0);
+        // select a random output
+        let output_idx = rng.random_range(0..outputs.len());
+        let output = merkle_leaves[output_idx].clone();
+        let merkle_proof = merkle_tree
+            .build_proof(&[output_idx as u32])
+            .ok_or_else(|| anyhow::anyhow!("generating merkle proof failed"))?;
+        if !merkle_proof.verify(&merkle_root, &[output]) {
+            anyhow::bail!("verifying merkle proof failed")
+        }
+        Ok(())
     }
 }

@@ -27,6 +27,7 @@ utoipa = { workspace = true, features = ["macros", "non_strict_integers"] }
 
 [dev-dependencies]
 anyhow = { workspace = true }
+rand = { workspace = true, features = ["thread_rng"] }
 
 [features]
 clap = ["dep:clap"]
