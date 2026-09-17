@@ -26,7 +26,7 @@ pub const fn magic_bytes(network: Network) -> MagicBytes {
             Network::Regtest => 0b0000_0000,
             Network::Signet => 0b0000_0001,
             Network::Forknet => 0b0000_0010,
-            Network::Alphanet => 0b0000_0011,
+            // Network::Alphanet => 0b0000_0011,
             Network::Betanet => 0b0000_0100,
         }
     }
