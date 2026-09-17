@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use sneed::{db::error as db, env::error as env, rwtxn::error as rwtxn};
 use thiserror::Error;
 use transitive::Transitive;
@@ -5,7 +7,7 @@ use transitive::Transitive;
 use crate::types::{
     AmountOverflowError, AmountUnderflowError, BlockHash,
     ComputeMerkleRootError, M6id, MerkleRoot, OutPoint, Txid, UtreexoError,
-    WithdrawalBundleError,
+    Version, WithdrawalBundleError,
 };
 
 #[derive(Debug, Error)]
@@ -141,6 +143,12 @@ pub enum Error {
     ComputeMerkleRoot(#[from] ComputeMerkleRootError),
     #[error(transparent)]
     Db(#[from] sneed::Error),
+    #[error(
+        "Incompatible DB version ({}). Please clear the DB (`{}`) and re-sync",
+        .version,
+        .db_path.display()
+    )]
+    IncompatibleVersion { version: Version, db_path: PathBuf },
     #[error(
         "invalid body: expected merkle root {expected}, but computed {computed}"
     )]

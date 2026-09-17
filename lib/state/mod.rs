@@ -125,15 +125,23 @@ impl State {
                 .map_err(EnvError::from)?;
         let version = DatabaseUnique::create(env, &mut rwtxn, "state_version")
             .map_err(EnvError::from)?;
-        if version
-            .try_get(&rwtxn, &())
-            .map_err(DbError::from)?
-            .is_none()
-        {
-            version
-                .put(&mut rwtxn, &(), &*VERSION)
-                .map_err(DbError::from)?;
-        }
+        match version.try_get(&rwtxn, &())? {
+            Some(db_version)
+                if db_version
+                    < Version {
+                        major: 0,
+                        minor: 18,
+                        patch: 0,
+                    } =>
+            {
+                return Err(Error::IncompatibleVersion {
+                    version: db_version,
+                    db_path: env.path().to_path_buf(),
+                });
+            }
+            Some(_) => (),
+            None => version.put(&mut rwtxn, &(), &*VERSION)?,
+        };
         rwtxn.commit().map_err(RwTxnError::from)?;
         Ok(Self {
             tip,

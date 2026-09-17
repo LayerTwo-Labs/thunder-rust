@@ -122,14 +122,10 @@ impl Archive {
                 if db_version
                     < Version {
                         major: 0,
-                        minor: 15,
+                        minor: 18,
                         patch: 0,
                     } =>
             {
-                // `txid_to_inclusions` added in 0.15.0
-                // Merkle root structure changed in 0.13.0
-                // `deposits` and `main_bmm_commitments` were removed in
-                // 0.12.0, and `main_block_infos` was added
                 return Err(Error::IncompatibleVersion {
                     version: db_version,
                     db_path: env.path().to_path_buf(),
