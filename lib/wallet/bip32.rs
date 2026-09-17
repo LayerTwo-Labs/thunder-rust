@@ -98,7 +98,21 @@ impl<const PREFIX: bool> Update for Hasher<PREFIX> {
     }
 }
 
-fn scalar_from_be_bytes(mut bytes: [u8; 32]) -> Scalar {
+/// Construct a scalar from uniformly random bytes, by interpreting as a
+/// big-endian encoding of a 256-bit integer, clearing the high 3 bits,
+/// and reducing modulo the group order.
+///
+/// The bias from this is of the same order of magnitude as for 256-bit
+/// reduction modulo the group order for secp256k1.
+/// This is because `ℓ ≈ 2^252`, so `2 × ℓ ≈ 2^253`.
+/// The bias is therefore `(2ℓ − 2^253) / ℓ ≈ 2^125.4 / ℓ ≈ 2^-126.62`, and the
+/// total variation distance is approximately `2^-126.62 / 2 = 2^-127.62`.
+/// Note that the total variation distance for 256-bit reduction for secp256k1
+/// is approximately `2^-127.65`, so the security is only `~0.037` bits less
+/// than 256-bit reduction for secp256k1.
+fn scalar_from_uniform_be_bytes(mut bytes: [u8; 32]) -> Scalar {
+    // Clear the highest 3 bits
+    bytes[0] &= 0b0001_1111;
     bytes.reverse();
     Scalar::from_bytes_mod_order(bytes)
 }
@@ -109,7 +123,7 @@ impl<const PREFIX: bool> FixedOutputAs<(Scalar, SecretExtra, ArrayN<u8, 32>)>
     fn finalize_as(self) -> (Scalar, SecretExtra, ArrayN<u8, 32>) {
         let full_digest: [u8; 64] = Hmac::from_engine(self.0).to_byte_array();
         let (zl, chaincode) = full_digest.split_first_chunk::<32>().unwrap();
-        let zl = scalar_from_be_bytes(*zl);
+        let zl = scalar_from_uniform_be_bytes(*zl);
         (zl, SecretExtra, Array::try_from(chaincode).unwrap())
     }
 }
@@ -156,7 +170,7 @@ pub(in crate::wallet) fn new_master_xpriv(seed: &[u8]) -> Xpriv {
     let hmac_result: [u8; 64] = Hmac::from_engine(hmac_engine).to_byte_array();
     let (secret_bytes, chaincode) =
         hmac_result.split_first_chunk::<32>().unwrap();
-    let secret_scalar = scalar_from_be_bytes(*secret_bytes);
+    let secret_scalar = scalar_from_uniform_be_bytes(*secret_bytes);
     Xpriv::new_master(
         secret_scalar,
         SecretExtra,
