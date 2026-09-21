@@ -863,9 +863,12 @@ impl NetTask {
                 .contains_key(&rwtxn, &state_tip)
                 .map_err(archive::Error::from)?
         {
-            let header = ctxt.archive.get_header(&rwtxn, state_tip)?;
-            let body = ctxt.archive.get_body(&rwtxn, state_tip)?;
-            let () = ctxt.state.disconnect_tip(&mut rwtxn, &header, &body)?;
+            let () = disconnect_tip_(
+                &mut rwtxn,
+                &ctxt.archive,
+                &ctxt.mempool,
+                &ctxt.state,
+            )?;
         }
         let best_side_tip = ctxt
             .archive
