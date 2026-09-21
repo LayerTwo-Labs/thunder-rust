@@ -1,5 +1,6 @@
 use borsh::BorshSerialize;
 use serde::{Deserialize, Serialize};
+use serde_with::{DisplayFromStr, IfIsHumanReadable, serde_as};
 use utoipa::ToSchema;
 
 use crate::{
@@ -12,6 +13,7 @@ pub use body::Body;
 pub mod coinbase;
 pub use coinbase::Coinbase;
 
+#[serde_as]
 #[derive(
     BorshSerialize,
     Clone,
@@ -32,6 +34,7 @@ pub struct Header {
     /// Utreexo roots
     #[borsh(serialize_with = "util::borsh::serialize::utreexo_roots")]
     #[schema(value_type = Vec<schema::UtreexoNodeHash>)]
+    #[serde_as(as = "Vec<IfIsHumanReadable<DisplayFromStr>>")]
     pub roots: Vec<UtreexoNodeHash>,
 }
 
