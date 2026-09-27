@@ -9,7 +9,7 @@ authors = [
     "Nikita Chashchinskii <nikita.chashchinskii@gmail.com>",
 ]
 edition = "2024"
-license-file = "LICENSE.txt"
+license = "MIT"
 publish = false
 version = "0.18.1"
 

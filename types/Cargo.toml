@@ -45,6 +45,6 @@ workspace = true
 name = "thunder_types"
 authors.workspace = true
 edition.workspace = true
-license-file.workspace = true
+license.workspace = true
 publish.workspace = true
 version.workspace = true
