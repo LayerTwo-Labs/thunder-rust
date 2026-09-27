@@ -13,6 +13,7 @@ use thunder_app_rpc_api::node::RpcClient as _;
 
 use crate::{
     block_template::block_template_trial,
+    block_template_address::block_template_address_trial,
     ibd::{ibd_trial, reorg_across_deposit_trial},
     setup::{Init, PostSetup},
     unknown_withdrawal::unknown_withdrawal_trial,
@@ -179,6 +180,11 @@ pub fn tests(
             failure_collector.clone(),
         ),
         reorg_across_deposit_trial(
+            bin_paths.clone(),
+            file_registry.clone(),
+            failure_collector.clone(),
+        ),
+        block_template_address_trial(
             bin_paths.clone(),
             file_registry.clone(),
             failure_collector.clone(),

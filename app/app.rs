@@ -494,8 +494,10 @@ impl App {
             let coinbase = {
                 let outputs = match tx_fees {
                     bitcoin::Amount::ZERO => Vec::new(),
+                    // A template is built on every poll and mostly thrown
+                    // away, so it must not derive an address each time.
                     _ => vec![types::Output {
-                        address: self.wallet.get_new_address()?,
+                        address: self.wallet.get_or_generate_last_address()?,
                         content: types::OutputContent::Value(tx_fees),
                     }],
                 };
