@@ -439,7 +439,10 @@ where
                 let parent_info = if header_info.prev_block_hash
                     != bitcoin::BlockHash::all_zeros()
                 {
-                    Some(archive.get_main_header_info(&rwtxn, &block_hash)?)
+                    Some(archive.get_main_header_info(
+                        &rwtxn,
+                        &header_info.prev_block_hash,
+                    )?)
                 } else {
                     None
                 };
@@ -494,7 +497,7 @@ where
         }
     }
 
-    async fn run(mut self) -> Result<(), Error> {
+    async fn run_once(&mut self) -> Result<(), Error> {
         let (best_main_tip, block_event_stream) =
             Self::subscribe_block_events(&mut self.mainchain).await?;
         if !Self::request_ancestor_infos(
@@ -539,12 +542,13 @@ where
         }
         let block_event_stream =
             block_event_stream.map_ok(MailboxItem::BlockEvent);
-        let request_stream = self.request_rx.map(|(request, response_tx)| {
-            Ok(MailboxItem::Request {
-                request,
-                response_tx,
-            })
-        });
+        let request_stream =
+            (&mut self.request_rx).map(|(request, response_tx)| {
+                Ok(MailboxItem::Request {
+                    request,
+                    response_tx,
+                })
+            });
         let mut mailbox_stream =
             futures::stream::select(block_event_stream, request_stream);
 
@@ -575,6 +579,28 @@ where
             }
         }
         Ok(())
+    }
+
+    /// Run the task, and start it again after it stops. The mainchain node can
+    /// stop at any time, and the node must connect to it again.
+    async fn run(mut self) {
+        const RECONNECT_DELAY: Duration = Duration::from_secs(5);
+
+        loop {
+            match self.run_once().await {
+                Ok(()) => {
+                    tracing::warn!("Mainchain task: the event stream closed")
+                }
+                Err(err) => tracing::error!(
+                    "Mainchain task error: {:#}",
+                    ErrorChain::new(&err)
+                ),
+            }
+            tokio::time::sleep(RECONNECT_DELAY).await;
+            tracing::info!(
+                "Mainchain task: connect to the mainchain node again"
+            );
+        }
     }
 }
 
@@ -609,14 +635,7 @@ impl MainchainTaskHandle {
             request_rx,
             event_tx,
         };
-        let task = spawn(async move {
-            if let Err(err) = task.run().await {
-                tracing::error!(
-                    "Mainchain task error: {:#}",
-                    ErrorChain::new(&err)
-                );
-            }
-        });
+        let task = spawn(task.run());
         let task_handle = MainchainTaskHandle {
             task: Arc::new(task),
             request_tx,
@@ -660,5 +679,130 @@ impl Drop for MainchainTaskHandle {
         if let Some(task) = Arc::get_mut(&mut self.task) {
             task.abort()
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use bitcoin::hashes::Hash as _;
+    use futures::channel::mpsc;
+
+    use super::{
+        Archive, BlockHeaderInfo, MainchainBlockEvent, MainchainTask,
+        MainchainTaskHandle, Request, ValidatorClient,
+    };
+    use crate::types::proto::mainchain::BlockInfo;
+
+    type Task = MainchainTask<tonic::transport::Channel>;
+
+    fn temp_env(
+        test_name: &str,
+    ) -> anyhow::Result<(temp_dir::TempDir, sneed::Env<heed::WithoutTls>)> {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let temp_dir = temp_dir::TempDir::with_prefix(format!(
+            "thunder-{test_name}-{}-{nanos}",
+            std::process::id()
+        ))?;
+        let mut opts = heed::EnvOpenOptions::new().read_txn_without_tls();
+        opts.map_size(64 * 1024 * 1024).max_dbs(Archive::NUM_DBS);
+        let env = unsafe { sneed::Env::open(&opts, temp_dir.path()) }?;
+        Ok((temp_dir, env))
+    }
+
+    fn main_header_info(height: u32) -> BlockHeaderInfo {
+        let block_hash = |height: u32| {
+            let mut bytes = [0u8; 32];
+            bytes[0] = 0xff;
+            bytes[1..5].copy_from_slice(&height.to_le_bytes());
+            bitcoin::BlockHash::from_byte_array(bytes)
+        };
+        BlockHeaderInfo {
+            block_hash: block_hash(height),
+            prev_block_hash: if height == 0 {
+                bitcoin::BlockHash::all_zeros()
+            } else {
+                block_hash(height - 1)
+            },
+            height,
+            work: bitcoin::Work::from_le_bytes([1; 32]),
+        }
+    }
+
+    /// A disconnect must return the mainchain tip to the parent of the block
+    /// it removes, so that the same block connects again.
+    #[test]
+    fn a_disconnect_returns_the_tip_to_the_parent() -> anyhow::Result<()> {
+        let (_temp_dir, env) = temp_env("disconnect-main-tip")?;
+        let archive = Archive::new(&env)?;
+        let (mut event_tx, _event_rx) = mpsc::unbounded();
+        let connect = |height: u32| MainchainBlockEvent::ConnectBlock {
+            header_info: main_header_info(height),
+            block_info: BlockInfo {
+                bmm_commitment: None,
+                events: Vec::new(),
+            },
+        };
+
+        for height in 0..2 {
+            let () = Task::handle_block_event(
+                &env,
+                &archive,
+                &mut event_tx,
+                connect(height),
+            )?;
+        }
+        let () = Task::handle_block_event(
+            &env,
+            &archive,
+            &mut event_tx,
+            MainchainBlockEvent::DisconnectBlock {
+                block_hash: main_header_info(1).block_hash,
+            },
+        )?;
+        {
+            let rotxn = env.read_txn()?;
+            let tip = archive.side_tips().get_mainchain_tip(&rotxn)?;
+            anyhow::ensure!(
+                tip.tip_info.map(|info| info.block_hash)
+                    == Some(main_header_info(0).block_hash),
+                "the disconnect left the tip at the block it removed"
+            );
+        }
+        // The block connects again, which it cannot do while the tip holds it.
+        let () = Task::handle_block_event(
+            &env,
+            &archive,
+            &mut event_tx,
+            connect(1),
+        )?;
+        Ok(())
+    }
+
+    /// The mainchain node can go away, and the task must take a request after
+    /// it does. A task that stops for good closes the request channel.
+    #[tokio::test]
+    async fn the_task_takes_a_request_after_the_mainchain_node_fails()
+    -> anyhow::Result<()> {
+        let (_temp_dir, env) = temp_env("mainchain-task-restart")?;
+        let archive = Archive::new(&env)?;
+        // Port 1 accepts nothing, so every call to the validator service fails.
+        let transport = tonic::transport::channel::Channel::from_static(
+            "http://127.0.0.1:1",
+        )
+        .connect_lazy();
+        let (task_handle, _event_rx) = MainchainTaskHandle::new(
+            env,
+            archive,
+            ValidatorClient::new(transport),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let request = Request::AncestorInfos(bitcoin::BlockHash::all_zeros());
+        anyhow::ensure!(
+            task_handle.request(request).is_ok(),
+            "the task stopped, so it took no request"
+        );
+        Ok(())
     }
 }
