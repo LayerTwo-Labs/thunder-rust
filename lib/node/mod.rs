@@ -9,7 +9,7 @@ use std::{
 use bitcoin::amount::CheckedSum;
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::Stream;
-use sneed::{DbError, Env, EnvError, RwTxnError};
+use sneed::{DbError, Env, EnvError, RoTxn, RwTxnError};
 use tokio::sync::Mutex;
 use tonic::transport::Channel;
 
@@ -27,7 +27,7 @@ use crate::{
         authorization::{BatchVerificationContext, rand_core::CryptoRng},
         net::{Peer, PeerAddress, ResolvedPeerAddress},
         proto::{self, mainchain},
-        state::WithdrawalBundleInfo,
+        state::{TwoWayPegEvent, WithdrawalBundleInfo},
     },
     util::Watchable,
 };
@@ -392,6 +392,27 @@ where
         Ok(self.archive.get_header(&txn, block_hash)?)
     }
 
+    fn try_get_block_hash_at(
+        &self,
+        rotxn: &RoTxn,
+        height: u32,
+    ) -> Result<Option<BlockHash>, Error> {
+        let Some(tip) = self.state.try_get_tip(rotxn)? else {
+            return Ok(None);
+        };
+        let Some(tip_height) = self.state.try_get_height(rotxn)? else {
+            return Ok(None);
+        };
+        if tip_height >= height {
+            self.archive
+                .ancestors(rotxn, tip)
+                .nth((tip_height - height) as usize)
+                .map_err(Error::from)
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Get the block hash at the specified height in the active chain,
     /// if it exists
     pub fn try_get_block_hash(
@@ -399,20 +420,23 @@ where
         height: u32,
     ) -> Result<Option<BlockHash>, Error> {
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
-        let Some(tip) = self.state.try_get_tip(&rotxn)? else {
-            return Ok(None);
-        };
-        let Some(tip_height) = self.state.try_get_height(&rotxn)? else {
-            return Ok(None);
-        };
-        if tip_height >= height {
-            self.archive
-                .ancestors(&rotxn, tip)
-                .nth((tip_height - height) as usize)
-                .map_err(Error::from)
-        } else {
-            Ok(None)
+        self.try_get_block_hash_at(&rotxn, height)
+    }
+
+    /// Get the coin movements that a block applied outside its body, in the
+    /// order the node applied them
+    pub fn get_two_way_peg_events(
+        &self,
+        block_hash: BlockHash,
+    ) -> Result<Vec<TwoWayPegEvent>, Error> {
+        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
+        let height = self.archive.get_height(&rotxn, block_hash)?;
+        // The events are keyed by height, so a block off the active chain
+        // would read another block's events.
+        if self.try_get_block_hash_at(&rotxn, height)? != Some(block_hash) {
+            return Err(Error::NotInActiveChain { block_hash });
         }
+        Ok(self.state.get_two_way_peg_events(&rotxn, height)?)
     }
 
     pub fn try_get_body(

@@ -102,6 +102,10 @@ pub enum Command {
     },
     /// Get transaction by txid
     GetTransaction { txid: Txid },
+    /// Get the coin movements that a block applied outside its body
+    GetTwoWayPegEvents {
+        block_hash: thunder_types::BlockHash,
+    },
     /// Get utxos for addresses
     GetUtxos {
         #[arg(required = true)]
@@ -297,6 +301,10 @@ where
         Command::GetTransaction { txid } => {
             let tx_info = rpc_client.get_transaction(txid).await?;
             serde_json::to_string_pretty(&tx_info)?
+        }
+        Command::GetTwoWayPegEvents { block_hash } => {
+            let events = rpc_client.get_two_way_peg_events(block_hash).await?;
+            serde_json::to_string_pretty(&events)?
         }
         Command::GetUtxos { addresses } => {
             let addresses = addresses.into_iter().collect();

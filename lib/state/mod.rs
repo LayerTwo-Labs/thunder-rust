@@ -21,7 +21,7 @@ use crate::{
         WithdrawalBundle, WithdrawalBundleStatus,
         authorization::{self, BatchVerificationContext},
         proto::mainchain::TwoWayPegData,
-        state::WithdrawalBundleInfo,
+        state::{TwoWayPegEvent, WithdrawalBundleInfo},
     },
     util::Watchable,
 };
@@ -79,12 +79,16 @@ pub struct State {
         SerdeBincode<u32>,
         SerdeBincode<(bitcoin::BlockHash, u32)>,
     >,
+    /// Coin movements that no block body carries, keyed by the height that
+    /// applied them, in the order the node applied them
+    two_way_peg_events:
+        DatabaseUnique<SerdeBincode<u32>, SerdeBincode<Vec<TwoWayPegEvent>>>,
     pub utreexo_accumulator: DatabaseUnique<UnitKey, SerdeBincode<Accumulator>>,
     _version: DatabaseUnique<UnitKey, SerdeBincode<Version>>,
 }
 
 impl State {
-    pub const NUM_DBS: u32 = 11;
+    pub const NUM_DBS: u32 = 12;
 
     pub fn new<Tls>(env: &sneed::Env<Tls>) -> Result<Self, Error> {
         let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
@@ -120,6 +124,9 @@ impl State {
             "withdrawal_bundle_event_blocks",
         )
         .map_err(EnvError::from)?;
+        let two_way_peg_events =
+            DatabaseUnique::create(env, &mut rwtxn, "two_way_peg_events")
+                .map_err(EnvError::from)?;
         let utreexo_accumulator =
             DatabaseUnique::create(env, &mut rwtxn, "utreexo_accumulator")
                 .map_err(EnvError::from)?;
@@ -153,9 +160,24 @@ impl State {
             withdrawal_bundles,
             deposit_blocks,
             withdrawal_bundle_event_blocks,
+            two_way_peg_events,
             utreexo_accumulator,
             _version: version,
         })
+    }
+
+    /// Coin movements that the block at this height applied outside its body,
+    /// in the order the node applied them
+    pub fn get_two_way_peg_events(
+        &self,
+        rotxn: &RoTxn,
+        height: u32,
+    ) -> Result<Vec<TwoWayPegEvent>, Error> {
+        let events = self
+            .two_way_peg_events
+            .try_get(rotxn, &height)?
+            .unwrap_or_default();
+        Ok(events)
     }
 
     pub fn try_get_tip(
