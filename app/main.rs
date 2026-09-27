@@ -228,6 +228,7 @@ fn main() -> anyhow::Result<()> {
         network: config.network,
         network_magic_override: config.network_magic_override,
         server_names: config.server_names,
+        spend_zero_conf_change: config.spend_zero_conf_change,
         wallet_dir: config.wallet_dir,
     };
     let app = app::App::new(app_config).inspect(|app| {

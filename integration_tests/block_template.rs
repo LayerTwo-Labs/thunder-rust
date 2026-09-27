@@ -55,6 +55,7 @@ async fn block_template_task(
         Init {
             thunder_app: bin_paths.thunder()?.clone(),
             data_dir_suffix: None,
+            extra_args: Vec::new(),
         },
         &enforcer_post_setup,
         res_tx,

@@ -111,6 +111,8 @@ pub enum Command {
     GetWalletAddresses,
     /// Get wallet UTXOs
     GetWalletUtxos,
+    /// Get the unconfirmed wallet UTXOs that the wallet may spend
+    GetUnconfirmedWalletUtxos,
     /// Get withdrawal bundle by M6id
     GetWithdrawalBundle { m6id: M6id },
     /// Invalidate a block, potentially re-orging to a valid ancestor of the
@@ -309,6 +311,10 @@ where
         }
         Command::GetWalletUtxos => {
             let utxos = rpc_client.get_wallet_utxos().await?;
+            serde_json::to_string_pretty(&utxos)?
+        }
+        Command::GetUnconfirmedWalletUtxos => {
+            let utxos = rpc_client.get_unconfirmed_wallet_utxos().await?;
             serde_json::to_string_pretty(&utxos)?
         }
         Command::GetWithdrawalBundle { m6id } => {

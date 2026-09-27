@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::{
+    AccumulatorDiff,
     authorization::Authorization,
     block::coinbase::Coinbase,
     error,
@@ -233,10 +234,10 @@ impl Body {
     where
         FilledTx: Borrow<FilledTransaction>,
     {
-        // New leaves for the accumulator
-        let mut accumulator_add = Vec::<UtreexoNodeHash>::new();
-        // Accumulator leaves to delete
-        let mut accumulator_del = Vec::<UtreexoNodeHash>::new();
+        // A leaf that a transaction makes and a later transaction of the same
+        // body spends never reaches the accumulator, so the diff cancels the
+        // pair instead of asking rustreexo to add and delete it at once.
+        let mut diff = AccumulatorDiff::default();
         for (vout, output) in coinbase_outputs.iter().enumerate() {
             let outpoint = OutPoint::Coinbase {
                 txid: coinbase_txid,
@@ -246,13 +247,13 @@ impl Body {
                 outpoint,
                 output: output.clone(),
             };
-            accumulator_add.push((&pointed_output).into());
+            diff.insert((&pointed_output).into());
         }
         for tx in txs {
             let tx = tx.borrow();
             let txid = tx.transaction.txid();
             for (_, utxo_hash) in tx.transaction.inputs.iter() {
-                accumulator_del.push(utxo_hash.into());
+                diff.remove(utxo_hash.into());
             }
             for (vout, output) in tx.transaction.outputs.iter().enumerate() {
                 let outpoint = OutPoint::Regular {
@@ -263,9 +264,10 @@ impl Body {
                     outpoint,
                     output: output.clone(),
                 };
-                accumulator_add.push((&pointed_output).into());
+                diff.insert((&pointed_output).into());
             }
         }
+        let (accumulator_add, accumulator_del) = diff.into_parts();
         let () = memforest
             .modify(&accumulator_add, &accumulator_del)
             .map_err(error::Utreexo)?;

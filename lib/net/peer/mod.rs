@@ -18,6 +18,7 @@ use tokio::{spawn, task::JoinHandle, time::Duration};
 
 use crate::{
     archive::Archive,
+    mempool::MemPool,
     state::State,
     types::{
         AuthorizedTransaction, Hash, Tip, Version, hash,
@@ -366,6 +367,7 @@ pub struct ConnectionContext {
     pub batch_verification_ctxt: BatchVerificationContext,
     pub magic_bytes: message::MagicBytes,
     pub resolved_address: ResolvedPeerAddress,
+    pub mempool: MemPool,
     pub state: State,
 }
 

@@ -686,9 +686,12 @@ impl ConnectionTask {
         let txid = tx.transaction.txid();
         let validate_tx_result = {
             let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
+            let unconfirmed =
+                ctxt.mempool.unconfirmed_outputs(&rotxn, &tx.transaction)?;
             ctxt.state.validate_transaction(
                 &rotxn,
                 &ctxt.batch_verification_ctxt,
+                &unconfirmed,
                 &tx,
             )
         };
