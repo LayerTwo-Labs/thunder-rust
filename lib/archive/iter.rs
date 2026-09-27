@@ -202,7 +202,8 @@ pub mod mainchain_ancestors_rev {
                 None => self.inner.insert(Inner {
                     end_height: self
                         .archive
-                        .get_main_height(self.rotxn, self.end_block_hash)?,
+                        .get_main_header_info(self.rotxn, &self.end_block_hash)?
+                        .height,
                     buffer: Vec::with_capacity(MAX_BATCH_SIZE as usize),
                 }),
             };
