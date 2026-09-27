@@ -28,6 +28,7 @@ pub struct Config {
     pub private_rpc_addr: SocketAddr,
     pub rpc_addr: SocketAddr,
     pub server_names: HashSet<String>,
+    pub spend_zero_conf_change: bool,
     pub wallet_dir: PathBuf,
 }
 
@@ -50,6 +51,7 @@ impl Config {
             private_rpc_addr,
             rpc_addr,
             server_names,
+            spend_zero_conf_change,
             wallet_dir,
         } = self;
         let add_peers = std::fmt::from_fn(|f| {
@@ -79,6 +81,7 @@ impl Config {
             %private_rpc_addr,
             %rpc_addr,
             ?server_names,
+            %spend_zero_conf_change,
             wallet_dir = %wallet_dir.display(),
             msg,
         )
@@ -232,6 +235,12 @@ pub(super) struct Cli {
     /// This option can be specified multiple times.
     #[arg(long = "server-name")]
     server_names: Vec<String>,
+    /// Spend the wallet's own unconfirmed change. The wallet takes an output
+    /// only when it funded every input of the transaction that made it, so an
+    /// unconfirmed payment from someone else waits for a block. This is the
+    /// rule that Bitcoin Core calls `-spendzeroconfchange`.
+    #[arg(default_value_t = true, long, action = clap::ArgAction::Set)]
+    spend_zero_conf_change: bool,
     /// Data directory for storing wallet data
     #[arg(long)]
     wallet_dir: Option<PathBuf>,
@@ -276,6 +285,7 @@ impl Cli {
             private_rpc_addr: self.private_rpc_addr,
             rpc_addr: self.rpc_addr,
             server_names: HashSet::from_iter(self.server_names),
+            spend_zero_conf_change: self.spend_zero_conf_change,
             wallet_dir,
         })
     }

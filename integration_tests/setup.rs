@@ -38,6 +38,9 @@ impl ReservedPorts {
 pub struct Init {
     pub thunder_app: PathBuf,
     pub data_dir_suffix: Option<String>,
+    /// More arguments for the thunder binary, such as
+    /// `--spend-zero-conf-change=false`.
+    pub extra_args: Vec<String>,
 }
 
 #[derive(Debug, Error)]
@@ -178,12 +181,17 @@ impl Sidechain for PostSetup {
             rpc_port: reserved_ports.rpc.port(),
         };
         let thunder_app_task = thunder_app
-            .spawn_command_with_args::<String, String, _, _, _>([], [], {
-                let res_tx = res_tx.clone();
-                move |err| {
-                    let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
-                }
-            });
+            .spawn_command_with_args::<String, String, _, _, _>(
+                [],
+                init.extra_args,
+                {
+                    let res_tx = res_tx.clone();
+                    move |err| {
+                        let _err: Result<(), _> =
+                            res_tx.unbounded_send(Err(err));
+                    }
+                },
+            );
         tracing::debug!("Started thunder");
         sleep(Duration::from_secs(1)).await;
         let rpc_client = jsonrpsee::http_client::HttpClient::builder()

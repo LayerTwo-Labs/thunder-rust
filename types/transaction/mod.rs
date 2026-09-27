@@ -85,6 +85,22 @@ impl Transaction {
         borsh::object_length(self).map(|size| size as u64)
     }
 
+    /// The outputs this transaction creates, each with its outpoint
+    pub fn outputs_by_outpoint(
+        &self,
+    ) -> impl Iterator<Item = (OutPoint, Output)> + '_ {
+        let txid = self.txid();
+        self.outputs.iter().enumerate().map(move |(vout, output)| {
+            (
+                OutPoint::Regular {
+                    txid,
+                    vout: vout as u32,
+                },
+                output.clone(),
+            )
+        })
+    }
+
     pub(crate) fn compute_merkle_root(
         &self,
     ) -> Result<TxMerkleRoot, outputs::error::ComputeMerkleRoot> {

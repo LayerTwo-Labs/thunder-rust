@@ -156,6 +156,7 @@ where
             batch_verification_ctxt,
             magic_bytes_override,
             network,
+            mempool.clone(),
             state.clone(),
             bind_addr,
             add_peers,
@@ -267,13 +268,19 @@ where
     {
         {
             let mut rotxn = self.env.write_txn().map_err(EnvError::from)?;
+            let unconfirmed = self.mempool.unconfirmed_outputs(
+                &rotxn,
+                &transaction.borrow().transaction,
+            )?;
             self.state.regenerate_proof(
                 &rotxn,
+                &unconfirmed,
                 &mut transaction.borrow_mut().transaction,
             )?;
             self.state.validate_transaction(
                 &rotxn,
                 &self.batch_verification_ctxt,
+                &unconfirmed,
                 transaction.borrow(),
             )?;
             self.mempool.put(&mut rotxn, transaction.borrow())?;
@@ -322,6 +329,27 @@ where
         Ok(spent)
     }
 
+    /// What the mempool means for a wallet: the unconfirmed outputs the
+    /// wallet made on its own, and the confirmed outputs from `confirmed` that
+    /// a mempool transaction already spends.
+    pub fn get_mempool_view(
+        &self,
+        addresses: &HashSet<Address>,
+        confirmed: &HashSet<OutPoint>,
+    ) -> Result<(HashMap<OutPoint, Output>, HashSet<OutPoint>), Error> {
+        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
+        let unconfirmed = self
+            .mempool
+            .own_unconfirmed_utxos(&rotxn, addresses, confirmed)?;
+        let mut spent = HashSet::new();
+        for outpoint in confirmed {
+            if self.mempool.spender(&rotxn, outpoint)?.is_some() {
+                spent.insert(*outpoint);
+            }
+        }
+        Ok((unconfirmed, spent))
+    }
+
     pub fn get_stxos_by_addresses(
         &self,
         addresses: &HashSet<Address>,
@@ -359,7 +387,8 @@ where
 
     pub fn regenerate_proof(&self, tx: &mut Transaction) -> Result<(), Error> {
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
-        let () = self.state.regenerate_proof(&rotxn, tx)?;
+        let unconfirmed = self.mempool.unconfirmed_outputs(&rotxn, tx)?;
+        let () = self.state.regenerate_proof(&rotxn, &unconfirmed, tx)?;
         Ok(())
     }
 
@@ -474,10 +503,15 @@ where
     ) -> Result<(Vec<Authorized<FilledTransaction>>, bitcoin::Amount), Error>
     {
         let mut rwtxn = self.env.write_txn().map_err(EnvError::from)?;
-        let transactions = self.mempool.take(&rwtxn, number)?;
+        // A parent comes before its child, so the block carries a chain in an
+        // order that validation accepts, and a child never fails because the
+        // walk did not reach its parent yet.
+        let transactions = self.mempool.topological(&rwtxn, Some(number))?;
         let mut fee = bitcoin::Amount::ZERO;
         let mut returned_transactions = vec![];
         let mut spent_utxos = HashSet::new();
+        // Outputs the transactions already taken for this block make.
+        let mut block_outputs = HashMap::<OutPoint, Output>::new();
         for transaction in transactions {
             let inputs: HashSet<_> =
                 transaction.transaction.inputs.iter().copied().collect();
@@ -492,6 +526,7 @@ where
                 .validate_transaction(
                     &rwtxn,
                     &self.batch_verification_ctxt,
+                    &block_outputs,
                     &transaction,
                 )
                 .is_err()
@@ -500,9 +535,17 @@ where
                     .delete(&mut rwtxn, transaction.transaction.txid())?;
                 continue;
             }
-            let filled_transaction = self
-                .state
-                .fill_authorized_transaction(&rwtxn, transaction)?;
+            let filled_transaction = self.state.fill_authorized_transaction(
+                &rwtxn,
+                &block_outputs,
+                transaction,
+            )?;
+            block_outputs.extend(
+                filled_transaction
+                    .transaction
+                    .transaction
+                    .outputs_by_outpoint(),
+            );
             let value_in: bitcoin::Amount = filled_transaction
                 .transaction
                 .spent_utxos
@@ -774,5 +817,10 @@ where
     /// Get a notification whenever the tip changes
     pub fn watch_state(&self) -> impl Stream<Item = ()> {
         self.state.watch()
+    }
+
+    /// Get a notification whenever the mempool changes
+    pub fn watch_mempool(&self) -> impl Stream<Item = ()> {
+        self.mempool.watch()
     }
 }
