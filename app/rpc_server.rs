@@ -281,6 +281,16 @@ impl<const ENABLE_PRIVATE_API: bool> rpc_api::node::RpcServer
         Ok(res)
     }
 
+    async fn get_two_way_peg_events(
+        &self,
+        block_hash: thunder::types::BlockHash,
+    ) -> RpcResult<Vec<thunder::types::state::TwoWayPegEvent>> {
+        self.app
+            .node
+            .get_two_way_peg_events(block_hash)
+            .map_err(custom_err)
+    }
+
     async fn get_utxos(
         &self,
         addresses: HashSet<Address>,
