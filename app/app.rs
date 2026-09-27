@@ -725,7 +725,13 @@ impl App {
 }
 
 impl Drop for App {
+    // If only one reference exists (ie. within self), abort the wallet update
+    // task. A dropped clone must not stop the task the other clones use.
     fn drop(&mut self) {
-        self.task.abort()
+        // use `Arc::get_mut` since `Arc::into_inner` requires ownership of the
+        // Arc, and cloning would increase the reference count
+        if let Some(task) = Arc::get_mut(&mut self.task) {
+            task.abort()
+        }
     }
 }
