@@ -42,6 +42,10 @@ pub enum ComputeFee {
 pub enum ParseAddress {
     #[error("bs58 error")]
     Bs58(#[from] bitcoin::base58::InvalidCharacterError),
+    #[error("`{0}` has no `s<slot>_` prefix or no checksum")]
+    NotADepositAddress(String),
+    #[error("deposit address `{0}` carries a wrong checksum")]
+    WrongDepositChecksum(String),
     #[error("wrong address length {0} != 20")]
     WrongLength(usize),
 }
