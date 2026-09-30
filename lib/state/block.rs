@@ -156,11 +156,8 @@ pub fn prevalidate(
             return Err(Error::WrongPubKeyForAddress);
         }
     }
-    if authorization::verify_authorizations(batch_verification_ctxt, body)
-        .is_err()
-    {
-        return Err(Error::Authorization);
-    }
+    let () =
+        authorization::verify_authorizations(batch_verification_ctxt, body)?;
     // Check root consistency without committing to DB
     let () = accumulator.apply_diff(accumulator_diff.clone())?;
     let roots: Vec<UtreexoNodeHash> = accumulator.get_roots();
@@ -401,11 +398,8 @@ pub fn validate(
             return Err(Error::WrongPubKeyForAddress);
         }
     }
-    if authorization::verify_authorizations(batch_verification_context, body)
-        .is_err()
-    {
-        return Err(Error::Authorization);
-    }
+    let () =
+        authorization::verify_authorizations(batch_verification_context, body)?;
     // Check root consistency without committing to DB
     let () = accumulator.apply_diff(accumulator_diff)?;
     let roots: Vec<UtreexoNodeHash> = accumulator.get_roots();
