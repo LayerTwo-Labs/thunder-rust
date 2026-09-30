@@ -9,10 +9,11 @@ use utoipa::ToSchema;
 pub use frost_ristretto255::rand_core;
 
 use crate::{
-    Address, AuthorizedTransaction, Body, GetAddress, Transaction,
-    error::Authorization as Error, util::borsh::serialize as borsh_serialize,
+    Address, AuthorizedTransaction, Body, GetAddress, Transaction, error,
+    util::borsh::serialize as borsh_serialize,
 };
 
+pub type Error = error::Authorization;
 pub type Signature = frost_ristretto255::Signature;
 pub type SigningKey = frost_ristretto255::SigningKey;
 pub type VerifyingKey = frost_ristretto255::VerifyingKey;

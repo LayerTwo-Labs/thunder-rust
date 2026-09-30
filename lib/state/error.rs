@@ -7,7 +7,7 @@ use transitive::Transitive;
 use crate::types::{
     AmountOverflowError, AmountUnderflowError, BlockHash,
     ComputeMerkleRootError, M6id, MerkleRoot, OutPoint, Txid, UtreexoError,
-    Version, WithdrawalBundleError,
+    Version, WithdrawalBundleError, authorization,
 };
 
 #[derive(Debug, Error)]
@@ -128,7 +128,7 @@ pub enum InvalidHeader {
 #[transitive(from(rwtxn::Error, sneed::Error))]
 pub enum Error {
     #[error("failed to verify authorization")]
-    Authorization,
+    Authorization(#[from] authorization::Error),
     #[error(transparent)]
     AmountOverflow(#[from] AmountOverflowError),
     #[error(transparent)]

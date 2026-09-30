@@ -430,14 +430,10 @@ impl State {
                 return Err(Error::WrongPubKeyForAddress);
             }
         }
-        if authorization::verify_authorized_transaction(
+        let () = authorization::verify_authorized_transaction(
             batch_verification_ctxt,
             transaction,
-        )
-        .is_err()
-        {
-            return Err(Error::Authorization);
-        }
+        )?;
         let fee = self.validate_filled_transaction(&filled_transaction)?;
         Ok(fee)
     }
