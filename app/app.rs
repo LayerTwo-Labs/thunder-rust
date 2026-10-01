@@ -13,6 +13,7 @@ use rustreexo::accumulator::proof::Proof;
 use thunder::{
     miner::{self, Miner},
     node::{self, Node},
+    state,
     types::{
         self, Address, Coinbase, FilledTransaction, OutPoint, Output,
         Transaction,
@@ -70,13 +71,43 @@ fn update_wallet(node: &Node, wallet: &Wallet) -> Result<(), Error> {
     tracing::trace!("starting wallet update");
     let addresses = wallet.get_addresses()?;
     let utxos = node.get_utxos_by_addresses(&addresses)?;
+    let mut coinbase_heights = HashMap::new();
+    let mut deposit_main_heights = HashMap::new();
+    {
+        let rotxn = node.env().read_txn().map_err(node::Error::from)?;
+        for outpoint in utxos.keys() {
+            match outpoint {
+                OutPoint::Coinbase { txid, vout: _ } => {
+                    let height = node
+                        .state()
+                        .coinbase_height
+                        .get(&rotxn, txid)
+                        .map_err(|err| {
+                            node::Error::from(state::Error::from(err))
+                        })?;
+                    coinbase_heights.insert(*txid, height);
+                }
+                OutPoint::Deposit(bitcoin::OutPoint { txid, vout: _ }) => {
+                    let height = node
+                        .state()
+                        .deposit_mainchain_height
+                        .get(&rotxn, txid)
+                        .map_err(|err| {
+                            node::Error::from(state::Error::from(err))
+                        })?;
+                    deposit_main_heights.insert(*txid, height);
+                }
+                OutPoint::Regular { .. } => (),
+            }
+        }
+    }
     let outpoints: Vec<_> = wallet.get_utxos()?.into_keys().collect();
     let spent: Vec<_> = node
         .get_spent_utxos(&outpoints)?
         .into_iter()
         .map(|(outpoint, spent_output)| (outpoint, spent_output.inpoint))
         .collect();
-    wallet.put_utxos(&utxos)?;
+    wallet.put_utxos(&coinbase_heights, &deposit_main_heights, &utxos)?;
     wallet.spend_utxos(&spent)?;
 
     tracing::debug!("finished wallet update");

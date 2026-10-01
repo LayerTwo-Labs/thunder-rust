@@ -8,7 +8,9 @@ use byteorder::{BigEndian, ByteOrder};
 use fallible_iterator::FallibleIterator as _;
 use futures::{Stream, StreamExt};
 use heed::types::{Bytes, SerdeBincode, U8};
-use sneed::{Env, EnvError, RwTxnError, UnitKey, db::error::Error as DbError};
+use sneed::{
+    DbError, Env, EnvError, RwTxnError, UnitKey, db::error as db_error,
+};
 use thiserror::Error;
 use tokio_stream::{StreamMap, wrappers::WatchStream};
 use transitive::Transitive;
@@ -16,13 +18,15 @@ use transitive::Transitive;
 use crate::{
     types::{
         Accumulator, Address, AmountOverflowError, AmountUnderflowError,
-        AuthorizedTransaction, GetValue, InPoint, OutPoint, OutPointKey,
-        Output, OutputContent, PointedOutput, SpentOutput, THIS_SIDECHAIN,
-        Transaction, UtreexoError, UtreexoNodeHash, VERSION, Version,
+        AuthorizedTransaction, CoinbaseTxid, GetValue, InPoint, OutPoint,
+        OutPointKey, Output, OutputContent, PointedOutput, SpentOutput,
+        THIS_SIDECHAIN, Transaction, UtreexoError, UtreexoNodeHash, VERSION,
+        Version,
         authorization::{
             Authorization, SigningKey, get_address, rand_core::CryptoRng,
         },
         hash,
+        transaction::outpoint::{COINBASE_MATURITY, DEPOSIT_MATURITY},
         wallet::Balance,
     },
     util::Watchable,
@@ -34,7 +38,10 @@ pub mod bip32;
 #[derive(Debug, Error, Transitive)]
 #[transitive(
     from(bip32::HardenedDeriveError, bip32::Error),
-    from(bip32::NonHardenedDeriveError, bip32::Error)
+    from(bip32::NonHardenedDeriveError, bip32::Error),
+    from(db_error::Delete, DbError),
+    from(db_error::Get, DbError),
+    from(db_error::Put, DbError)
 )]
 pub enum Error {
     #[error("address {address} does not exist")]
@@ -95,6 +102,12 @@ pub struct Wallet {
     /// Map each address to it's index
     address_to_index:
         DatabaseUnique<SerdeBincode<Address>, SerdeBincode<[u8; 4]>>,
+    /// Sidechain heights for each coinbase txid
+    coinbase_height:
+        DatabaseUnique<SerdeBincode<CoinbaseTxid>, SerdeBincode<u32>>,
+    /// Mainchain heights for each deposit txid
+    deposit_mainchain_height:
+        DatabaseUnique<SerdeBincode<bitcoin::Txid>, SerdeBincode<u32>>,
     /// Map each address index to an address
     index_to_address:
         DatabaseUnique<SerdeBincode<[u8; 4]>, SerdeBincode<Address>>,
@@ -104,7 +117,7 @@ pub struct Wallet {
 }
 
 impl Wallet {
-    pub const NUM_DBS: u32 = 6;
+    pub const NUM_DBS: u32 = 8;
 
     pub fn new(path: &Path) -> Result<Self, Error> {
         std::fs::create_dir_all(path)?;
@@ -145,6 +158,15 @@ impl Wallet {
         let address_to_index =
             DatabaseUnique::create(&env, &mut rwtxn, "address_to_index")
                 .map_err(EnvError::from)?;
+        let coinbase_height =
+            DatabaseUnique::create(&env, &mut rwtxn, "coinbase_height")
+                .map_err(EnvError::from)?;
+        let deposit_mainchain_height = DatabaseUnique::create(
+            &env,
+            &mut rwtxn,
+            "deposit_mainchain_height",
+        )
+        .map_err(EnvError::from)?;
         let index_to_address =
             DatabaseUnique::create(&env, &mut rwtxn, "index_to_address")
                 .map_err(EnvError::from)?;
@@ -178,6 +200,8 @@ impl Wallet {
             env,
             seed: seed_db,
             address_to_index,
+            coinbase_height,
+            deposit_mainchain_height,
             index_to_address,
             utxos,
             stxos,
@@ -239,9 +263,12 @@ impl Wallet {
         self.set_seed(&seed_bytes)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn create_withdrawal(
         &self,
         accumulator: &Accumulator,
+        spend_height: u32,
+        main_height: u32,
         main_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         value: bitcoin::Amount,
         main_fee: bitcoin::Amount,
@@ -256,6 +283,8 @@ impl Wallet {
             "Creating withdrawal"
         );
         let (total, coins) = self.select_coins(
+            spend_height,
+            main_height,
             value
                 .checked_add(fee)
                 .ok_or(AmountOverflowError)?
@@ -299,12 +328,17 @@ impl Wallet {
     pub fn create_transaction(
         &self,
         accumulator: &Accumulator,
+        spend_height: u32,
+        main_height: u32,
         address: Address,
         value: bitcoin::Amount,
         fee: bitcoin::Amount,
     ) -> Result<Transaction, Error> {
-        let (total, coins) = self
-            .select_coins(value.checked_add(fee).ok_or(AmountOverflowError)?)?;
+        let (total, coins) = self.select_coins(
+            spend_height,
+            main_height,
+            value.checked_add(fee).ok_or(AmountOverflowError)?,
+        )?;
         let change = total - value - fee;
         let inputs: Vec<_> = coins
             .into_iter()
@@ -334,8 +368,13 @@ impl Wallet {
         })
     }
 
+    /// Select coins worth at least `value`, which will be spendable after the
+    /// sidechain height and prev_main_height are greater than or equal to
+    /// the specified heights.
     pub fn select_coins(
         &self,
+        spend_height: u32,
+        main_height: u32,
         value: bitcoin::Amount,
     ) -> Result<(bitcoin::Amount, HashMap<OutPoint, Output>), Error> {
         use rayon::prelude::ParallelSliceMut;
@@ -351,6 +390,28 @@ impl Wallet {
         let mut selected = HashMap::new();
         let mut total = bitcoin::Amount::ZERO;
         for (outpoint_key, output) in &utxos {
+            let outpoint: OutPoint = outpoint_key.into();
+            match outpoint {
+                OutPoint::Coinbase { txid, vout: _ } => {
+                    let coinbase_height =
+                        self.coinbase_height.get(&rotxn, &txid)?;
+                    if spend_height.checked_sub(coinbase_height).is_none_or(
+                        |height_diff| height_diff < COINBASE_MATURITY,
+                    ) {
+                        continue;
+                    }
+                }
+                OutPoint::Deposit(bitcoin::OutPoint { txid, vout: _ }) => {
+                    let deposit_height =
+                        self.deposit_mainchain_height.get(&rotxn, &txid)?;
+                    if main_height.checked_sub(deposit_height).is_none_or(
+                        |height_diff| height_diff < DEPOSIT_MATURITY,
+                    ) {
+                        continue;
+                    }
+                }
+                OutPoint::Regular { .. } => (),
+            }
             if output.content.is_withdrawal() {
                 continue;
             }
@@ -360,7 +421,6 @@ impl Wallet {
             total = total
                 .checked_add(output.get_value())
                 .ok_or(AmountOverflowError)?;
-            let outpoint: OutPoint = outpoint_key.into();
             selected.insert(outpoint, output.clone());
         }
         if total < value {
@@ -370,12 +430,23 @@ impl Wallet {
     }
 
     pub fn delete_utxos(&self, outpoints: &[OutPoint]) -> Result<(), Error> {
-        let mut txn = self.env.write_txn().map_err(EnvError::from)?;
+        let mut rwtxn = self.env.write_txn().map_err(EnvError::from)?;
         for outpoint in outpoints {
             let key = OutPointKey::from(outpoint);
-            self.utxos.delete(&mut txn, &key).map_err(DbError::from)?;
+            if !self.utxos.delete(&mut rwtxn, &key)? {
+                continue;
+            };
+            match outpoint {
+                OutPoint::Coinbase { txid, vout: _ } => {
+                    self.coinbase_height.delete(&mut rwtxn, txid)?;
+                }
+                OutPoint::Deposit(bitcoin::OutPoint { txid, vout: _ }) => {
+                    self.deposit_mainchain_height.delete(&mut rwtxn, txid)?;
+                }
+                OutPoint::Regular { .. } => (),
+            }
         }
-        txn.commit().map_err(RwTxnError::from)?;
+        rwtxn.commit().map_err(RwTxnError::from)?;
         Ok(())
     }
 
@@ -405,16 +476,29 @@ impl Wallet {
 
     pub fn put_utxos(
         &self,
+        coinbase_heights: &HashMap<CoinbaseTxid, u32>,
+        deposit_main_heights: &HashMap<bitcoin::Txid, u32>,
         utxos: &HashMap<OutPoint, Output>,
     ) -> Result<(), Error> {
-        let mut txn = self.env.write_txn().map_err(EnvError::from)?;
+        let mut rwtxn = self.env.write_txn().map_err(EnvError::from)?;
+        for (coinbase_txid, height) in coinbase_heights {
+            self.coinbase_height
+                .put(&mut rwtxn, coinbase_txid, height)?;
+        }
+        for (deposit_txid, height) in deposit_main_heights {
+            self.deposit_mainchain_height.put(
+                &mut rwtxn,
+                deposit_txid,
+                height,
+            )?;
+        }
         for (outpoint, output) in utxos {
             let key = OutPointKey::from(outpoint);
             self.utxos
-                .put(&mut txn, &key, output)
+                .put(&mut rwtxn, &key, output)
                 .map_err(DbError::from)?;
         }
-        txn.commit().map_err(RwTxnError::from)?;
+        rwtxn.commit().map_err(RwTxnError::from)?;
         Ok(())
     }
 
@@ -604,6 +688,8 @@ impl Watchable<()> for Wallet {
             env: _,
             seed,
             address_to_index,
+            coinbase_height: _,
+            deposit_mainchain_height: _,
             index_to_address,
             utxos,
             stxos,

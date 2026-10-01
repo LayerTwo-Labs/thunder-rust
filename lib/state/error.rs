@@ -95,6 +95,14 @@ impl From<db::Error> for ConnectWithdrawalBundleSubmitted {
 }
 
 #[derive(Debug, Error)]
+pub enum ImmatureOutPoint {
+    #[error("immature coinbase outpoint")]
+    Coinbase,
+    #[error("immature deposit outpoint")]
+    Deposit,
+}
+
+#[derive(Debug, Error)]
 pub enum InvalidHeader {
     #[error("expected block hash {expected}, but computed {computed}")]
     BlockHash {
@@ -143,6 +151,8 @@ pub enum Error {
     ComputeMerkleRoot(#[from] ComputeMerkleRootError),
     #[error(transparent)]
     Db(#[from] sneed::Error),
+    #[error(transparent)]
+    ImmatureOutPoint(#[from] ImmatureOutPoint),
     #[error(
         "Incompatible DB version ({}). Please clear the DB (`{}`) and re-sync",
         .version,

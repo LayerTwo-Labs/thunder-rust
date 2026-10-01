@@ -289,7 +289,6 @@ pub mod mainchain {
         hashes::Hash as _,
     };
     use futures::{StreamExt as _, stream::BoxStream};
-    use hashlink::LinkedHashMap;
     use nonempty::NonEmpty;
     use serde::{Deserialize, Serialize};
     use thiserror::Error;
@@ -759,100 +758,125 @@ pub mod mainchain {
         }
     }
 
-    #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-    pub struct TwoWayPegData {
-        pub block_info: LinkedHashMap<BlockHash, BlockInfo>,
-    }
+    pub mod two_way_peg_data {
+        use bitcoin::BlockHash;
+        use hashlink::LinkedHashMap;
+        use serde::{Deserialize, Serialize};
 
-    impl TwoWayPegData {
-        pub fn deposits(
-            &self,
-        ) -> impl DoubleEndedIterator<Item = (BlockHash, Vec<&Deposit>)>
-        {
-            self.block_info.iter().flat_map(|(block_hash, block_info)| {
-                let deposits: Vec<_> = block_info.deposits().collect();
-                if deposits.is_empty() {
-                    None
-                } else {
-                    Some((*block_hash, deposits))
-                }
-            })
+        use crate::types::proto::{
+            Error,
+            mainchain::{self, BlockHeaderInfo, Deposit, generated},
+        };
+
+        #[derive(Clone, Debug, Deserialize, Serialize)]
+        pub struct BlockInfo {
+            pub height: u32,
+            pub inner: mainchain::BlockInfo,
         }
 
-        pub fn into_deposits(
-            self,
-        ) -> impl DoubleEndedIterator<Item = (BlockHash, Vec<Deposit>)>
-        {
-            self.block_info
-                .into_iter()
-                .flat_map(|(block_hash, block_info)| {
-                    let deposits: Vec<_> = block_info.into_deposits().collect();
+        #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+        pub struct TwoWayPegData {
+            pub block_info: LinkedHashMap<BlockHash, BlockInfo>,
+        }
+
+        impl TwoWayPegData {
+            pub fn deposits(
+                &self,
+            ) -> impl DoubleEndedIterator<Item = (BlockHash, Vec<&Deposit>)>
+            {
+                self.block_info.iter().flat_map(|(block_hash, block_info)| {
+                    let deposits: Vec<_> =
+                        block_info.inner.deposits().collect();
                     if deposits.is_empty() {
                         None
                     } else {
-                        Some((block_hash, deposits))
+                        Some((*block_hash, deposits))
                     }
                 })
-        }
+            }
 
-        pub fn withdrawal_bundle_events(
-            &self,
-        ) -> impl DoubleEndedIterator<
-            Item = (&'_ BlockHash, &'_ crate::types::WithdrawalBundleEvent),
-        > + '_ {
-            self.block_info.iter().flat_map(|(block_hash, block_info)| {
-                block_info
-                    .withdrawal_bundle_events()
-                    .map(move |event| (block_hash, event))
-            })
-        }
+            pub fn into_deposits(
+                self,
+            ) -> impl DoubleEndedIterator<Item = (BlockHash, Vec<Deposit>)>
+            {
+                self.block_info.into_iter().flat_map(
+                    |(block_hash, block_info)| {
+                        let deposits: Vec<_> =
+                            block_info.inner.into_deposits().collect();
+                        if deposits.is_empty() {
+                            None
+                        } else {
+                            Some((block_hash, deposits))
+                        }
+                    },
+                )
+            }
 
-        /// Latest deposit block hash
-        pub fn latest_deposit_block_hash(&self) -> Option<BlockHash> {
-            self.deposits()
-                .next_back()
-                .map(|(block_hash, _)| block_hash)
-        }
-
-        /// Latest withdrawal bundle event block hash
-        pub fn latest_withdrawal_bundle_event_block_hash(
-            &self,
-        ) -> Option<&BlockHash> {
-            self.withdrawal_bundle_events()
-                .next_back()
-                .map(|(block_hash, _)| block_hash)
-        }
-    }
-
-    impl TryFrom<generated::GetTwoWayPegDataResponse> for TwoWayPegData {
-        type Error = super::Error;
-
-        fn try_from(
-            two_way_peg_data: generated::GetTwoWayPegDataResponse,
-        ) -> Result<Self, Self::Error> {
-            let generated::GetTwoWayPegDataResponse { blocks } =
-                two_way_peg_data;
-            let block_info = blocks
-                .into_iter()
-                .map(|item| {
-                    let generated::get_two_way_peg_data_response::ResponseItem {
-                    block_header_info,
+            pub fn withdrawal_bundle_events(
+                &self,
+            ) -> impl DoubleEndedIterator<
+                Item = (&'_ BlockHash, &'_ crate::types::WithdrawalBundleEvent),
+            > + '_ {
+                self.block_info.iter().flat_map(|(block_hash, block_info)| {
                     block_info
-                } = item;
-                    let Some(block_header_info) = block_header_info else {
-                        return Err(super::Error::missing_field::<generated::get_two_way_peg_data_response::ResponseItem>("block_header_info"));
-                    };
-                    let BlockHeaderInfo { block_hash, .. } =
-                        (&block_header_info).try_into()?;
-                    let Some(block_info) = block_info else {
-                        return Err(super::Error::missing_field::<generated::get_two_way_peg_data_response::ResponseItem>("block_info"));
-                    };
-                    Ok((block_hash, block_info.try_into()?))
+                        .inner
+                        .withdrawal_bundle_events()
+                        .map(move |event| (block_hash, event))
                 })
-                .collect::<Result<LinkedHashMap<_, _>, _>>()?;
-            Ok(TwoWayPegData { block_info })
+            }
+
+            /// Latest deposit block hash
+            pub fn latest_deposit_block_hash(&self) -> Option<BlockHash> {
+                self.deposits()
+                    .next_back()
+                    .map(|(block_hash, _)| block_hash)
+            }
+
+            /// Latest withdrawal bundle event block hash
+            pub fn latest_withdrawal_bundle_event_block_hash(
+                &self,
+            ) -> Option<&BlockHash> {
+                self.withdrawal_bundle_events()
+                    .next_back()
+                    .map(|(block_hash, _)| block_hash)
+            }
+        }
+
+        impl TryFrom<generated::GetTwoWayPegDataResponse> for TwoWayPegData {
+            type Error = Error;
+
+            fn try_from(
+                two_way_peg_data: generated::GetTwoWayPegDataResponse,
+            ) -> Result<Self, Self::Error> {
+                let generated::GetTwoWayPegDataResponse { blocks } =
+                    two_way_peg_data;
+                let block_info = blocks
+                    .into_iter()
+                    .map(|item| {
+                        let generated::get_two_way_peg_data_response::ResponseItem {
+                        block_header_info,
+                        block_info
+                    } = item;
+                        let Some(block_header_info) = block_header_info else {
+                            return Err(Error::missing_field::<generated::get_two_way_peg_data_response::ResponseItem>("block_header_info"));
+                        };
+                        let BlockHeaderInfo { block_hash, height, .. } =
+                            (&block_header_info).try_into()?;
+                        let Some(block_info) = block_info else {
+                            return Err(Error::missing_field::<generated::get_two_way_peg_data_response::ResponseItem>("block_info"));
+                        };
+                        let block_info = BlockInfo {
+                            height,
+                            inner: block_info.try_into()?,
+                        };
+                        Ok((block_hash, block_info))
+                    })
+                    .collect::<Result<LinkedHashMap<_, _>, _>>()?;
+                Ok(TwoWayPegData { block_info })
+            }
         }
     }
+    pub use two_way_peg_data::TwoWayPegData;
 
     impl TryFrom<&generated::BlockHeaderInfo> for BlockHeaderInfo {
         type Error = super::Error;

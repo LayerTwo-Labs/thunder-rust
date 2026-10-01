@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 use tonic::transport::Channel;
 
 use crate::{
-    archive::Archive,
+    archive::{self, Archive},
     mempool::{self, MemPool},
     net::{DialKnownPeersHandle, Net},
     state::{self, State},
@@ -200,6 +200,10 @@ where
         &self.archive
     }
 
+    pub fn state(&self) -> &State {
+        &self.state
+    }
+
     /// Borrow the CUSF mainchain client
     #[inline(always)]
     pub fn with_cusf_mainchain<F, Output>(&self, f: F) -> Output
@@ -271,9 +275,18 @@ where
                 &rotxn,
                 &mut transaction.borrow_mut().transaction,
             )?;
+            let main_tip = self
+                .archive
+                .side_tips()
+                .get_mainchain_tip(&rotxn)
+                .map_err(archive::Error::from)?;
+            let main_tip_height = self
+                .archive
+                .get_main_height(&rotxn, main_tip.block_hash())?;
             self.state.validate_transaction(
                 &rotxn,
                 &self.batch_verification_ctxt,
+                main_tip_height,
                 transaction.borrow(),
             )?;
             self.mempool.put(&mut rotxn, transaction.borrow())?;
@@ -350,6 +363,17 @@ where
         let rotxn = self.env.read_txn().map_err(EnvError::from)?;
         let tip = self.state.try_get_tip(&rotxn)?;
         Ok(tip)
+    }
+
+    pub fn try_get_mainchain_tip_height(&self) -> Result<Option<u32>, Error> {
+        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
+        let mainchain_tip = self
+            .archive
+            .side_tips()
+            .get_mainchain_tip(&rotxn)
+            .map_err(archive::Error::from)?;
+        let height = mainchain_tip.tip_info.map(|info| info.height);
+        Ok(height)
     }
 
     pub fn get_tip_accumulator(&self) -> Result<Accumulator, Error> {
@@ -478,6 +502,15 @@ where
         let mut fee = bitcoin::Amount::ZERO;
         let mut returned_transactions = vec![];
         let mut spent_utxos = HashSet::new();
+        let main_tip_height = {
+            let main_tip = self
+                .archive
+                .side_tips()
+                .get_mainchain_tip(&rwtxn)
+                .map_err(archive::Error::from)?;
+            self.archive
+                .get_main_height(&rwtxn, main_tip.block_hash())?
+        };
         for transaction in transactions {
             let inputs: HashSet<_> =
                 transaction.transaction.inputs.iter().copied().collect();
@@ -492,6 +525,7 @@ where
                 .validate_transaction(
                     &rwtxn,
                     &self.batch_verification_ctxt,
+                    main_tip_height,
                     &transaction,
                 )
                 .is_err()

@@ -686,9 +686,18 @@ impl ConnectionTask {
         let txid = tx.transaction.txid();
         let validate_tx_result = {
             let rotxn = ctxt.env.read_txn().map_err(EnvError::from)?;
+            let main_tip = ctxt
+                .archive
+                .side_tips()
+                .get_mainchain_tip(&rotxn)
+                .map_err(archive::Error::from)?;
+            let main_tip_height = ctxt
+                .archive
+                .get_main_height(&rotxn, main_tip.block_hash())?;
             ctxt.state.validate_transaction(
                 &rotxn,
                 &ctxt.batch_verification_ctxt,
+                main_tip_height,
                 &tx,
             )
         };

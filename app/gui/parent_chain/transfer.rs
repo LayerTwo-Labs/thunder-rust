@@ -141,8 +141,13 @@ fn create_withdrawal(
     mainchain_fee: bitcoin::Amount,
 ) -> anyhow::Result<()> {
     let accumulator = app.node.get_tip_accumulator()?;
+    let spend_height =
+        app.node.try_get_height()?.map_or(0, |height| height + 1);
+    let main_height = app.node.try_get_mainchain_tip_height()?.unwrap_or(0);
     let tx = app.wallet.create_withdrawal(
         &accumulator,
+        spend_height,
+        main_height,
         mainchain_address,
         amount,
         mainchain_fee,

@@ -57,10 +57,13 @@ fn connect_tip_(
     two_way_peg_data: &mainchain::TwoWayPegData,
 ) -> Result<(), Error> {
     let block_hash = header.hash();
+    let prev_main_height =
+        archive.get_main_height(rwtxn, header.prev_main_hash)?;
     let prevalidated = state.prevalidate_block(
         rwtxn,
         batch_verification_ctxt,
         header,
+        prev_main_height,
         body,
     )?;
     if tracing::enabled!(tracing::Level::DEBUG) {
@@ -181,6 +184,11 @@ pub(in crate::node) fn disconnect_tip_(
                 if block_info.events.is_empty() {
                     Ok(None)
                 } else {
+                    let height = archive.get_main_height(rwtxn, ancestor)?;
+                    let block_info = mainchain::two_way_peg_data::BlockInfo {
+                        height,
+                        inner: block_info,
+                    };
                     Ok(Some((ancestor, block_info)))
                 }
             })
@@ -338,8 +346,13 @@ fn reorg_to_tip<ThreadLocalStorage>(
                 Ok(Some(ancestor) != common_ancestor_prev_main_hash.as_ref())
             })
             .map(|ancestor| {
+                let height = archive.get_main_height(&rwtxn, ancestor)?;
                 let block_info =
                     archive.get_main_block_info(&rwtxn, &ancestor)?;
+                let block_info = mainchain::two_way_peg_data::BlockInfo {
+                    height,
+                    inner: block_info,
+                };
                 Ok((ancestor, block_info))
             })
             .collect()?

@@ -406,11 +406,25 @@ impl rpc_api::wallet::RpcServer for RpcServerImpl<true> {
     ) -> RpcResult<Txid> {
         let accumulator =
             self.app.node.get_tip_accumulator().map_err(custom_err)?;
+        let spend_height = self
+            .app
+            .node
+            .try_get_height()
+            .map_err(custom_err)?
+            .map_or(0, |height| height + 1);
+        let main_height = self
+            .app
+            .node
+            .try_get_mainchain_tip_height()
+            .map_err(custom_err)?
+            .unwrap_or(0);
         let tx = self
             .app
             .wallet
             .create_transaction(
                 &accumulator,
+                spend_height,
+                main_height,
                 dest,
                 Amount::from_sat(value_sats),
                 Amount::from_sat(fee_sats),
@@ -430,11 +444,25 @@ impl rpc_api::wallet::RpcServer for RpcServerImpl<true> {
     ) -> RpcResult<Txid> {
         let accumulator =
             self.app.node.get_tip_accumulator().map_err(custom_err)?;
+        let spend_height = self
+            .app
+            .node
+            .try_get_height()
+            .map_err(custom_err)?
+            .map_or(0, |height| height + 1);
+        let main_height = self
+            .app
+            .node
+            .try_get_mainchain_tip_height()
+            .map_err(custom_err)?
+            .unwrap_or(0);
         let tx = self
             .app
             .wallet
             .create_withdrawal(
                 &accumulator,
+                spend_height,
+                main_height,
                 mainchain_address,
                 Amount::from_sat(amount_sats),
                 Amount::from_sat(mainchain_fee_sats),

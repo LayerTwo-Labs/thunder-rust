@@ -19,6 +19,7 @@ pub fn prevalidate(
     state: &State,
     rotxn: &RoTxn,
     header: &Header,
+    prev_main_height: u32,
     body: &Body,
 ) -> Result<PrevalidatedBlock, Error> {
     let tip_hash = state.try_get_tip(rotxn)?;
@@ -95,7 +96,11 @@ pub fn prevalidate(
             transaction: transaction.clone(),
         };
         total_fees = total_fees
-            .checked_add(state.validate_filled_transaction(&filled_tx)?)
+            .checked_add(state.validate_filled_transaction(
+                rotxn,
+                prev_main_height,
+                &filled_tx,
+            )?)
             .ok_or(AmountOverflowError)?;
         filled_transactions.push(filled_tx);
     }
@@ -258,6 +263,9 @@ pub fn connect_prevalidated(
         .put(rwtxn, &(), &block_hash)
         .map_err(DbError::from)?;
     state
+        .coinbase_height
+        .put(rwtxn, &coinbase_txid, &pre.next_height)?;
+    state
         .height
         .put(rwtxn, &(), &pre.next_height)
         .map_err(DbError::from)?;
@@ -282,6 +290,7 @@ pub fn validate(
     state: &State,
     rotxn: &RoTxn,
     header: &Header,
+    prev_main_height: u32,
     body: &Body,
 ) -> Result<(bitcoin::Amount, MerkleRoot), Error> {
     let tip_hash = state.try_get_tip(rotxn)?;
@@ -368,7 +377,11 @@ pub fn validate(
             accumulator_diff.insert((&pointed_output).into());
         }
         total_fees = total_fees
-            .checked_add(state.validate_filled_transaction(filled_transaction)?)
+            .checked_add(state.validate_filled_transaction(
+                rotxn,
+                prev_main_height,
+                filled_transaction,
+            )?)
             .ok_or(AmountOverflowError)?;
         // verify utreexo proof
         if !accumulator
@@ -503,6 +516,7 @@ pub fn connect(
     let block_hash = header.hash();
     let height = state.try_get_height(rwtxn)?.map_or(0, |height| height + 1);
     state.tip.put(rwtxn, &(), &block_hash)?;
+    state.coinbase_height.put(rwtxn, &coinbase_txid, &height)?;
     state.height.put(rwtxn, &(), &height)?;
     let () = accumulator.apply_diff(accumulator_diff)?;
     state.utreexo_accumulator.put(rwtxn, &(), &accumulator)?;
@@ -576,9 +590,10 @@ pub fn disconnect_tip(
                 }
             })
     })?;
-    // delete coinbase UTXOs, last-to-first
     {
         let coinbase_txid = header.compute_coinbase_txid();
+        state.coinbase_height.delete(rwtxn, &coinbase_txid)?;
+        // delete coinbase UTXOs, last-to-first
         body.coinbase
             .outputs
             .iter()
@@ -737,17 +752,25 @@ mod test {
         // Assemble body.
         let body = Body::new(vec![authorized], Coinbase::default());
 
+        let main_height = 9999;
+
         // Compute the header the validator expects:
         //   merkle_root from the filled tx, roots = post-block accumulator
         //   (B's leaf removed, C's leaf inserted) -- exactly the diff validate
         //   builds from the SUPPLIED utxo_hash.
         let filled = {
             let rotxn = env.read_txn()?;
-            state.fill_transaction(&rotxn, &body.transactions[0])?
+            let filled =
+                state.fill_transaction(&rotxn, &body.transactions[0])?;
+            // tx validation REJECTS the outpoint/utxo_hash mismatch.
+            anyhow::ensure!(
+                state
+                    .validate_filled_transaction(&rotxn, main_height, &filled)
+                    .is_err()
+            );
+            filled
         };
 
-        // tx validation REJECTS the outpoint/utxo_hash mismatch.
-        anyhow::ensure!(state.validate_filled_transaction(&filled).is_err());
         let merkle_root = Body::compute_merkle_root(&body.coinbase, &[filled])?;
         let mut post_accumulator = seeded_accumulator()?;
         {
@@ -765,7 +788,7 @@ mod test {
         let header = Header {
             merkle_root,
             prev_side_hash: None,
-            prev_main_hash: bitcoin::BlockHash::from_byte_array([0u8; 32]),
+            prev_main_hash: bitcoin::BlockHash::from_byte_array([0x55u8; 32]),
             roots: post_accumulator.get_roots(),
         };
 
@@ -778,6 +801,7 @@ mod test {
                         &rotxn,
                         &batch_verification_ctxt,
                         &header,
+                        main_height,
                         &body
                     )
                     .is_err(),
