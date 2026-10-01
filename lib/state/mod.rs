@@ -14,14 +14,16 @@ use sneed::{
 use crate::{
     types::{
         Accumulator, Address, AmountOverflowError, AmountUnderflowError,
-        Authorized, AuthorizedTransaction, BlockHash, Body, FilledTransaction,
-        GetAddress, GetValue, Header, InPoint, M6id, MerkleRoot, OutPoint,
-        OutPointKey, Output, PointedOutput, PointedOutputRef, SpentOutput,
-        Transaction, UtreexoNodeHash, UtreexoProof, VERSION, Version,
-        WithdrawalBundle, WithdrawalBundleStatus,
+        Authorized, AuthorizedTransaction, BlockHash, Body, CoinbaseTxid,
+        FilledTransaction, GetAddress, GetValue, Header, InPoint, M6id,
+        MerkleRoot, OutPoint, OutPointKey, Output, PointedOutput,
+        PointedOutputRef, SpentOutput, Transaction, UtreexoNodeHash,
+        UtreexoProof, VERSION, Version, WithdrawalBundle,
+        WithdrawalBundleStatus,
         authorization::{self, BatchVerificationContext},
         proto::mainchain::TwoWayPegData,
         state::WithdrawalBundleInfo,
+        transaction::outpoint::{COINBASE_MATURITY, DEPOSIT_MATURITY},
     },
     util::Watchable,
 };
@@ -51,17 +53,35 @@ pub struct PrevalidatedBlock {
 
 #[derive(Clone)]
 pub struct State {
-    /// Current tip
-    tip: DatabaseUnique<UnitKey, SerdeBincode<BlockHash>>,
+    /// Sidechain heights for each coinbase txid
+    pub coinbase_height:
+        DatabaseUnique<SerdeBincode<CoinbaseTxid>, SerdeBincode<u32>>,
+    /// deposit blocks and the height at which they were applied, keyed sequentially
+    pub deposit_blocks: DatabaseUnique<
+        SerdeBincode<u32>,
+        SerdeBincode<(bitcoin::BlockHash, u32)>,
+    >,
+    /// Mainchain heights for each deposit txid
+    pub deposit_mainchain_height:
+        DatabaseUnique<SerdeBincode<bitcoin::Txid>, SerdeBincode<u32>>,
     /// Current height
     height: DatabaseUnique<UnitKey, SerdeBincode<u32>>,
-    pub utxos: DatabaseUnique<OutPointKey, SerdeBincode<Output>>,
-    pub stxos: DatabaseUnique<OutPointKey, SerdeBincode<SpentOutput>>,
-    /// Pending withdrawal bundle. MUST exist in withdrawal_bundles
-    pub pending_withdrawal_bundle: DatabaseUnique<UnitKey, SerdeBincode<M6id>>,
     /// Latest failed (known) withdrawal bundle
     latest_failed_withdrawal_bundle:
         DatabaseUnique<UnitKey, SerdeBincode<RollBack<M6id>>>,
+    /// Pending withdrawal bundle. MUST exist in withdrawal_bundles
+    pub pending_withdrawal_bundle: DatabaseUnique<UnitKey, SerdeBincode<M6id>>,
+    pub stxos: DatabaseUnique<OutPointKey, SerdeBincode<SpentOutput>>,
+    /// Current tip
+    tip: DatabaseUnique<UnitKey, SerdeBincode<BlockHash>>,
+    pub utreexo_accumulator: DatabaseUnique<UnitKey, SerdeBincode<Accumulator>>,
+    pub utxos: DatabaseUnique<OutPointKey, SerdeBincode<Output>>,
+    _version: DatabaseUnique<UnitKey, SerdeBincode<Version>>,
+    /// withdrawal bundle event blocks and the height at which they were applied, keyed sequentially
+    pub withdrawal_bundle_event_blocks: DatabaseUnique<
+        SerdeBincode<u32>,
+        SerdeBincode<(bitcoin::BlockHash, u32)>,
+    >,
     /// Withdrawal bundles and their status.
     /// Some withdrawal bundles may be unknown.
     /// in which case they are `None`.
@@ -69,60 +89,45 @@ pub struct State {
         SerdeBincode<M6id>,
         SerdeBincode<(WithdrawalBundleInfo, RollBack<WithdrawalBundleStatus>)>,
     >,
-    /// deposit blocks and the height at which they were applied, keyed sequentially
-    pub deposit_blocks: DatabaseUnique<
-        SerdeBincode<u32>,
-        SerdeBincode<(bitcoin::BlockHash, u32)>,
-    >,
-    /// withdrawal bundle event blocks and the height at which they were applied, keyed sequentially
-    pub withdrawal_bundle_event_blocks: DatabaseUnique<
-        SerdeBincode<u32>,
-        SerdeBincode<(bitcoin::BlockHash, u32)>,
-    >,
-    pub utreexo_accumulator: DatabaseUnique<UnitKey, SerdeBincode<Accumulator>>,
-    _version: DatabaseUnique<UnitKey, SerdeBincode<Version>>,
 }
 
 impl State {
-    pub const NUM_DBS: u32 = 11;
+    pub const NUM_DBS: u32 = 13;
 
     pub fn new<Tls>(env: &sneed::Env<Tls>) -> Result<Self, Error> {
         let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
-        let tip = DatabaseUnique::create(env, &mut rwtxn, "tip")
-            .map_err(EnvError::from)?;
+        let coinbase_height =
+            DatabaseUnique::create(env, &mut rwtxn, "coinbase_height")
+                .map_err(EnvError::from)?;
+        let deposit_blocks =
+            DatabaseUnique::create(env, &mut rwtxn, "deposit_blocks")
+                .map_err(EnvError::from)?;
+        let deposit_mainchain_height =
+            DatabaseUnique::create(env, &mut rwtxn, "deposit_mainchain_height")
+                .map_err(EnvError::from)?;
         let height = DatabaseUnique::create(env, &mut rwtxn, "height")
             .map_err(EnvError::from)?;
-        let utxos = DatabaseUnique::create(env, &mut rwtxn, "utxos")
-            .map_err(EnvError::from)?;
-        let stxos = DatabaseUnique::create(env, &mut rwtxn, "stxos")
-            .map_err(EnvError::from)?;
-        let pending_withdrawal_bundle = DatabaseUnique::create(
-            env,
-            &mut rwtxn,
-            "pending_withdrawal_bundle",
-        )
-        .map_err(EnvError::from)?;
         let latest_failed_withdrawal_bundle = DatabaseUnique::create(
             env,
             &mut rwtxn,
             "latest_failed_withdrawal_bundle",
         )
         .map_err(EnvError::from)?;
-        let withdrawal_bundles =
-            DatabaseUnique::create(env, &mut rwtxn, "withdrawal_bundles")
-                .map_err(EnvError::from)?;
-        let deposit_blocks =
-            DatabaseUnique::create(env, &mut rwtxn, "deposit_blocks")
-                .map_err(EnvError::from)?;
-        let withdrawal_bundle_event_blocks = DatabaseUnique::create(
+        let pending_withdrawal_bundle = DatabaseUnique::create(
             env,
             &mut rwtxn,
-            "withdrawal_bundle_event_blocks",
+            "pending_withdrawal_bundle",
         )
         .map_err(EnvError::from)?;
+        let stxos = DatabaseUnique::create(env, &mut rwtxn, "stxos")
+            .map_err(EnvError::from)?;
+        let tip = DatabaseUnique::create(env, &mut rwtxn, "tip")
+            .map_err(EnvError::from)?;
         let utreexo_accumulator =
             DatabaseUnique::create(env, &mut rwtxn, "utreexo_accumulator")
                 .map_err(EnvError::from)?;
+        let utxos = DatabaseUnique::create(env, &mut rwtxn, "utxos")
+            .map_err(EnvError::from)?;
         let version = DatabaseUnique::create(env, &mut rwtxn, "state_version")
             .map_err(EnvError::from)?;
         match version.try_get(&rwtxn, &())? {
@@ -142,19 +147,30 @@ impl State {
             Some(_) => (),
             None => version.put(&mut rwtxn, &(), &*VERSION)?,
         };
+        let withdrawal_bundle_event_blocks = DatabaseUnique::create(
+            env,
+            &mut rwtxn,
+            "withdrawal_bundle_event_blocks",
+        )
+        .map_err(EnvError::from)?;
+        let withdrawal_bundles =
+            DatabaseUnique::create(env, &mut rwtxn, "withdrawal_bundles")
+                .map_err(EnvError::from)?;
         rwtxn.commit().map_err(RwTxnError::from)?;
         Ok(Self {
-            tip,
-            height,
-            utxos,
-            stxos,
-            pending_withdrawal_bundle,
-            latest_failed_withdrawal_bundle,
-            withdrawal_bundles,
+            coinbase_height,
             deposit_blocks,
-            withdrawal_bundle_event_blocks,
+            deposit_mainchain_height,
+            height,
+            latest_failed_withdrawal_bundle,
+            pending_withdrawal_bundle,
+            stxos,
+            tip,
             utreexo_accumulator,
+            utxos,
             _version: version,
+            withdrawal_bundle_event_blocks,
+            withdrawal_bundles,
         })
     }
 
@@ -381,14 +397,54 @@ impl State {
         Ok(())
     }
 
+    fn validate_tx_input_maturity(
+        &self,
+        rotxn: &RoTxn,
+        main_height: u32,
+        outpoint: &OutPoint,
+    ) -> Result<(), Error> {
+        match outpoint {
+            OutPoint::Coinbase { txid, vout: _ } => {
+                let coinbase_height = self.coinbase_height.get(rotxn, txid)?;
+                let spend_height =
+                    self.try_get_height(rotxn)?.map_or(0, |height| height + 1);
+                if let Some(height_diff) =
+                    spend_height.checked_sub(coinbase_height)
+                    && height_diff >= COINBASE_MATURITY
+                {
+                    Ok(())
+                } else {
+                    Err(error::ImmatureOutPoint::Coinbase.into())
+                }
+            }
+            OutPoint::Deposit(bitcoin::OutPoint { txid, vout: _ }) => {
+                let deposit_height =
+                    self.deposit_mainchain_height.get(rotxn, txid)?;
+                if let Some(height_diff) =
+                    main_height.checked_sub(deposit_height)
+                    && height_diff >= DEPOSIT_MATURITY
+                {
+                    Ok(())
+                } else {
+                    Err(error::ImmatureOutPoint::Deposit.into())
+                }
+            }
+            OutPoint::Regular { .. } => Ok(()),
+        }
+    }
+
     pub fn validate_filled_transaction(
         &self,
+        rotxn: &RoTxn,
+        main_height: u32,
         transaction: &FilledTransaction,
     ) -> Result<bitcoin::Amount, Error> {
         let () = Self::validate_utxo_hashes(transaction)?;
         let mut value_in = bitcoin::Amount::ZERO;
         let mut value_out = bitcoin::Amount::ZERO;
         for (outpoint, _, utxo) in transaction.inputs() {
+            let () =
+                self.validate_tx_input_maturity(rotxn, main_height, outpoint)?;
             // a withdrawal output is committed to a bundle and can only be
             // spent by the bundle, never by a transaction
             if utxo.content.is_withdrawal() {
@@ -417,6 +473,7 @@ impl State {
         &self,
         rotxn: &RoTxn,
         batch_verification_ctxt: &BatchVerificationContext,
+        main_height: u32,
         transaction: &AuthorizedTransaction,
     ) -> Result<bitcoin::Amount, Error> {
         let filled_transaction =
@@ -434,7 +491,11 @@ impl State {
             batch_verification_ctxt,
             transaction,
         )?;
-        let fee = self.validate_filled_transaction(&filled_transaction)?;
+        let fee = self.validate_filled_transaction(
+            rotxn,
+            main_height,
+            &filled_transaction,
+        )?;
         Ok(fee)
     }
 
@@ -543,16 +604,26 @@ impl State {
         Ok(total_wealth)
     }
 
+    #[inline(always)]
     pub fn validate_block(
         &self,
         rotxn: &RoTxn,
         batch_verification_ctxt: &BatchVerificationContext,
         header: &Header,
+        prev_main_height: u32,
         body: &Body,
     ) -> Result<(bitcoin::Amount, MerkleRoot), Error> {
-        block::validate(batch_verification_ctxt, self, rotxn, header, body)
+        block::validate(
+            batch_verification_ctxt,
+            self,
+            rotxn,
+            header,
+            prev_main_height,
+            body,
+        )
     }
 
+    #[inline(always)]
     pub fn connect_block(
         &self,
         rwtxn: &mut RwTxn,
@@ -563,17 +634,27 @@ impl State {
     }
 
     /// Prevalidate a block under a read transaction, computing values reused on connect.
+    #[inline(always)]
     pub fn prevalidate_block(
         &self,
         rotxn: &RoTxn,
         batch_verification_ctxt: &BatchVerificationContext,
         header: &Header,
+        prev_main_height: u32,
         body: &Body,
     ) -> Result<PrevalidatedBlock, Error> {
-        block::prevalidate(batch_verification_ctxt, self, rotxn, header, body)
+        block::prevalidate(
+            batch_verification_ctxt,
+            self,
+            rotxn,
+            header,
+            prev_main_height,
+            body,
+        )
     }
 
     /// Connect a block using prevalidated data to avoid recomputation.
+    #[inline(always)]
     pub fn connect_prevalidated_block(
         &self,
         rwtxn: &mut RwTxn,
@@ -590,12 +671,14 @@ impl State {
         rwtxn: &mut RwTxn,
         batch_verification_ctxt: &BatchVerificationContext,
         header: &Header,
+        prev_main_height: u32,
         body: &Body,
     ) -> Result<(), Error> {
         let pre = self.prevalidate_block(
             rwtxn,
             batch_verification_ctxt,
             header,
+            prev_main_height,
             body,
         )?;
         let _: MerkleRoot =
@@ -690,7 +773,7 @@ mod test {
 
     #[test]
     fn cannot_spend_withdrawal_output() -> anyhow::Result<()> {
-        let (_temp_dir, _env, state) =
+        let (_temp_dir, env, state) =
             fresh_state("cannot-spend-withdrawal-output")?;
         let main_address = {
             let pkh = bitcoin::PubkeyHash::hash(b"test pubkey");
@@ -721,8 +804,9 @@ mod test {
             },
             spent_utxos: vec![withdrawal],
         };
+        let rotxn = env.read_txn()?;
         assert!(matches!(
-            state.validate_filled_transaction(&tx),
+            state.validate_filled_transaction(&rotxn, 0, &tx),
             Err(crate::state::Error::SpendWithdrawalOutput { .. })
         ));
         Ok(())
