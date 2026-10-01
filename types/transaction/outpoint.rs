@@ -11,6 +11,16 @@ use crate::{
     schema, util,
 };
 
+/// Coinbase outputs become spendable if the sidechain tip height is at least
+/// `COINBASE_MATURITY` greater than the height of the sidechain block in which
+/// the coinbase tx was included.
+pub const COINBASE_MATURITY: u32 = 50;
+
+/// Deposits become spendable if the previous mainchain tip height is at least
+/// `DEPOSIT_MATURITY` greater than the height of the mainchain block in which
+/// the deposit tx was included.
+pub const DEPOSIT_MATURITY: u32 = 50;
+
 #[derive(
     BorshSerialize,
     BorshDeserialize,
