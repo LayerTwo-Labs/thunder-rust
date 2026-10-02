@@ -175,7 +175,11 @@ const BETANET_SEED_PEER_ADDRS: &[PeerAddress<&'static str>] = {
         host: url::Host::Domain("seed.beta.ecash.ninja"),
         port: DEFAULT_PORT,
     };
-    &[DRIVECHA_IN, ECASH_NINJA]
+    const ECASH_EU_COM: PeerAddress<&'static str> = PeerAddress {
+        host: url::Host::Domain("seed.beta.ecash.eu.com"),
+        port: DEFAULT_PORT,
+    };
+    &[DRIVECHA_IN, ECASH_NINJA, ECASH_EU_COM]
 };
 
 const SIGNET_SEED_PEER_ADDRS: &[PeerAddress<&'static str>] = {
