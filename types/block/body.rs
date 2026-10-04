@@ -322,3 +322,58 @@ impl Body {
         self.transactions.iter().map(|t| t.inputs.len()).sum()
     }
 }
+
+#[cfg(test)]
+mod test {
+    use rustreexo::accumulator::proof::Proof;
+
+    use crate::{
+        address::Address,
+        block::{Body, Coinbase},
+        transaction::{FilledTransaction, Output, OutputContent, Transaction},
+    };
+
+    fn filled_tx(seed: u8) -> FilledTransaction {
+        let output = Output {
+            address: Address([seed; 20]),
+            content: OutputContent::Value(bitcoin::Amount::from_sat(
+                seed.into(),
+            )),
+        };
+        FilledTransaction {
+            transaction: Transaction {
+                inputs: Vec::new().into(),
+                proof: Proof::default(),
+                outputs: vec![output.clone()].into(),
+            },
+            spent_utxos: vec![output],
+        }
+    }
+
+    /// CVE-2012-2459: a tree that pads an odd level with a copy of its last
+    /// node gives the same root to a body with a repeated tail.
+    #[test]
+    fn repeated_tail_changes_merkle_root() -> anyhow::Result<()> {
+        const MAX_TXS: u8 = 9;
+        let coinbase = Coinbase::default();
+        let txs: Vec<_> = (1..=MAX_TXS).map(filled_tx).collect();
+        for n_txs in 1..=txs.len() {
+            let honest = &txs[..n_txs];
+            let honest_root = Body::compute_merkle_root(&coinbase, honest)?;
+            for n_repeated in 1..=n_txs {
+                let mutated: Vec<_> = honest
+                    .iter()
+                    .chain(&honest[n_txs - n_repeated..])
+                    .cloned()
+                    .collect();
+                let mutated_root =
+                    Body::compute_merkle_root(&coinbase, &mutated)?;
+                anyhow::ensure!(
+                    mutated_root != honest_root,
+                    "{n_txs} txs with the last {n_repeated} repeated give the same merkle root"
+                );
+            }
+        }
+        Ok(())
+    }
+}
