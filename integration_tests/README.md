@@ -1,13 +1,5 @@
 # Integration tests
 
-## Developing
-Integration tests are gated behind the `integration-tests` feature.
-
-To run integration tests, run
-```sh
-cargo run --example integration_tests
-```
-
 ## Setup
 
 The tests drive a real enforcer, bitcoind and electrs. The quickest way to get
