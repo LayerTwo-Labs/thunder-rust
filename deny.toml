@@ -74,7 +74,6 @@ ignore = [
     #{ id = "RUSTSEC-0000-0000", reason = "you can specify a reason the advisory is ignored" },
     #"a-crate-that-is-yanked@0.1.1", # you can also ignore yanked crate versions if you wish
     #{ crate = "a-crate-that-is-yanked@0.1.1", reason = "you can specify why you are ignoring the yanked crate" },
-    { id = "RUSTSEC-2024-0370", reason = "Temporary ignore until the ouroboros branch gets updated" },
     # paste (via aws-lc-rs) is unmaintained
     # https://github.com/aws/aws-lc-rs/issues/722
     { id = "RUSTSEC-2024-0436", reason = "Temporary ignore until aws-lc-rs and rustls-webpki get updated" },
@@ -274,7 +273,6 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
     "https://github.com/Ash-L2L/l2l-openapi.git",
     "https://gitlab.com/A-Manning/leonhard-llc-ops",
-    "https://github.com/erikjohnston/ouroboros.git?rev=ea82b33947f60c511dac6eb3815b6af3f6c3f555",
     "https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git",
     "https://github.com/LayerTwo-Labs/bip300301_enforcer.git",
     "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git",
