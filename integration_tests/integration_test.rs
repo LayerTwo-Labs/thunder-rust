@@ -104,23 +104,38 @@ async fn deposit_withdraw_roundtrip(
     init: Init,
     res_tx: UnboundedSender<anyhow::Result<()>>,
 ) -> anyhow::Result<()> {
+    use thunder_app_rpc_api::wallet::RpcClient as _;
+
     let sidechain_post_setup =
         deposit_withdraw_roundtrip_task(&mut post_setup, res_tx, init).await?;
+    // A transfer mined in the next block stays findable via `get_transaction`
+    // as later blocks build on it.
+    let rpc = &sidechain_post_setup.rpc_client;
+    let dest = rpc.get_new_address().await?;
+    let txid = rpc.create_transfer(dest, 1_000_000, 1_000).await?;
+    let mut included_in = None;
     // check that everything is ok after BMM'ing 3 blocks
-    let mut block_count_pre =
-        sidechain_post_setup.rpc_client.getblockcount().await?;
-    sidechain_post_setup.bmm_single(&mut post_setup).await?;
-    let mut block_count_post =
-        sidechain_post_setup.rpc_client.getblockcount().await?;
-    anyhow::ensure!(block_count_post == block_count_pre + 1);
-    block_count_pre = block_count_post;
-    sidechain_post_setup.bmm_single(&mut post_setup).await?;
-    block_count_post = sidechain_post_setup.rpc_client.getblockcount().await?;
-    anyhow::ensure!(block_count_post == block_count_pre + 1);
-    block_count_pre = block_count_post;
-    sidechain_post_setup.bmm_single(&mut post_setup).await?;
-    block_count_post = sidechain_post_setup.rpc_client.getblockcount().await?;
-    anyhow::ensure!(block_count_post == block_count_pre + 1);
+    for _ in 0..3 {
+        let block_count_pre = rpc.getblockcount().await?;
+        sidechain_post_setup.bmm_single(&mut post_setup).await?;
+        let block_count_post = rpc.getblockcount().await?;
+        anyhow::ensure!(block_count_post == block_count_pre + 1);
+        let block_hash = rpc
+            .get_transaction(txid)
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "get_transaction lost {txid} at block count {block_count_post}"
+                )
+            })?
+            .block_hash
+            .ok_or_else(|| anyhow::anyhow!("{txid} was not mined"))?;
+        let included_in = *included_in.get_or_insert(block_hash);
+        anyhow::ensure!(
+            block_hash == included_in,
+            "{txid} moved from block {included_in} to {block_hash}"
+        );
+    }
     Ok(())
 }
 

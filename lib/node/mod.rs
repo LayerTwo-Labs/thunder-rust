@@ -556,7 +556,7 @@ where
                 .map(Ok)
                 .transpose_into_fallible()
                 .find(|(block_hash, _idx)| {
-                    self.archive.is_descendant(&rotxn, tip, *block_hash)
+                    self.archive.is_descendant(&rotxn, *block_hash, tip)
                 })?
         {
             let body = self.archive.get_body(&rotxn, block_hash)?;
