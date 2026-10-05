@@ -224,7 +224,6 @@ jobs:
           export BIP300301_ENFORCER='${{ runner.temp }}/deps/bip300301-enforcer'
           export BITCOIND='${{ runner.temp }}/deps/bitcoin-patched/bitcoind'
           export BITCOIND_UNPATCHED='${{ runner.temp }}/deps/bitcoin-unpatched/bitcoind'
-          export BITCOIN_CLI='${{ runner.temp }}/deps/bitcoin-patched/bitcoin-cli'
           export ELECTRS='${{ runner.temp }}/electrs/target/release/electrs'
           export THUNDER_APP='target/debug/thunder_app'
           target/debug/examples/integration_tests
