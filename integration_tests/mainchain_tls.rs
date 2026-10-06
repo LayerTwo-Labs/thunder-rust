@@ -1,5 +1,6 @@
-//! Test following the enforcer over TLS: an `https` mainchain gRPC URL,
-//! verified against a CA the node is configured to trust
+//! Test following the enforcer over TLS and under a URL path: an `https`
+//! mainchain gRPC URL with a path, verified against a CA the node is
+//! configured to trust
 
 use std::{net::SocketAddr, path::Path, sync::Arc, time::Duration};
 
@@ -13,6 +14,12 @@ use bip300301_enforcer_integration_tests::{
 };
 use futures::{
     FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture,
+};
+use http_body_util::{BodyExt as _, Empty, combinators::BoxBody};
+use hyper::{Request, Response, StatusCode, body::Incoming};
+use hyper_util::{
+    client::legacy::{Client, connect::HttpConnector},
+    rt::{TokioExecutor, TokioIo},
 };
 use reserve_port::ReservedPort;
 use thunder_app_rpc_api::node::RpcClient as _;
@@ -48,27 +55,60 @@ fn test_pki() -> anyhow::Result<(String, TlsAcceptor)> {
     Ok((ca_cert.pem(), TlsAcceptor::from(Arc::new(config))))
 }
 
-/// Terminates TLS and forwards the plain h2c stream to `upstream`, like a
-/// TLS-terminating proxy in front of a remote enforcer
+/// The proxy serves the enforcer under this path only
+const PATH_PREFIX: &str = "/enforcer";
+
+type ProxyBody = BoxBody<hyper::body::Bytes, hyper::Error>;
+
+/// Forwards a request under [`PATH_PREFIX`] to `upstream` over h2c, without
+/// the prefix. Anything else is a 404.
+async fn forward(
+    client: Client<HttpConnector, Incoming>,
+    upstream: SocketAddr,
+    mut request: Request<Incoming>,
+) -> Result<Response<ProxyBody>, hyper_util::client::legacy::Error> {
+    let Some(path) = request
+        .uri()
+        .path_and_query()
+        .and_then(|path| path.as_str().strip_prefix(PATH_PREFIX))
+    else {
+        let empty = Empty::new().map_err(|never| match never {}).boxed();
+        let mut response = Response::new(empty);
+        *response.status_mut() = StatusCode::NOT_FOUND;
+        return Ok(response);
+    };
+    *request.uri_mut() = format!("http://{upstream}{path}")
+        .parse()
+        .expect("upstream address and request path make a valid URI");
+    Ok(client.request(request).await?.map(|body| body.boxed()))
+}
+
+/// Terminates TLS (HTTP/2 only) and serves the enforcer at `upstream` under
+/// [`PATH_PREFIX`], like a reverse proxy in front of a remote enforcer
 async fn spawn_tls_proxy(
     acceptor: TlsAcceptor,
     upstream: SocketAddr,
 ) -> anyhow::Result<(u16, AbortOnDrop<()>)> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
+    let client = Client::builder(TokioExecutor::new())
+        .http2_only(true)
+        .build_http();
     let task = tokio::spawn(async move {
         while let Ok((inbound, _)) = listener.accept().await {
-            let acceptor = acceptor.clone();
+            let (acceptor, client) = (acceptor.clone(), client.clone());
             tokio::spawn(async move {
-                let (Ok(mut inbound), Ok(mut outbound)) = (
-                    acceptor.accept(inbound).await,
-                    tokio::net::TcpStream::connect(upstream).await,
-                ) else {
+                let Ok(inbound) = acceptor.accept(inbound).await else {
                     return;
                 };
-                let _res =
-                    tokio::io::copy_bidirectional(&mut inbound, &mut outbound)
-                        .await;
+                let service = hyper::service::service_fn(move |request| {
+                    forward(client.clone(), upstream, request)
+                });
+                let _res = hyper::server::conn::http2::Builder::new(
+                    TokioExecutor::new(),
+                )
+                .serve_connection(TokioIo::new(inbound), service)
+                .await;
             });
         }
     });
@@ -141,7 +181,7 @@ async fn mainchain_tls_task(
         SocketAddr::from(([127, 0, 0, 1], enforcer_port)),
     )
     .await?;
-    let url = format!("https://localhost:{proxy_port}");
+    let url = format!("https://localhost:{proxy_port}{PATH_PREFIX}");
 
     tracing::info!("Checking that certificates are verified");
     let () = expect_startup_failure(
@@ -156,7 +196,7 @@ async fn mainchain_tls_task(
     let () = expect_startup_failure(
         &bin_paths,
         &base_dir.join("thunder-wrong-name"),
-        format!("https://127.0.0.1:{proxy_port}"),
+        format!("https://127.0.0.1:{proxy_port}{PATH_PREFIX}"),
         Some(&ca_cert),
         "NotValidForName",
     )
@@ -170,7 +210,17 @@ async fn mainchain_tls_task(
     )
     .await?;
 
-    tracing::info!("Following the enforcer over TLS");
+    // The node must keep the URL's path
+    let () = expect_startup_failure(
+        &bin_paths,
+        &base_dir.join("thunder-no-path"),
+        format!("https://localhost:{proxy_port}"),
+        Some(&ca_cert),
+        "404",
+    )
+    .await?;
+
+    tracing::info!("Following the enforcer over TLS, under a path");
     let sidechain = PostSetup::setup(
         Init {
             mainchain_tls: Some(MainchainTls { url, ca_cert }),
