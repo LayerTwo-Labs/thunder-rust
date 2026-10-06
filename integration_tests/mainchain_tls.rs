@@ -1,6 +1,7 @@
 //! Test following the enforcer over TLS and under a URL path: an `https`
 //! mainchain gRPC URL with a path, verified against a CA the node is
-//! configured to trust
+//! configured to trust. Also without the gRPC health service, like public
+//! enforcer endpoints that expose only the CUSF services.
 
 use std::{net::SocketAddr, path::Path, sync::Arc, time::Duration};
 
@@ -22,7 +23,7 @@ use hyper_util::{
     rt::{TokioExecutor, TokioIo},
 };
 use reserve_port::ReservedPort;
-use thunder_app_rpc_api::node::RpcClient as _;
+use thunder_app_rpc_api::node::{PrivateRpcClient as _, RpcClient as _};
 use tokio::time::sleep;
 use tokio_rustls::{TlsAcceptor, rustls};
 use tracing::Instrument as _;
@@ -55,23 +56,30 @@ fn test_pki() -> anyhow::Result<(String, TlsAcceptor)> {
     Ok((ca_cert.pem(), TlsAcceptor::from(Arc::new(config))))
 }
 
-/// The proxy serves the enforcer under this path only
+/// The proxy serves the enforcer under this path
 const PATH_PREFIX: &str = "/enforcer";
+/// ... and only its CUSF services, not the gRPC health service, under this one
+const CUSF_ONLY_PREFIX: &str = "/cusf-only";
 
 type ProxyBody = BoxBody<hyper::body::Bytes, hyper::Error>;
 
-/// Forwards a request under [`PATH_PREFIX`] to `upstream` over h2c, without
-/// the prefix. Anything else is a 404.
+/// Forwards a request under [`PATH_PREFIX`], or a CUSF request under
+/// [`CUSF_ONLY_PREFIX`], to `upstream` over h2c, without the prefix.
+/// Anything else is a 404.
 async fn forward(
     client: Client<HttpConnector, Incoming>,
     upstream: SocketAddr,
     mut request: Request<Incoming>,
 ) -> Result<Response<ProxyBody>, hyper_util::client::legacy::Error> {
-    let Some(path) = request
+    let path = request
         .uri()
         .path_and_query()
-        .and_then(|path| path.as_str().strip_prefix(PATH_PREFIX))
-    else {
+        .map_or("/", |path| path.as_str());
+    let upstream_path = match path.strip_prefix(CUSF_ONLY_PREFIX) {
+        Some(path) => path.starts_with("/cusf.").then_some(path),
+        None => path.strip_prefix(PATH_PREFIX),
+    };
+    let Some(path) = upstream_path.map(str::to_owned) else {
         let empty = Empty::new().map_err(|never| match never {}).boxed();
         let mut response = Response::new(empty);
         *response.status_mut() = StatusCode::NOT_FOUND;
@@ -227,12 +235,44 @@ async fn mainchain_tls_task(
             ..Init::new(bin_paths.thunder()?.clone())
         },
         &enforcer_post_setup,
-        res_tx,
+        res_tx.clone(),
     )
     .await?;
     // BMM needs the mainchain tip and block events over the TLS connection
     let () = sidechain.bmm(&mut enforcer_post_setup, 2).await?;
     anyhow::ensure!(sidechain.rpc_client.getblockcount().await? == 2);
+
+    tracing::info!("Following the enforcer without its health service");
+    // A watch-only node only needs the validator service. It can only accept
+    // the blocks it syncs once it has checked them against the mainchain.
+    let watcher = PostSetup::setup(
+        Init {
+            data_dir_suffix: Some("watcher".to_owned()),
+            mainchain_tls: Some(MainchainTls {
+                url: format!(
+                    "https://localhost:{proxy_port}{CUSF_ONLY_PREFIX}"
+                ),
+                ca_cert: base_dir.join("mainchain-ca.pem"),
+            }),
+            ..Init::new(bin_paths.thunder()?.clone())
+        },
+        &enforcer_post_setup,
+        res_tx,
+    )
+    .await?;
+    let () = watcher
+        .rpc_client
+        .connect_peer(sidechain.net_addr().into())
+        .await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while watcher.rpc_client.getblockcount().await? < 2 {
+        anyhow::ensure!(
+            tokio::time::Instant::now() < deadline,
+            "watcher didn't sync the sidechain"
+        );
+        sleep(Duration::from_millis(500)).await;
+    }
+    drop(watcher);
 
     drop(sidechain);
     drop(enforcer_post_setup.tasks);
