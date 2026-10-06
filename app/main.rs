@@ -11,6 +11,7 @@ mod app;
 mod cli;
 mod gui;
 mod line_buffer;
+mod path_prefix;
 mod rpc_server;
 mod util;
 

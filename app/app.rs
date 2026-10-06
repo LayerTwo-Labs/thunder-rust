@@ -68,7 +68,10 @@ impl From<node::Error> for Error {
     }
 }
 
-fn update_wallet(node: &Node, wallet: &Wallet) -> Result<(), Error> {
+fn update_wallet(
+    node: &Node<MainchainTransport>,
+    wallet: &Wallet,
+) -> Result<(), Error> {
     tracing::trace!("starting wallet update");
     let addresses = wallet.get_addresses()?;
     let utxos = node.get_utxos_by_addresses(&addresses)?;
@@ -87,7 +90,7 @@ fn update_wallet(node: &Node, wallet: &Wallet) -> Result<(), Error> {
 
 /// Update utxos & wallet
 fn update(
-    node: &Node,
+    node: &Node<MainchainTransport>,
     utxos: &mut HashMap<OutPoint, Output>,
     wallet: &Wallet,
 ) -> Result<(), Error> {
@@ -129,11 +132,15 @@ pub struct Config {
     pub wallet_dir: PathBuf,
 }
 
+/// Connection to the mainchain node
+pub type MainchainTransport =
+    crate::path_prefix::PathPrefix<tonic::transport::Channel>;
+
 #[derive(Clone)]
 pub struct App {
-    pub node: Arc<Node>,
+    pub node: Arc<Node<MainchainTransport>>,
     pub wallet: Wallet,
-    pub miner: Option<Arc<TokioRwLock<Miner>>>,
+    pub miner: Option<Arc<TokioRwLock<Miner<MainchainTransport>>>>,
     pub utxos: Arc<RwLock<HashMap<OutPoint, Output>>>,
     task: Arc<JoinHandle<()>>,
     pub transaction: Arc<RwLock<Transaction>>,
@@ -143,7 +150,7 @@ pub struct App {
 
 impl App {
     async fn task(
-        node: Arc<Node>,
+        node: Arc<Node<MainchainTransport>>,
         utxos: Arc<RwLock<HashMap<OutPoint, Output>>>,
         wallet: Wallet,
     ) -> Result<(), Error> {
@@ -155,7 +162,7 @@ impl App {
     }
 
     fn spawn_task(
-        node: Arc<Node>,
+        node: Arc<Node<MainchainTransport>>,
         utxos: Arc<RwLock<HashMap<OutPoint, Output>>>,
         wallet: Wallet,
     ) -> JoinHandle<()> {
@@ -166,7 +173,7 @@ impl App {
     }
 
     async fn check_status_serving(
-        client: &mut HealthClient<tonic::transport::Channel>,
+        client: &mut HealthClient<MainchainTransport>,
         service_name: &str,
     ) -> Result<bool, tonic::Status> {
         match client
@@ -198,7 +205,7 @@ impl App {
     /// Returns `Ok(_)` iff validator service is available, and error if validator
     /// service is unavailable.
     async fn check_proto_support(
-        transport: tonic::transport::channel::Channel,
+        transport: MainchainTransport,
     ) -> Result<ProtoSupport, tonic::Status> {
         let mut client = HealthClient::new(transport);
 
@@ -285,7 +292,10 @@ impl App {
             }
             endpoint = endpoint.tls_config(tls).map_err(Error::MainchainTls)?;
         }
-        let transport = endpoint.connect_lazy();
+        let transport = crate::path_prefix::PathPrefix::new(
+            endpoint.connect_lazy(),
+            config.mainchain_grpc_url.path(),
+        );
         let (
             cusf_mainchain,
             cusf_mainchain_miner,
