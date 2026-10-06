@@ -142,10 +142,7 @@ fn deposit_withdraw_roundtrip_trial(
             };
             deposit_withdraw_roundtrip(
                 post_setup,
-                Init {
-                    thunder_app: bin_paths.thunder()?.clone(),
-                    data_dir_suffix: None,
-                },
+                Init::new(bin_paths.thunder()?.clone()),
                 res_tx,
             )
             .await
