@@ -32,7 +32,7 @@ thunder_app_cli = { path = "../cli" }
 thunder_app_rpc_api = { path = "../rpc-api" }
 tiny-bip39 = { workspace = true }
 tokio-util = { workspace = true, features = ["rt"] }
-tonic = { workspace = true }
+tonic = { workspace = true, features = ["tls-ring", "tls-webpki-roots"] }
 tonic-health = { workspace = true }
 # needs to line up with jsonrpsee tower version...
 tower = { workspace = true }
