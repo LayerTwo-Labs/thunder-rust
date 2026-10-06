@@ -21,6 +21,7 @@ pub struct Config {
     pub log_level: tracing::Level,
     pub log_level_file: tracing::Level, // Level for logs that get written to file
     pub mainchain_grpc_url: url::Url,
+    pub mainchain_grpc_ca_cert: Option<PathBuf>,
     pub mnemonic_seed_phrase_path: Option<PathBuf>,
     pub net_addr: SocketAddr,
     pub network: Network,
@@ -43,6 +44,7 @@ impl Config {
             log_level,
             log_level_file,
             mainchain_grpc_url,
+            mainchain_grpc_ca_cert,
             mnemonic_seed_phrase_path,
             net_addr,
             network,
@@ -69,6 +71,8 @@ impl Config {
             %log_level,
             %log_level_file,
             %mainchain_grpc_url,
+            mainchain_grpc_ca_cert = mainchain_grpc_ca_cert.as_ref()
+                .map(|path| tracing::field::display(path.display())),
             mnemonic_seed_phrase_path = mnemonic_seed_phrase_path.as_ref()
                 .map(|path| tracing::field::display(path.display())),
             %net_addr,
@@ -206,9 +210,15 @@ pub(super) struct Cli {
     #[arg(default_value_t = tracing::Level::DEBUG, long)]
     log_level: tracing::Level,
 
-    /// Connect to mainchain node gRPC server running at this URL
+    /// Connect to mainchain node gRPC server running at this URL.
+    /// `https` URLs are verified against the Mozilla root certificates.
     #[arg(default_value = "http://localhost:50051", long)]
     mainchain_grpc_url: url::Url,
+
+    /// Also trust this CA certificate (PEM) for an `https` mainchain gRPC
+    /// URL, eg. for a mainchain node with a private CA
+    #[arg(long)]
+    mainchain_grpc_ca_cert: Option<PathBuf>,
 
     /// Path to a mnemonic seed phrase
     #[arg(long)]
@@ -261,6 +271,13 @@ impl Cli {
             saturating_pred_level(self.log_level)
         };
         let wallet_dir = self.wallet_dir.unwrap_or_else(|| datadir.clone());
+        if self.mainchain_grpc_ca_cert.is_some()
+            && self.mainchain_grpc_url.scheme() != "https"
+        {
+            anyhow::bail!(
+                "--mainchain-grpc-ca-cert needs an https --mainchain-grpc-url"
+            );
+        }
         Ok(Config {
             add_peers: HashSet::from_iter(self.add_peers),
             datadir,
@@ -269,6 +286,7 @@ impl Cli {
             log_level,
             log_level_file: self.log_level_file,
             mainchain_grpc_url: self.mainchain_grpc_url,
+            mainchain_grpc_ca_cert: self.mainchain_grpc_ca_cert,
             mnemonic_seed_phrase_path: self.mnemonic_seed_phrase_path,
             net_addr: self.net_addr,
             network: self.network,

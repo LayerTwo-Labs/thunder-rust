@@ -41,6 +41,8 @@ pub enum Error {
     CusfMainchain(#[from] thunder::types::proto::Error),
     #[error("io error")]
     Io(#[from] std::io::Error),
+    #[error("Invalid mainchain gRPC TLS config")]
+    MainchainTls(#[source] tonic::transport::Error),
     #[error("miner error")]
     Miner(#[from] miner::Error),
     #[error("node error")]
@@ -117,6 +119,8 @@ pub struct Config {
     pub add_peers: HashSet<thunder::types::net::PeerAddress>,
     pub datadir: PathBuf,
     pub mainchain_grpc_url: url::Url,
+    /// Extra CA certificate (PEM) to trust for an `https` mainchain URL
+    pub mainchain_grpc_ca_cert: Option<PathBuf>,
     pub mnemonic_seed_phrase_path: Option<PathBuf>,
     pub net_addr: SocketAddr,
     pub network: thunder::types::Network,
@@ -264,12 +268,24 @@ impl App {
             config.mainchain_grpc_url
         );
         let rt_guard = runtime.enter();
-        let transport = tonic::transport::channel::Channel::from_shared(
+        let mut endpoint = tonic::transport::channel::Channel::from_shared(
             format!("{}", config.mainchain_grpc_url),
         )
         .unwrap()
-        .concurrency_limit(256)
-        .connect_lazy();
+        .concurrency_limit(256);
+        if config.mainchain_grpc_url.scheme() == "https" {
+            let mut tls =
+                tonic::transport::ClientTlsConfig::new().with_webpki_roots();
+            if let Some(path) = &config.mainchain_grpc_ca_cert {
+                tls = tls.ca_certificate(
+                    tonic::transport::Certificate::from_pem(std::fs::read(
+                        path,
+                    )?),
+                );
+            }
+            endpoint = endpoint.tls_config(tls).map_err(Error::MainchainTls)?;
+        }
+        let transport = endpoint.connect_lazy();
         let (
             cusf_mainchain,
             cusf_mainchain_miner,

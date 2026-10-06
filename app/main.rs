@@ -223,6 +223,7 @@ fn main() -> anyhow::Result<()> {
         add_peers: config.add_peers,
         datadir: config.datadir,
         mainchain_grpc_url: config.mainchain_grpc_url,
+        mainchain_grpc_ca_cert: config.mainchain_grpc_ca_cert,
         mnemonic_seed_phrase_path: config.mnemonic_seed_phrase_path,
         net_addr: config.net_addr,
         network: config.network,

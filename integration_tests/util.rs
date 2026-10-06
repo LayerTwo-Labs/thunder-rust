@@ -27,7 +27,9 @@ pub struct ThunderApp {
     pub path: PathBuf,
     pub data_dir: PathBuf,
     pub log_level: Option<tracing::Level>,
-    pub mainchain_grpc_port: u16,
+    pub mainchain_grpc_url: String,
+    /// Extra CA certificate to trust for an `https` mainchain URL
+    pub mainchain_grpc_ca_cert: Option<PathBuf>,
     /// Port to use for P2P networking
     pub net_port: u16,
     pub network: Network,
@@ -54,7 +56,7 @@ impl ThunderApp {
             self.data_dir.display().to_string(),
             "--headless".to_owned(),
             "--mainchain-grpc-url".to_owned(),
-            format!("http://127.0.0.1:{}", self.mainchain_grpc_port),
+            self.mainchain_grpc_url.clone(),
             "--net-addr".to_owned(),
             format!("127.0.0.1:{}", self.net_port),
             format!("--network={}", self.network),
@@ -63,6 +65,10 @@ impl ThunderApp {
             "--rpc-addr".to_owned(),
             format!("127.0.0.1:{}", self.rpc_port),
         ];
+        if let Some(ca_cert) = &self.mainchain_grpc_ca_cert {
+            default_args.push("--mainchain-grpc-ca-cert".to_owned());
+            default_args.push(ca_cert.display().to_string());
+        }
         if let Some(log_level) = self.log_level {
             default_args.push("--log-level".to_owned());
             default_args.push(log_level.as_str().to_owned());

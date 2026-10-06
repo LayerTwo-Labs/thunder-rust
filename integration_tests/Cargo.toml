@@ -16,6 +16,7 @@ dotenvy = { workspace = true }
 futures = { workspace = true }
 jsonrpsee = { workspace = true }
 libtest-mimic = { workspace = true }
+rcgen = { workspace = true }
 reserve-port = { workspace = true }
 thiserror = { workspace = true }
 thunder = { path = "../lib", features = ["clap"] }
@@ -23,7 +24,8 @@ thunder_app_rpc_api = { path = "../rpc-api" }
 tracing = { workspace = true }
 tracing-indicatif = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["io-util", "net", "rt-multi-thread"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 
 [features]
 default = ["rustls"]
