@@ -19,7 +19,9 @@ use thunder::{
         proto::mainchain::{
             self,
             generated::{
-                block_producer_service_server, mining_service_server,
+                GetChainTipRequest, block_producer_service_server,
+                mining_service_server,
+                validator_service_client::ValidatorServiceClient,
                 validator_service_server, wallet_service_server,
             },
         },
@@ -207,7 +209,7 @@ impl App {
     async fn check_proto_support(
         transport: MainchainTransport,
     ) -> Result<ProtoSupport, tonic::Status> {
-        let mut client = HealthClient::new(transport);
+        let mut client = HealthClient::new(transport.clone());
 
         let block_producer_service_name =
             block_producer_service_server::SERVICE_NAME;
@@ -216,12 +218,34 @@ impl App {
         let wallet_service_name = wallet_service_server::SERVICE_NAME;
 
         // The validator service MUST exist. We therefore error out here directly.
-        if !Self::check_status_serving(&mut client, validator_service_name)
-            .await?
+        match Self::check_status_serving(&mut client, validator_service_name)
+            .await
         {
-            return Err(tonic::Status::aborted(format!(
-                "{validator_service_name} is not supported in mainchain client",
-            )));
+            Ok(true) => (),
+            Ok(false) => {
+                return Err(tonic::Status::aborted(format!(
+                    "{validator_service_name} is not supported in mainchain client",
+                )));
+            }
+            // Some proxies expose only the CUSF services. Call the validator
+            // directly instead; the optional services count as missing.
+            Err(health_err) => {
+                tracing::warn!(
+                    "Mainchain health service unavailable ({health_err}), calling {validator_service_name} directly"
+                );
+                let _tip = ValidatorServiceClient::new(transport)
+                    .get_chain_tip(GetChainTipRequest {})
+                    .await?;
+                tracing::info!(
+                    "Verified existence of {}",
+                    validator_service_name
+                );
+                return Ok(ProtoSupport {
+                    block_producer: false,
+                    miner: false,
+                    wallet: false,
+                });
+            }
         }
 
         tracing::info!("Verified existence of {}", validator_service_name);
