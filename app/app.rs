@@ -7,12 +7,12 @@ use std::{
 };
 
 use fallible_iterator::FallibleIterator as _;
-use futures::{StreamExt, TryFutureExt};
+use futures::StreamExt;
 use parking_lot::RwLock;
 use rustreexo::accumulator::proof::Proof;
 use thunder::{
     miner::{self, Miner},
-    node::{self, Node},
+    node::{self, FatalErrorTx, Node},
     types::{
         self, Address, Coinbase, FilledTransaction, OutPoint, Output,
         Transaction,
@@ -167,11 +167,13 @@ impl App {
         node: Arc<Node<MainchainTransport>>,
         utxos: Arc<RwLock<HashMap<OutPoint, Output>>>,
         wallet: Wallet,
+        fatal_error_tx: FatalErrorTx,
     ) -> JoinHandle<()> {
-        spawn(Self::task(node, utxos, wallet).unwrap_or_else(|err| {
-            let err = anyhow::Error::from(err);
-            tracing::error!("{err:#}")
-        }))
+        spawn(node::supervise(
+            "Wallet",
+            Self::task(node, utxos, wallet),
+            fatal_error_tx,
+        ))
     }
 
     async fn check_status_serving(
@@ -280,7 +282,10 @@ impl App {
         Ok(res)
     }
 
-    pub fn new(config: Config) -> Result<Self, Error> {
+    pub fn new(
+        config: Config,
+        fatal_error_tx: FatalErrorTx,
+    ) -> Result<Self, Error> {
         let mut rng = rand::rng();
         // Node launches some tokio tasks for p2p networking, that is why we need a tokio runtime
         // here.
@@ -385,6 +390,7 @@ impl App {
             cusf_mainchain_block_producer,
             &mut rng,
             &runtime,
+            fatal_error_tx.clone(),
         )?;
         let utxos = {
             let mut utxos = wallet.get_utxos()?;
@@ -398,8 +404,12 @@ impl App {
         };
         let node = Arc::new(node);
         let miner = miner.map(|miner| Arc::new(TokioRwLock::new(miner)));
-        let task =
-            Self::spawn_task(node.clone(), utxos.clone(), wallet.clone());
+        let task = Self::spawn_task(
+            node.clone(),
+            utxos.clone(),
+            wallet.clone(),
+            fatal_error_tx,
+        );
         drop(rt_guard);
         Ok(Self {
             node,

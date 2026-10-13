@@ -22,7 +22,11 @@ use tokio::{
 
 use crate::{
     archive::{self, Archive},
-    node::error::mainchain_task::{self as error, Error},
+    node::{
+        FatalErrorTx,
+        error::mainchain_task::{self as error, Error},
+        supervise,
+    },
     types::{
         BmmResult,
         proto::{
@@ -33,7 +37,6 @@ use crate::{
             },
         },
     },
-    util::ErrorChain,
 };
 
 /// Request data from the mainchain node
@@ -594,6 +597,7 @@ impl MainchainTaskHandle {
         env: sneed::Env<heed::WithoutTls>,
         archive: Archive,
         mainchain: ValidatorClient<Transport>,
+        fatal_error_tx: FatalErrorTx,
     ) -> (Self, mpsc::UnboundedReceiver<Event>)
     where
         Transport: proto::Transport + Send + 'static,
@@ -609,14 +613,7 @@ impl MainchainTaskHandle {
             request_rx,
             event_tx,
         };
-        let task = spawn(async move {
-            if let Err(err) = task.run().await {
-                tracing::error!(
-                    "Mainchain task error: {:#}",
-                    ErrorChain::new(&err)
-                );
-            }
-        });
+        let task = spawn(supervise("Mainchain", task.run(), fatal_error_tx));
         let task_handle = MainchainTaskHandle {
             task: Arc::new(task),
             request_tx,
