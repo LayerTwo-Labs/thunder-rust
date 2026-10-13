@@ -25,7 +25,7 @@ curve25519-dalek = { workspace = true, features = ["group"] }
 educe = { workspace = true, features = ["Clone", "Debug"] }
 error-fatality = { workspace = true }
 fallible-iterator = { workspace = true }
-futures = { workspace = true, features = ["alloc"] }
+futures = { workspace = true, features = ["alloc", "std"] }
 governor = { workspace = true, features = ["quanta", "std"] }
 hashlink = { workspace = true, features = ["serde_impl"] }
 heed = { workspace = true }
