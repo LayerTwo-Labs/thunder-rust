@@ -16,6 +16,7 @@ use crate::{
         PointedOutputRef, SpentOutput, WithdrawalBundle, WithdrawalBundleEvent,
         WithdrawalBundleEventStatus, WithdrawalBundleStatus, hash,
         proto::mainchain::{BlockEvent, TwoWayPegData},
+        state::TwoWayPegEvent,
     },
 };
 
@@ -118,6 +119,7 @@ fn connect_withdrawal_bundle_submitted(
     rwtxn: &mut RwTxn,
     block_height: u32,
     accumulator_diff: &mut AccumulatorDiff,
+    two_way_peg_events: &mut Vec<TwoWayPegEvent>,
     event_block_hash: &bitcoin::BlockHash,
     m6id: M6id,
 ) -> Result<(), error::ConnectWithdrawalBundleSubmitted> {
@@ -160,6 +162,10 @@ fn connect_withdrawal_bundle_submitted(
                 inpoint: InPoint::Withdrawal { m6id },
             };
             state.stxos.put(rwtxn, &key, &spent_output)?;
+            two_way_peg_events.push(TwoWayPegEvent::BundleSpend {
+                outpoint: *outpoint,
+                m6id,
+            });
         }
         assert_eq!(
             bundle_status.latest().value,
@@ -284,6 +290,7 @@ fn connect_withdrawal_bundle_confirmed(
     rwtxn: &mut RwTxn,
     block_height: u32,
     accumulator_diff: &mut AccumulatorDiff,
+    two_way_peg_events: &mut Vec<TwoWayPegEvent>,
     event_block_hash: &bitcoin::BlockHash,
     m6id: M6id,
 ) -> Result<(), Error> {
@@ -341,6 +348,10 @@ fn connect_withdrawal_bundle_confirmed(
                         output: &spent_output.output,
                     });
                     accumulator_diff.remove(utxo_hash.into());
+                    two_way_peg_events.push(TwoWayPegEvent::BundleSpend {
+                        outpoint: *outpoint,
+                        m6id,
+                    });
                 }
                 state.utxos.clear(rwtxn).map_err(DbError::from)?;
                 bundle = WithdrawalBundleInfo::UnknownConfirmed {
@@ -387,6 +398,10 @@ fn connect_withdrawal_bundle_confirmed(
                         output: &spent_output.output,
                     });
                     accumulator_diff.remove(utxo_hash.into());
+                    two_way_peg_events.push(TwoWayPegEvent::BundleSpend {
+                        outpoint: *outpoint,
+                        m6id,
+                    });
                 }
             }
         }
@@ -406,6 +421,7 @@ fn connect_withdrawal_bundle_failed(
     rwtxn: &mut RwTxn,
     block_height: u32,
     accumulator_diff: &mut AccumulatorDiff,
+    two_way_peg_events: &mut Vec<TwoWayPegEvent>,
     m6id: M6id,
 ) -> Result<(), Error> {
     tracing::debug!(
@@ -448,6 +464,11 @@ fn connect_withdrawal_bundle_failed(
                     output: output.clone(),
                 });
                 accumulator_diff.insert(utxo_hash.into());
+                two_way_peg_events.push(TwoWayPegEvent::BundleReturn {
+                    outpoint: *outpoint,
+                    output: output.clone(),
+                    m6id,
+                });
             }
             let latest_failed_m6id = if let Some(mut latest_failed_m6id) = state
                 .latest_failed_withdrawal_bundle
@@ -482,6 +503,7 @@ fn connect_withdrawal_bundle_event(
     rwtxn: &mut RwTxn,
     block_height: u32,
     accumulator_diff: &mut AccumulatorDiff,
+    two_way_peg_events: &mut Vec<TwoWayPegEvent>,
     event_block_hash: &bitcoin::BlockHash,
     event: &WithdrawalBundleEvent,
 ) -> Result<(), Error> {
@@ -492,6 +514,7 @@ fn connect_withdrawal_bundle_event(
                 rwtxn,
                 block_height,
                 accumulator_diff,
+                two_way_peg_events,
                 event_block_hash,
                 event.m6id,
             )
@@ -503,6 +526,7 @@ fn connect_withdrawal_bundle_event(
                 rwtxn,
                 block_height,
                 accumulator_diff,
+                two_way_peg_events,
                 event_block_hash,
                 event.m6id,
             )
@@ -513,6 +537,7 @@ fn connect_withdrawal_bundle_event(
                 rwtxn,
                 block_height,
                 accumulator_diff,
+                two_way_peg_events,
                 event.m6id,
             )
         }
@@ -525,6 +550,7 @@ fn connect_event(
     rwtxn: &mut RwTxn,
     block_height: u32,
     accumulator_diff: &mut AccumulatorDiff,
+    two_way_peg_events: &mut Vec<TwoWayPegEvent>,
     latest_deposit_block_hash: &mut Option<bitcoin::BlockHash>,
     latest_withdrawal_bundle_event_block_hash: &mut Option<bitcoin::BlockHash>,
     event_block_hash: bitcoin::BlockHash,
@@ -540,6 +566,10 @@ fn connect_event(
                 .map_err(DbError::from)?;
             let utxo_hash = hash(&PointedOutputRef { outpoint, output });
             accumulator_diff.insert(utxo_hash.into());
+            two_way_peg_events.push(TwoWayPegEvent::Deposit {
+                outpoint,
+                output: output.clone(),
+            });
             *latest_deposit_block_hash = Some(event_block_hash);
         }
         BlockEvent::WithdrawalBundle(withdrawal_bundle_event) => {
@@ -548,6 +578,7 @@ fn connect_event(
                 rwtxn,
                 block_height,
                 accumulator_diff,
+                two_way_peg_events,
                 &event_block_hash,
                 withdrawal_bundle_event,
             )?;
@@ -570,6 +601,7 @@ pub fn connect(
         .map_err(DbError::from)?
         .unwrap_or_default();
     let mut accumulator_diff = AccumulatorDiff::default();
+    let mut two_way_peg_events = Vec::new();
     let mut latest_deposit_block_hash = None;
     let mut latest_withdrawal_bundle_event_block_hash = None;
     for (event_block_hash, event_block_info) in &two_way_peg_data.block_info {
@@ -579,12 +611,19 @@ pub fn connect(
                 rwtxn,
                 block_height,
                 &mut accumulator_diff,
+                &mut two_way_peg_events,
                 &mut latest_deposit_block_hash,
                 &mut latest_withdrawal_bundle_event_block_hash,
                 *event_block_hash,
                 event,
             )?;
         }
+    }
+    if !two_way_peg_events.is_empty() {
+        state
+            .two_way_peg_events
+            .put(rwtxn, &block_height, &two_way_peg_events)
+            .map_err(DbError::from)?;
     }
     // Handle deposits.
     if let Some(latest_deposit_block_hash) = latest_deposit_block_hash {
@@ -1023,6 +1062,10 @@ pub fn disconnect(
     let mut accumulator_diff = AccumulatorDiff::default();
     let mut latest_deposit_block_hash = None;
     let mut latest_withdrawal_bundle_event_block_hash = None;
+    state
+        .two_way_peg_events
+        .delete(rwtxn, &block_height)
+        .map_err(DbError::from)?;
     // Restore pending withdrawal bundle
     for (event_block_hash, event_block_info) in
         two_way_peg_data.block_info.iter().rev()
@@ -1143,6 +1186,7 @@ mod test {
             WithdrawalBundleEvent, WithdrawalBundleEventStatus,
             WithdrawalBundleStatus,
             proto::mainchain::{BlockEvent, BlockInfo, Deposit, TwoWayPegData},
+            state::TwoWayPegEvent,
         },
     };
 
@@ -1373,6 +1417,79 @@ mod test {
     }
 
     // connecting a deposit then disconnecting it on a reorg must round-trip
+    /// An unknown bundle that a mainchain block confirms at height 0 spends
+    /// every output the state holds, including a deposit that the same
+    /// mainchain block created.
+    #[test]
+    fn a_bundle_spends_a_deposit_of_the_same_block() -> anyhow::Result<()> {
+        let (_temp_dir, env, state) =
+            fresh_state("a_bundle_spends_a_deposit_of_the_same_block")?;
+        let m6id = M6id(bitcoin::Txid::from_byte_array([5; 32]));
+        let deposit_outpoint = bitcoin::OutPoint {
+            txid: bitcoin::Txid::from_byte_array([7; 32]),
+            vout: 0,
+        };
+        let output = value_output(Address::ALL_ZEROS, 5000);
+        let mut block_info = LinkedHashMap::new();
+        block_info.insert(
+            bitcoin::BlockHash::from_byte_array([9; 32]),
+            BlockInfo {
+                bmm_commitment: None,
+                events: vec![
+                    BlockEvent::Deposit(Deposit {
+                        tx_index: 0,
+                        outpoint: deposit_outpoint,
+                        output: output.clone(),
+                    }),
+                    BlockEvent::WithdrawalBundle(WithdrawalBundleEvent {
+                        m6id,
+                        status: WithdrawalBundleEventStatus::Confirmed,
+                    }),
+                ],
+            },
+        );
+        let two_way_peg_data = TwoWayPegData { block_info };
+        {
+            let mut rwtxn = env.write_txn()?;
+            state.height.put(&mut rwtxn, &(), &0)?;
+            state.withdrawal_bundles.put(
+                &mut rwtxn,
+                &m6id,
+                &(
+                    WithdrawalBundleInfo::Unknown,
+                    RollBack::new(WithdrawalBundleStatus::Submitted, 0),
+                ),
+            )?;
+            let () = connect(&state, &mut rwtxn, &two_way_peg_data)?;
+            rwtxn.commit()?;
+        }
+        let expected = vec![
+            TwoWayPegEvent::Deposit {
+                outpoint: OutPoint::Deposit(deposit_outpoint),
+                output,
+            },
+            TwoWayPegEvent::BundleSpend {
+                outpoint: OutPoint::Deposit(deposit_outpoint),
+                m6id,
+            },
+        ];
+        {
+            let rotxn = env.read_txn()?;
+            let events = state.get_two_way_peg_events(&rotxn, 0)?;
+            anyhow::ensure!(
+                events == expected,
+                "the events must keep the order the node applied: {events:?}"
+            );
+        }
+
+        // A disconnect drops the events, so the block that takes the height
+        // finds none of them.
+        let mut rwtxn = env.write_txn()?;
+        let () = disconnect(&state, &mut rwtxn, &two_way_peg_data)?;
+        anyhow::ensure!(state.get_two_way_peg_events(&rwtxn, 0)?.is_empty());
+        Ok(())
+    }
+
     #[test]
     fn deposit_reorg_round_trips() -> anyhow::Result<()> {
         use crate::types::{
