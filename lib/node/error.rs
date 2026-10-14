@@ -82,6 +82,7 @@ pub mod mainchain_task {
 pub mod net_task {
     use std::sync::Arc;
 
+    use error_fatality::{Fatality, Split};
     use futures::channel::{mpsc, oneshot};
     use sneed::{db::error as db, env::error as env, rwtxn::error as rwtxn};
     use thiserror::Error;
@@ -100,7 +101,8 @@ pub mod net_task {
     }
 
     #[allow(clippy::duplicated_attributes)]
-    #[derive(Debug, Error, Transitive)]
+    #[derive(Debug, Error, Fatality, Split, Transitive)]
+    #[split(attrs(derive(Debug, Error)))]
     #[transitive(
         from(db::IterInit, db::Error),
         from(db::IterItem, db::Error),
@@ -109,34 +111,49 @@ pub mod net_task {
     )]
     pub enum Error {
         #[error("archive error")]
+        #[fatal(true)]
         Archive(#[from] archive::Error),
         #[error("CUSF mainchain proto error")]
+        #[fatal(true)]
         CusfMainchain(#[from] proto::Error),
         #[error(transparent)]
+        #[fatal(true)]
         Db(#[from] db::Error),
         #[error("Database env error")]
+        #[fatal(true)]
         DbEnv(#[from] env::Error),
         #[error("Database write error")]
+        #[fatal(true)]
         DbWrite(#[from] rwtxn::Error),
         #[error("Forward mainchain task request failed")]
+        #[fatal(true)]
         ForwardMainchainTaskRequest,
         #[error("mempool error")]
+        #[fatal(true)]
         MemPool(#[from] mempool::Error),
         #[error("Net error")]
+        #[fatal(true)]
         Net(#[from] Box<net::Error>),
         #[error("peer info stream closed")]
+        #[fatal(true)]
         PeerInfoRxClosed,
         #[error("Receive mainchain task response cancelled")]
+        #[fatal(true)]
         ReceiveMainchainTaskResponse,
         #[error("Receive reorg result cancelled (oneshot)")]
+        #[fatal(true)]
         ReceiveReorgResultOneshot(#[source] oneshot::Canceled),
         #[error("Send mainchain task request failed")]
+        #[fatal(true)]
         SendMainchainTaskRequest,
         #[error("Send new tip ready failed")]
+        #[fatal(true)]
         SendNewTipReady(#[source] mpsc::SendError),
         #[error("Send reorg result error (oneshot)")]
+        #[fatal(true)]
         SendReorgResultOneshot,
         #[error("state error")]
+        #[fatal(false)]
         State(#[from] state::Error),
     }
 

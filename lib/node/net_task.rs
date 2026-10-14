@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use error_fatality::{Nested as _, Split};
+use error_fatality::{Fatality as _, Nested as _, Split};
 use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::{
     StreamExt,
@@ -220,10 +220,6 @@ pub(in crate::node) fn disconnect_tip_(
     Ok(())
 }
 
-fn is_fatal_reorg_error(err: &Error) -> bool {
-    !matches!(err, Error::State(_))
-}
-
 /// Re-org to the specified tip, if it is better than the current tip.
 /// The new tip block and all ancestor blocks must exist in the node's archive.
 /// A result of `Ok(true)` indicates a successful re-org.
@@ -372,7 +368,7 @@ fn reorg_to_tip<ThreadLocalStorage>(
         ) {
             Ok(()) => (),
             Err(err) => {
-                if !is_fatal_reorg_error(&err) {
+                if !err.is_fatal() {
                     // The stored body for this block failed validation (e.g. a peer
                     // supplied a body whose contents do not match the header's merkle
                     // root). Abort the reorg and discard the invalid body from the
@@ -877,18 +873,6 @@ impl NetTask {
             .side_tips()
             .best_side_tip(&rwtxn)
             .map_err(archive::Error::from)?;
-        // a rejected body is deleted from the archive
-        let best_side_tip = match best_side_tip {
-            Some(best_side_tip)
-                if ctxt
-                    .archive
-                    .try_get_body(&rwtxn, best_side_tip.block_hash)?
-                    .is_some() =>
-            {
-                Some(best_side_tip)
-            }
-            _ => None,
-        };
         rwtxn.commit()?;
         if let Some(best_side_tip) = best_side_tip {
             let best_side_tip = Tip {
@@ -902,16 +886,17 @@ impl NetTask {
                 &ctxt.mempool,
                 &ctxt.state,
                 best_side_tip,
-            ) {
-                Ok(_) => (),
-                Err(err) if is_fatal_reorg_error(&err) => return Err(err),
-                Err(err) => {
-                    tracing::warn!(
-                        ?best_side_tip,
-                        err = format!("{:#}", ErrorChain::new(&err)),
-                        "rejecting invalid best side tip"
-                    );
+            )
+            .into_nested()?
+            {
+                Ok(completed_reorg) => {
+                    let _: bool = completed_reorg;
                 }
+                Err(err) => tracing::warn!(
+                    ?best_side_tip,
+                    err = format!("{:#}", ErrorChain::new(&err)),
+                    "rejecting invalid best side tip"
+                ),
             }
         }
         Ok(())
@@ -1166,12 +1151,10 @@ impl NetTask {
                             &self.ctxt.state,
                             new_tip,
                         )
-                    });
+                    })
+                    .into_nested()?;
                     let reorg_applied = match reorg_result {
                         Ok(applied) => applied,
-                        Err(err) if is_fatal_reorg_error(&err) => {
-                            return Err(err);
-                        }
                         // an invalid block must not kill the net task; drop the
                         // peer and keep running
                         Err(err) => {
@@ -1430,12 +1413,13 @@ mod test {
     use std::{collections::HashSet, net::Ipv4Addr};
 
     use bitcoin::hashes::Hash as _;
+    use error_fatality::Fatality as _;
 
     use crate::{
         archive::side_tips::BmmCommitment,
         node::{
             Config, Node,
-            net_task::{Error, NetTask, NetTaskContext, is_fatal_reorg_error},
+            net_task::{Error, NetTask, NetTaskContext},
         },
         state,
         types::{
@@ -1455,6 +1439,8 @@ mod test {
             let channel =
                 tonic::transport::Endpoint::from_static("http://127.0.0.1:1")
                     .connect_lazy();
+            let (fatal_error_tx, _fatal_error_rx) =
+                futures::channel::mpsc::unbounded();
             let node = Node::new(
                 Config {
                     datadir: temp_dir.path().to_owned(),
@@ -1468,6 +1454,7 @@ mod test {
                 None,
                 &mut rand::rng(),
                 &runtime,
+                fatal_error_tx,
             )?;
             node.task_handles.net.task.abort();
             while !node.task_handles.net.task.is_finished() {
@@ -1530,12 +1517,12 @@ mod test {
     #[test]
     fn invalid_peer_block_is_not_fatal() {
         let err = Error::State(state::Error::NotEnoughValueIn);
-        assert!(!is_fatal_reorg_error(&err));
+        assert!(!err.is_fatal());
     }
 
     // local infrastructure errors stay fatal
     #[test]
     fn infrastructure_error_is_fatal() {
-        assert!(is_fatal_reorg_error(&Error::PeerInfoRxClosed));
+        assert!(Error::PeerInfoRxClosed.is_fatal());
     }
 }
