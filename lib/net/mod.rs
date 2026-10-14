@@ -165,21 +165,26 @@ pub fn make_server_endpoint(
 pub type PeerInfoRx =
     mpsc::UnboundedReceiver<(SocketAddr, Option<PeerConnectionInfo>)>;
 
-const BETANET_SEED_PEER_ADDRS: &[PeerAddress<&'static str>] = {
-    const DRIVECHA_IN: PeerAddress<&'static str> = PeerAddress {
+mod betanet_seed_peer_addr {
+    use crate::types::net::{DEFAULT_PORT, PeerAddress};
+
+    pub const DRIVECHA_IN: PeerAddress<&'static str> = PeerAddress {
         host: url::Host::Domain("seed.beta.ecash.drivecha.in"),
         port: DEFAULT_PORT,
     };
-    // seed.beta.ecash.ninja
-    const ECASH_NINJA: PeerAddress<&'static str> = PeerAddress {
-        host: url::Host::Domain("seed.beta.ecash.ninja"),
-        port: DEFAULT_PORT,
-    };
-    const ECASH_EU_COM: PeerAddress<&'static str> = PeerAddress {
+    pub const ECASH_EU_COM: PeerAddress<&'static str> = PeerAddress {
         host: url::Host::Domain("seed.beta.ecash.eu.com"),
         port: DEFAULT_PORT,
     };
-    &[DRIVECHA_IN, ECASH_NINJA, ECASH_EU_COM]
+    // seed.beta.ecash.ninja
+    pub const ECASH_NINJA: PeerAddress<&'static str> = PeerAddress {
+        host: url::Host::Domain("seed.beta.ecash.ninja"),
+        port: DEFAULT_PORT,
+    };
+}
+const BETANET_SEED_PEER_ADDRS: &[PeerAddress<&'static str>] = {
+    use betanet_seed_peer_addr::{DRIVECHA_IN, ECASH_EU_COM, ECASH_NINJA};
+    &[DRIVECHA_IN, ECASH_EU_COM, ECASH_NINJA]
 };
 
 const SIGNET_SEED_PEER_ADDRS: &[PeerAddress<&'static str>] = {
@@ -503,24 +508,39 @@ impl Net {
             known_peers.put(&mut rwtxn, &peer, &())?;
         }
         let version = DatabaseUnique::create(env, &mut rwtxn, "net_version")?;
-        match version.try_get(&rwtxn, &())? {
-            Some(db_version)
-                if db_version
-                    < Version {
-                        major: 0,
-                        minor: 17,
-                        patch: 6,
-                    } =>
+        if let Some(db_version) = version.try_get(&rwtxn, &())? {
+            if db_version
+                < (Version {
+                    major: 0,
+                    minor: 17,
+                    patch: 6,
+                })
+                || db_version > *VERSION
             {
                 // types for `known_peers` db changed in v0.17.6
                 return Err(Error::IncompatibleVersion {
                     version: db_version,
                     db_path: env.path().to_path_buf(),
                 });
+            } else if db_version
+                < (Version {
+                    major: 0,
+                    minor: 18,
+                    patch: 2,
+                })
+            {
+                match network {
+                    Network::Betanet => {
+                        let ecash_eu_com = PeerAddress::to_owned(
+                            &betanet_seed_peer_addr::ECASH_EU_COM,
+                        );
+                        known_peers.put(&mut rwtxn, &ecash_eu_com, &())?;
+                    }
+                    Network::Forknet | Network::Regtest | Network::Signet => (),
+                }
             }
-            Some(_) => (),
-            None => version.put(&mut rwtxn, &(), &*VERSION)?,
         }
+        version.put(&mut rwtxn, &(), &*VERSION)?;
         rwtxn.commit().map_err(RwTxnError::from)?;
         let magic_bytes = magic_bytes_override
             .unwrap_or_else(|| peer_message::magic_bytes(network));
