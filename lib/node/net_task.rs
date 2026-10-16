@@ -25,7 +25,7 @@ use tokio_stream::StreamNotifyClose;
 
 use crate::{
     archive::{self, Archive},
-    mempool::MemPool,
+    mempool::{self, MemPool},
     net::{
         self, Net, PeerConnectionInfo, PeerConnectionMessage, PeerInfoRx,
         PeerRequest, PeerResponse, PeerStateId, error::peer::Recoverable as _,
@@ -1269,7 +1269,22 @@ impl NetTask {
                                 &rwtxn,
                                 &mut new_tx.transaction,
                             )?;
-                            self.ctxt.mempool.put(&mut rwtxn, &new_tx)?;
+                            match self.ctxt.mempool.put(&mut rwtxn, &new_tx) {
+                                Ok(()) => (),
+                                // Peers relay to all their peers, so the same
+                                // transaction routinely arrives more than once,
+                                // and a conflicting one can arrive from another
+                                // peer. Not relaying it stops it circulating.
+                                Err(mempool::Error::UtxoDoubleSpent) => {
+                                    tracing::debug!(
+                                        txid = %new_tx.transaction.txid(),
+                                        %addr,
+                                        "ignoring transaction that conflicts with the mempool"
+                                    );
+                                    continue;
+                                }
+                                Err(err) => return Err(err.into()),
+                            }
                             rwtxn.commit().map_err(RwTxnError::from)?;
                             // broadcast
                             let () = self
