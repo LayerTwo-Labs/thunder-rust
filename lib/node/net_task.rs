@@ -5,7 +5,7 @@ use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use error_fatality::{Fatality as _, Nested as _, Split};
@@ -41,11 +41,55 @@ use crate::{
     types::{
         BmmResult, Body, Header, MerkleRoot, Tip,
         authorization::BatchVerificationContext,
-        net::ResolvedPeerAddress,
+        net::{PeerAddress, ResolvedPeerAddress},
         proto::mainchain::{self, Event as MainchainBlockEvent},
     },
     util::{ErrorChain, join_set},
 };
+
+/// Reconnect delays for one peer address, so that a connection that keeps
+/// failing is retried less and less often instead of every 10s forever.
+#[derive(Debug, Default)]
+struct ReconnectBackoff {
+    /// Reconnects in a row that did not stay up for [`Self::STABLE`]
+    failures: u32,
+    /// When the last reconnect was scheduled to happen
+    last_dial: Option<Instant>,
+}
+
+impl ReconnectBackoff {
+    const BASE: Duration = Duration::from_secs(10);
+    const MAX: Duration = Duration::from_secs(10 * 60);
+    /// A connection that stayed up at least this long resets the backoff
+    const STABLE: Duration = Duration::from_secs(5 * 60);
+
+    /// Delay before the next reconnect: [`Self::BASE`], doubled for each
+    /// failure in a row, capped at [`Self::MAX`], plus up to 25% jitter so
+    /// that two peers do not keep retrying in step.
+    /// `jitter` must be in `[0, 1)`.
+    fn next_delay(&mut self, now: Instant, jitter: f64) -> Duration {
+        if self.last_dial.is_none_or(|last_dial| {
+            now.saturating_duration_since(last_dial) >= Self::STABLE
+        }) {
+            self.failures = 0;
+        }
+        let factor = 1u32.checked_shl(self.failures).unwrap_or(u32::MAX);
+        let delay = Self::BASE.saturating_mul(factor).min(Self::MAX);
+        let delay = delay.mul_f64(1.0 + jitter.clamp(0.0, 1.0) / 4.0);
+        self.failures = self.failures.saturating_add(1);
+        self.last_dial = Some(now + delay);
+        delay
+    }
+}
+
+/// A random value in `[0, 1)` for [`ReconnectBackoff::next_delay`], from
+/// std's randomly seeded hasher, so that no RNG dependency is needed.
+fn reconnect_jitter() -> f64 {
+    use std::hash::BuildHasher as _;
+    let bits = std::collections::hash_map::RandomState::new().hash_one(());
+    // The top 53 bits fit an f64 exactly
+    (bits >> 11) as f64 / (1u64 << 53) as f64
+}
 
 #[allow(clippy::too_many_arguments)]
 fn connect_tip_(
@@ -1067,6 +1111,9 @@ impl NetTask {
             mainchain_task::Request,
             HashSet<(SocketAddr, PeerStateId)>,
         >::new();
+        // Backoff state for peers that this node dialed
+        let mut reconnect_backoff =
+            HashMap::<PeerAddress, ReconnectBackoff>::new();
         while let Some(mailbox_item) = mailbox_stream.next().await {
             tracing::trace!(?mailbox_item, "received new mailbox item");
             match mailbox_item {
@@ -1200,25 +1247,57 @@ impl NetTask {
                                 err = err_msg,
                                 "Peer connection error",
                             );
-                            // Attempt to reconnect if a valid message was
-                            // received successfully
-                            let received_msg_successfully =
+                            let conn_info =
                                 self.ctxt.net.try_with_active_peer_connection(
                                     addr,
                                     |conn_handle| {
-                                        conn_handle.received_msg_successfully()
+                                        (
+                                            conn_handle
+                                                .received_msg_successfully(),
+                                            conn_handle.is_outbound(),
+                                        )
                                     },
                                 );
                             let () = self.ctxt.net.remove_active_peer(addr);
-                            let Some(received_msg_successfully) =
-                                received_msg_successfully
+                            let Some((received_msg_successfully, outbound)) =
+                                conn_info
                             else {
                                 continue;
                             };
+                            // Leave reconnecting to the side that dialed.
+                            // The address of an inbound peer is its source
+                            // address; dialing it back collides with the
+                            // peer's own reconnect, and would save the
+                            // address to known peers.
+                            if !outbound {
+                                tracing::debug!(
+                                    %addr,
+                                    "inbound peer disconnected, not reconnecting"
+                                );
+                                continue;
+                            }
+                            // Attempt to reconnect if a valid message was
+                            // received successfully
                             if received_msg_successfully && err.may_reconnect()
                             {
+                                let delay = reconnect_backoff
+                                    .entry(
+                                        resolved_peer_addr
+                                            .as_peer_address()
+                                            .to_owned(),
+                                    )
+                                    .or_default()
+                                    .next_delay(
+                                        Instant::now(),
+                                        reconnect_jitter(),
+                                    );
+                                tracing::info!(
+                                    %addr,
+                                    ?delay,
+                                    "reconnecting to peer after delay"
+                                );
                                 reconnect_peer_spawner.spawn(async move {
-                                    tokio::time::sleep(RECONNECT_DELAY).await;
+                                    tokio::time::sleep(delay).await;
                                     resolved_peer_addr
                                 });
                             } else if let (_, Some(resolved_peer_addr)) =
@@ -1410,7 +1489,11 @@ impl Drop for NetTaskHandle {
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashSet, net::Ipv4Addr};
+    use std::{
+        collections::HashSet,
+        net::Ipv4Addr,
+        time::{Duration, Instant},
+    };
 
     use bitcoin::hashes::Hash as _;
     use error_fatality::Fatality as _;
@@ -1419,7 +1502,7 @@ mod test {
         archive::side_tips::BmmCommitment,
         node::{
             Config, Node,
-            net_task::{Error, NetTask, NetTaskContext},
+            net_task::{Error, NetTask, NetTaskContext, ReconnectBackoff},
         },
         state,
         types::{
@@ -1524,5 +1607,44 @@ mod test {
     #[test]
     fn infrastructure_error_is_fatal() {
         assert!(Error::PeerInfoRxClosed.is_fatal());
+    }
+
+    #[test]
+    fn reconnect_backoff_doubles_up_to_the_cap() {
+        let mut backoff = ReconnectBackoff::default();
+        let now = Instant::now();
+        // Each reconnect fails as soon as it is made
+        let delays: Vec<u64> = (0..8)
+            .map(|_| {
+                let at = backoff.last_dial.unwrap_or(now);
+                backoff.next_delay(at, 0.0).as_secs()
+            })
+            .collect();
+        assert_eq!(delays, [10, 20, 40, 80, 160, 320, 600, 600]);
+    }
+
+    #[test]
+    fn reconnect_backoff_resets_after_a_stable_connection() {
+        let mut backoff = ReconnectBackoff::default();
+        let now = Instant::now();
+        assert_eq!(backoff.next_delay(now, 0.0), Duration::from_secs(10));
+        let at = backoff.last_dial.unwrap();
+        assert_eq!(backoff.next_delay(at, 0.0), Duration::from_secs(20));
+        // The last connection stayed up just under the stable time
+        let at = backoff.last_dial.unwrap() + ReconnectBackoff::STABLE
+            - Duration::from_secs(1);
+        assert_eq!(backoff.next_delay(at, 0.0), Duration::from_secs(40));
+        // This one stayed up long enough
+        let at = backoff.last_dial.unwrap() + ReconnectBackoff::STABLE;
+        assert_eq!(backoff.next_delay(at, 0.0), Duration::from_secs(10));
+    }
+
+    #[test]
+    fn reconnect_backoff_jitter_adds_at_most_a_quarter() {
+        let now = Instant::now();
+        let low = ReconnectBackoff::default().next_delay(now, 0.0);
+        let high = ReconnectBackoff::default().next_delay(now, 0.999);
+        assert_eq!(low, Duration::from_secs(10));
+        assert!(high > low && high < Duration::from_millis(12_500));
     }
 }
