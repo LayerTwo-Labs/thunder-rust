@@ -464,8 +464,7 @@ pub mod wallet {
         ) -> RpcResult<Txid>;
 
         /// Create a tx that transfers funds to each address in `dests`,
-        /// which maps an address to a value in sats. The outputs come in
-        /// address order, and the change output comes last.
+        /// which maps an address to a value in sats.
         #[method(name = "create_transfer_many")]
         async fn create_transfer_many(
             &self,

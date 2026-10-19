@@ -9,7 +9,6 @@ mod ibd;
 mod integration_test;
 mod mainchain_tls;
 mod setup;
-mod transfer_many;
 mod unknown_withdrawal;
 mod util;
 
