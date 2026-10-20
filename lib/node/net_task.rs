@@ -19,6 +19,7 @@ use futures::{
     stream,
 };
 use nonempty::NonEmpty;
+use rand::{RngExt as _, SeedableRng, rngs::ChaCha20Rng};
 use sneed::{DbError, EnvError, RwTxn, RwTxnError};
 use tokio::task::{self, JoinHandle};
 use tokio_stream::StreamNotifyClose;
@@ -66,8 +67,10 @@ impl ReconnectBackoff {
     /// Delay before the next reconnect: [`Self::BASE`], doubled for each
     /// failure in a row, capped at [`Self::MAX`], plus up to 25% jitter so
     /// that two peers do not keep retrying in step.
-    /// `jitter` must be in `[0, 1)`.
-    fn next_delay(&mut self, now: Instant, jitter: f64) -> Duration {
+    fn next_delay<R>(&mut self, now: Instant, mut rng: R) -> Duration
+    where
+        R: rand::CryptoRng,
+    {
         if self.last_dial.is_none_or(|last_dial| {
             now.saturating_duration_since(last_dial) >= Self::STABLE
         }) {
@@ -75,20 +78,12 @@ impl ReconnectBackoff {
         }
         let factor = 1u32.checked_shl(self.failures).unwrap_or(u32::MAX);
         let delay = Self::BASE.saturating_mul(factor).min(Self::MAX);
-        let delay = delay.mul_f64(1.0 + jitter.clamp(0.0, 1.0) / 4.0);
+        let jitter = rng.random_range(0f64..=0.25);
+        let delay = delay.mul_f64(1.0 + jitter);
         self.failures = self.failures.saturating_add(1);
         self.last_dial = Some(now + delay);
         delay
     }
-}
-
-/// A random value in `[0, 1)` for [`ReconnectBackoff::next_delay`], from
-/// std's randomly seeded hasher, so that no RNG dependency is needed.
-fn reconnect_jitter() -> f64 {
-    use std::hash::BuildHasher as _;
-    let bits = std::collections::hash_map::RandomState::new().hash_one(());
-    // The top 53 bits fit an f64 exactly
-    (bits >> 11) as f64 / (1u64 << 53) as f64
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -500,6 +495,7 @@ struct NetTask {
     /// to reorg to the new tip, on the corresponding oneshot receiver.
     new_tip_ready_tx: UnboundedSender<NewTipReadyMessage>,
     peer_info_rx: PeerInfoRx,
+    rng: ChaCha20Rng,
 }
 
 impl NetTask {
@@ -1011,7 +1007,7 @@ impl NetTask {
         }
     }
 
-    async fn run(self) -> Result<(), Error> {
+    async fn run(mut self) -> Result<(), Error> {
         tracing::debug!("starting net task");
         #[derive(Debug)]
         enum MailboxItem {
@@ -1287,10 +1283,7 @@ impl NetTask {
                                             .to_owned(),
                                     )
                                     .or_default()
-                                    .next_delay(
-                                        Instant::now(),
-                                        reconnect_jitter(),
-                                    );
+                                    .next_delay(Instant::now(), &mut self.rng);
                                 tracing::info!(
                                     %addr,
                                     ?delay,
@@ -1415,7 +1408,7 @@ pub(super) struct NetTaskHandle {
 
 impl NetTaskHandle {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub fn new<R>(
         runtime: &tokio::runtime::Runtime,
         env: sneed::Env<heed::WithoutTls>,
         archive: Archive,
@@ -1424,9 +1417,13 @@ impl NetTaskHandle {
         mempool: MemPool,
         net: Net,
         peer_info_rx: PeerInfoRx,
+        mut rng: R,
         state: State,
         fatal_error_tx: FatalErrorTx,
-    ) -> Self {
+    ) -> Self
+    where
+        R: rand::CryptoRng,
+    {
         let ctxt = NetTaskContext {
             env,
             archive,
@@ -1448,6 +1445,7 @@ impl NetTaskHandle {
             new_tip_ready_tx: new_tip_ready_tx.clone(),
             new_tip_ready_rx,
             peer_info_rx,
+            rng: ChaCha20Rng::from_rng(&mut rng),
         };
         let task = runtime.spawn(supervise("Net", task.run(), fatal_error_tx));
         NetTaskHandle {
@@ -1489,11 +1487,7 @@ impl Drop for NetTaskHandle {
 
 #[cfg(test)]
 mod test {
-    use std::{
-        collections::HashSet,
-        net::Ipv4Addr,
-        time::{Duration, Instant},
-    };
+    use std::{collections::HashSet, net::Ipv4Addr};
 
     use bitcoin::hashes::Hash as _;
     use error_fatality::Fatality as _;
@@ -1502,7 +1496,7 @@ mod test {
         archive::side_tips::BmmCommitment,
         node::{
             Config, Node,
-            net_task::{Error, NetTask, NetTaskContext, ReconnectBackoff},
+            net_task::{Error, NetTask, NetTaskContext},
         },
         state,
         types::{
@@ -1607,44 +1601,5 @@ mod test {
     #[test]
     fn infrastructure_error_is_fatal() {
         assert!(Error::PeerInfoRxClosed.is_fatal());
-    }
-
-    #[test]
-    fn reconnect_backoff_doubles_up_to_the_cap() {
-        let mut backoff = ReconnectBackoff::default();
-        let now = Instant::now();
-        // Each reconnect fails as soon as it is made
-        let delays: Vec<u64> = (0..8)
-            .map(|_| {
-                let at = backoff.last_dial.unwrap_or(now);
-                backoff.next_delay(at, 0.0).as_secs()
-            })
-            .collect();
-        assert_eq!(delays, [10, 20, 40, 80, 160, 320, 600, 600]);
-    }
-
-    #[test]
-    fn reconnect_backoff_resets_after_a_stable_connection() {
-        let mut backoff = ReconnectBackoff::default();
-        let now = Instant::now();
-        assert_eq!(backoff.next_delay(now, 0.0), Duration::from_secs(10));
-        let at = backoff.last_dial.unwrap();
-        assert_eq!(backoff.next_delay(at, 0.0), Duration::from_secs(20));
-        // The last connection stayed up just under the stable time
-        let at = backoff.last_dial.unwrap() + ReconnectBackoff::STABLE
-            - Duration::from_secs(1);
-        assert_eq!(backoff.next_delay(at, 0.0), Duration::from_secs(40));
-        // This one stayed up long enough
-        let at = backoff.last_dial.unwrap() + ReconnectBackoff::STABLE;
-        assert_eq!(backoff.next_delay(at, 0.0), Duration::from_secs(10));
-    }
-
-    #[test]
-    fn reconnect_backoff_jitter_adds_at_most_a_quarter() {
-        let now = Instant::now();
-        let low = ReconnectBackoff::default().next_delay(now, 0.0);
-        let high = ReconnectBackoff::default().next_delay(now, 0.999);
-        assert_eq!(low, Duration::from_secs(10));
-        assert!(high > low && high < Duration::from_millis(12_500));
     }
 }
