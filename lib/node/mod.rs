@@ -237,6 +237,7 @@ where
             mempool.clone(),
             net.clone(),
             peer_info_rx,
+            rng,
             state.clone(),
             fatal_error_tx,
         );
