@@ -6477,6 +6477,7 @@ dependencies = [
  "bincode",
  "bip32ish",
  "bitcoin",
+ "blake3",
  "borsh",
  "byteorder",
  "bytes",

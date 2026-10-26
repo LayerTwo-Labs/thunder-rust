@@ -17,6 +17,7 @@ async-lock = { workspace = true }
 bincode = { workspace = true }
 bip32ish = { workspace = true }
 bitcoin = { workspace = true }
+blake3 = { workspace = true }
 borsh = { workspace = true }
 byteorder = { workspace = true }
 bytes = { workspace = true }
