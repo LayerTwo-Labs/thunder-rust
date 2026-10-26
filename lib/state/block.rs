@@ -107,6 +107,7 @@ pub fn prevalidate(
     let computed_merkle_root = Body::compute_merkle_root(
         &body.coinbase,
         filled_transactions.as_slice(),
+        &body.authorizations,
     )?;
     if computed_merkle_root != header.merkle_root {
         let err = Error::InvalidBody {
@@ -323,6 +324,7 @@ pub fn validate(
     let merkle_root = Body::compute_merkle_root(
         &body.coinbase,
         filled_transactions.as_slice(),
+        &body.authorizations,
     )?;
     if merkle_root != header.merkle_root {
         let err = Error::InvalidBody {
@@ -504,8 +506,11 @@ pub fn connect(
         };
         filled_txs.push(filled_tx);
     }
-    let merkle_root =
-        Body::compute_merkle_root(&body.coinbase, filled_txs.as_slice())?;
+    let merkle_root = Body::compute_merkle_root(
+        &body.coinbase,
+        filled_txs.as_slice(),
+        &body.authorizations,
+    )?;
     if merkle_root != header.merkle_root {
         let err = Error::InvalidBody {
             expected: header.merkle_root,
@@ -771,7 +776,11 @@ mod test {
             filled
         };
 
-        let merkle_root = Body::compute_merkle_root(&body.coinbase, &[filled])?;
+        let merkle_root = Body::compute_merkle_root(
+            &body.coinbase,
+            &[filled],
+            &body.authorizations,
+        )?;
         let mut post_accumulator = seeded_accumulator()?;
         {
             let mut diff = AccumulatorDiff::default();

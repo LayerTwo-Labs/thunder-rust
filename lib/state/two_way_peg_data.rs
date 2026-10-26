@@ -1404,8 +1404,11 @@ mod test {
             authorizations: Vec::new(),
         };
         let no_txs: &[FilledTransaction] = &[];
-        let merkle_root =
-            Body::compute_merkle_root(&empty_body.coinbase, no_txs)?;
+        let merkle_root = Body::compute_merkle_root(
+            &empty_body.coinbase,
+            no_txs,
+            &empty_body.authorizations,
+        )?;
         let main0 = bitcoin::BlockHash::from_byte_array([10; 32]);
         let main_height0 = 99;
         let main1 = bitcoin::BlockHash::from_byte_array([11; 32]);
