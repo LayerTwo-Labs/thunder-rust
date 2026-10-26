@@ -172,7 +172,7 @@ pub struct Authorized<T> {
     pub authorizations: Vec<Authorization>,
 }
 
-pub type AuthorizedTransaction = Authorized<Transaction>;
+pub type AuthorizedTransaction<T = Transaction> = Authorized<T>;
 
 impl<T> Borrow<T> for Authorized<T> {
     fn borrow(&self) -> &T {

@@ -15,8 +15,8 @@ use thunder::{
     node::{self, FatalErrorTx, Node},
     state,
     types::{
-        self, Address, Coinbase, FilledTransaction, OutPoint, Output,
-        Transaction,
+        self, Address, AuthorizedTransaction, Coinbase, FilledTransaction,
+        OutPoint, Output, Transaction,
         proto::mainchain::{
             self,
             generated::{
@@ -597,8 +597,25 @@ impl App {
                     outputs: outputs.into(),
                 }
             };
-            let merkle_root =
-                types::Body::compute_merkle_root(&coinbase, &txs)?;
+            let mut authorizations = {
+                let capacity =
+                    txs.iter().map(|tx| tx.authorizations.len()).sum();
+                Vec::with_capacity(capacity)
+            };
+            let mut filled_txs = Vec::with_capacity(txs.len());
+            for tx in txs {
+                let AuthorizedTransaction {
+                    transaction,
+                    authorizations: tx_authorizations,
+                } = tx;
+                authorizations.extend(tx_authorizations);
+                filled_txs.push(transaction);
+            }
+            let merkle_root = types::Body::compute_merkle_root(
+                &coinbase,
+                &filled_txs,
+                &authorizations,
+            )?;
             let roots = {
                 let mut accumulator = if let Some(tip_hash) = tip_hash {
                     let rotxn = self
@@ -621,7 +638,7 @@ impl App {
                 let () = types::Body::modify_memforest(
                     coinbase_txid,
                     coinbase.outputs.as_slice(),
-                    &txs,
+                    &filled_txs,
                     &mut accumulator.0,
                 )?;
                 accumulator
@@ -631,10 +648,13 @@ impl App {
                     .map(|root| root.get_data())
                     .collect()
             };
-            let body = types::Body::new(
-                txs.into_iter().map(|tx| tx.into()).collect(),
+            let transactions =
+                filled_txs.into_iter().map(|tx| tx.transaction).collect();
+            let body = types::Body {
                 coinbase,
-            );
+                transactions,
+                authorizations,
+            };
             let header = types::Header {
                 merkle_root,
                 roots,
@@ -653,7 +673,7 @@ impl App {
             let coinbase = Default::default();
             let txs: [FilledTransaction; 0] = [];
             let merkle_root =
-                types::Body::compute_merkle_root(&coinbase, &txs)?;
+                types::Body::compute_merkle_root(&coinbase, &txs, &[])?;
             let roots = {
                 let mut accumulator =
                     if let Some(prev_side_hash) = prev_side_hash {
