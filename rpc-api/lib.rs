@@ -33,7 +33,7 @@ pub mod node {
         PointedOutput, SpentOutput, Transaction, Txid, WithdrawalBundle,
         WithdrawalBundleStatus,
         net::{Peer, PeerAddress, PeerConnectionStatus},
-        state::WithdrawalBundleInfo,
+        state::{TwoWayPegEvent, WithdrawalBundleInfo},
     };
     use typewit::const_marker::Bool;
     use utoipa::ToSchema;
@@ -264,7 +264,7 @@ pub mod node {
         ref_schemas[
             Address, Authorization, BlockHash, Body, Header, InPoint, M6id,
             MerkleRoot, OutPoint, Output, OutputContent, PeerConnectionStatus,
-            SpentOutput, Transaction, Txid, WithdrawalBundle,
+            SpentOutput, Transaction, TwoWayPegEvent, Txid, WithdrawalBundle,
             WithdrawalBundleInfo, WithdrawalBundleStatus, schema::BitcoinAddr,
             schema::BitcoinBlockHash, schema::BitcoinOutPoint,
             schema::BitcoinTransaction, schema::SocketAddr,
@@ -350,6 +350,16 @@ pub mod node {
             &self,
             txid: Txid,
         ) -> RpcResult<Option<GetTransactionResponse>>;
+
+        /// Get the coin movements that a block applied outside its body: a
+        /// mainchain deposit, a withdrawal bundle spend, and the outputs a
+        /// failed bundle returned. The list keeps the order the node applied.
+        #[open_api_method(output_schema(ToSchema))]
+        #[method(name = "get_two_way_peg_events")]
+        async fn get_two_way_peg_events(
+            &self,
+            block_hash: thunder_types::BlockHash,
+        ) -> RpcResult<Vec<TwoWayPegEvent>>;
 
         /// Get utxos for addresses
         #[method(name = "get_utxos")]
