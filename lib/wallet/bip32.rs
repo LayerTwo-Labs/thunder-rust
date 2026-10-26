@@ -8,7 +8,6 @@ use bip32ish::{
     },
     digest_traits::FixedOutputAs,
 };
-use bitcoin::hashes::{Hash, HashEngine as _, Hmac, HmacEngine, sha512};
 use curve25519_dalek::Scalar;
 use thiserror::Error;
 
@@ -48,9 +47,7 @@ impl Codec<SecretExtra> for SecretExtraCodec {
 }
 
 #[repr(transparent)]
-pub(in crate::wallet) struct Hasher<const PREFIX: bool>(
-    HmacEngine<sha512::Hash>,
-);
+pub(in crate::wallet) struct Hasher<const PREFIX: bool>(blake3::Hasher);
 
 impl<const PREFIX: bool> KeySizeUser for Hasher<PREFIX> {
     type KeySize = array::sizes::U32;
@@ -58,14 +55,16 @@ impl<const PREFIX: bool> KeySizeUser for Hasher<PREFIX> {
 
 impl KeyInit for Hasher<true> {
     fn new(key: &digest::Key<Self>) -> Self {
-        let mut inner = HmacEngine::new(key);
-        inner.input(&[0x00]);
+        let mut inner = blake3::Hasher::new_keyed(&key.0);
+        inner.update(&[0x00]);
         Self(inner)
     }
 
     fn new_from_slice(key: &[u8]) -> Result<Self, digest::InvalidLength> {
-        let mut inner = HmacEngine::new(key);
-        inner.input(&[0x00]);
+        let key: [u8; 32] =
+            key.try_into().map_err(|_| digest::InvalidLength)?;
+        let mut inner = blake3::Hasher::new_keyed(&key);
+        inner.update(&[0x00]);
         Ok(Self(inner))
     }
 }
@@ -73,19 +72,21 @@ impl KeyInit for Hasher<true> {
 impl KeyInit for Hasher<false> {
     #[inline(always)]
     fn new(key: &digest::Key<Self>) -> Self {
-        Self(HmacEngine::new(key))
+        Self(blake3::Hasher::new_keyed(&key.0))
     }
 
     #[inline(always)]
     fn new_from_slice(key: &[u8]) -> Result<Self, digest::InvalidLength> {
-        Ok(Self(HmacEngine::new(key)))
+        let key: [u8; 32] =
+            key.try_into().map_err(|_| digest::InvalidLength)?;
+        Ok(Self(blake3::Hasher::new_keyed(&key)))
     }
 }
 
 impl<const PREFIX: bool> Update for Hasher<PREFIX> {
     #[inline(always)]
     fn update(&mut self, data: &[u8]) {
-        self.0.input(data)
+        self.0.update(data);
     }
 
     #[inline(always)]
@@ -93,38 +94,30 @@ impl<const PREFIX: bool> Update for Hasher<PREFIX> {
     where
         Self: Sized,
     {
-        self.0.input(data.as_ref());
+        self.0.update(data.as_ref());
         self
     }
 }
 
 /// Construct a scalar from uniformly random bytes, by interpreting as a
-/// big-endian encoding of a 256-bit integer, clearing the high 3 bits,
-/// and reducing modulo the group order.
-///
-/// The bias from this is of the same order of magnitude as for 256-bit
-/// reduction modulo the group order for secp256k1.
-/// This is because `ℓ ≈ 2^252`, so `2 × ℓ ≈ 2^253`.
-/// The bias is therefore `(2ℓ − 2^253) / ℓ ≈ 2^125.4 / ℓ ≈ 2^-126.62`, and the
-/// total variation distance is approximately `2^-126.62 / 2 = 2^-127.62`.
-/// Note that the total variation distance for 256-bit reduction for secp256k1
-/// is approximately `2^-127.65`, so the security is only `~0.037` bits less
-/// than 256-bit reduction for secp256k1.
-fn scalar_from_uniform_be_bytes(mut bytes: [u8; 32]) -> Scalar {
-    // Clear the highest 3 bits
-    bytes[0] &= 0b0001_1111;
+/// big-endian encoding of a 512-bit integer, and reducing modulo the group
+/// order.
+fn scalar_from_uniform_be_bytes(mut bytes: [u8; 64]) -> Scalar {
     bytes.reverse();
-    Scalar::from_bytes_mod_order(bytes)
+    Scalar::from_bytes_mod_order_wide(&bytes)
 }
 
 impl<const PREFIX: bool> FixedOutputAs<(Scalar, SecretExtra, ArrayN<u8, 32>)>
     for Hasher<PREFIX>
 {
     fn finalize_as(self) -> (Scalar, SecretExtra, ArrayN<u8, 32>) {
-        let full_digest: [u8; 64] = Hmac::from_engine(self.0).to_byte_array();
-        let (zl, chaincode) = full_digest.split_first_chunk::<32>().unwrap();
-        let zl = scalar_from_uniform_be_bytes(*zl);
-        (zl, SecretExtra, Array::try_from(chaincode).unwrap())
+        let mut output_reader = self.0.finalize_xof();
+        let mut zl = [0; 64];
+        output_reader.fill(&mut zl);
+        let scalar = scalar_from_uniform_be_bytes(zl);
+        let mut chaincode = [0; 32];
+        output_reader.fill(&mut chaincode);
+        (scalar, SecretExtra, Array(chaincode))
     }
 }
 
@@ -164,18 +157,15 @@ pub(in crate::wallet) type NonHardenedDeriveError =
 pub(in crate::wallet) type Xpriv = bip32ish::Xpriv<Ristretto255>;
 
 pub(in crate::wallet) fn new_master_xpriv(seed: &[u8]) -> Xpriv {
-    let mut hmac_engine: HmacEngine<sha512::Hash> =
-        HmacEngine::new(b"Bitcoin seed");
-    hmac_engine.input(seed);
-    let hmac_result: [u8; 64] = Hmac::from_engine(hmac_engine).to_byte_array();
-    let (secret_bytes, chaincode) =
-        hmac_result.split_first_chunk::<32>().unwrap();
-    let secret_scalar = scalar_from_uniform_be_bytes(*secret_bytes);
-    Xpriv::new_master(
-        secret_scalar,
-        SecretExtra,
-        Array::try_from(chaincode).unwrap(),
-    )
+    let mut hasher = blake3::Hasher::new_derive_key("Thunder seed");
+    hasher.update(seed);
+    let mut output_reader = hasher.finalize_xof();
+    let mut secret_bytes = [0u8; 64];
+    output_reader.fill(&mut secret_bytes);
+    let secret_scalar = scalar_from_uniform_be_bytes(secret_bytes);
+    let mut chaincode = [0; 32];
+    output_reader.fill(&mut chaincode);
+    Xpriv::new_master(secret_scalar, SecretExtra, Array(chaincode))
 }
 
 #[derive(Debug, Error)]
