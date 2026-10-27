@@ -180,8 +180,6 @@ pub enum Error {
     NotEnoughValueIn,
     #[error(transparent)]
     NoUtxo(#[from] NoUtxo),
-    #[error("withdrawal output {outpoint} cannot be spent by a transaction")]
-    SpendWithdrawalOutput { outpoint: OutPoint },
     #[error("Withdrawal bundle event block doesn't exist")]
     NoWithdrawalBundleEventBlock,
     #[error(transparent)]
@@ -208,15 +206,13 @@ pub enum Error {
     #[error("too many sigops")]
     TooManySigops,
     #[error(
-        "protocol would be insolvent after confirming unexpected withdrawal bundle {} in {}; bundle outpoint {} already spent",
+        "protocol would be insolvent after confirming unexpected withdrawal bundle {} in {}; bundle outpoints already spent",
         .m6id,
         .event_block_hash,
-        .outpoint,
     )]
-    UnexpectedWithdrawalBundleInsolvency {
+    UnexpectedWithdrawalBundleConfirmed {
         event_block_hash: bitcoin::BlockHash,
         m6id: M6id,
-        outpoint: OutPoint,
     },
     #[error("Unknown withdrawal bundle: {m6id}")]
     UnknownWithdrawalBundle { m6id: M6id },

@@ -318,18 +318,35 @@ pub struct AggregatedWithdrawal {
     pub main_fee: bitcoin::Amount,
 }
 
+impl AggregatedWithdrawal {
+    /// Size in bytes of the mainchain output script paying to
+    /// `main_address`; the denominator of the fee-density sort key.
+    fn main_spk_len(&self) -> usize {
+        self.main_address.assume_checked_ref().script_pubkey().len()
+    }
+}
+
 impl Ord for AggregatedWithdrawal {
     fn cmp(&self, other: &Self) -> Ordering {
-        // A *total* order (lexicographic by main_fee, value, main_address). The
-        // previous `OR of >` was not antisymmetric/transitive, so the
-        // withdrawal-bundle output order (and hence compute_m6id) depended on
-        // HashMap iteration order and could differ across nodes. A real total order makes
-        // the sorted bundle canonical regardless of aggregation order.
-        (self.main_fee, self.value, &self.main_address).cmp(&(
-            other.main_fee,
-            other.value,
-            &other.main_address,
-        ))
+        // Sort by mainchain fee density: main_fee / len(main output script).
+        // Compare without floating point:
+        //   self.fee/self.len  vs  other.fee/other.len
+        //   <=>  self.fee*other.len  vs  other.fee*self.len
+        let lhs =
+            (self.main_fee.to_sat() as u128) * (other.main_spk_len() as u128);
+        let rhs =
+            (other.main_fee.to_sat() as u128) * (self.main_spk_len() as u128);
+        // A *total* order: tie-break lexicographically by
+        // (main_fee, value, main_address), so the withdrawal-bundle output
+        // order (and hence compute_m6id) is canonical regardless of
+        // aggregation order.
+        lhs.cmp(&rhs).then_with(|| {
+            (self.main_fee, self.value, &self.main_address).cmp(&(
+                other.main_fee,
+                other.value,
+                &other.main_address,
+            ))
+        })
     }
 }
 

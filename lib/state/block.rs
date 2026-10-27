@@ -3,7 +3,7 @@
 use sneed::{RoTxn, RwTxn, db::error::Error as DbError};
 
 use crate::{
-    state::{Error, PrevalidatedBlock, State, error},
+    state::{Error, PrevalidatedBlock, State, error, two_way_peg_data},
     types::{
         AccumulatorDiff, AmountOverflowError, Body, FilledTransaction,
         GetAddress as _, GetValue as _, Header, InPoint, MerkleRoot, OutPoint,
@@ -164,8 +164,21 @@ pub fn prevalidate(
     }
     let () =
         authorization::verify_authorizations(batch_verification_ctxt, body)?;
+    // Withdrawal bundles are constructed after the block's
+    // transactions, and the header roots commit to the
+    // post-construction accumulator: simulate the construction here.
+    let construction_diff =
+        two_way_peg_data::simulate_withdrawal_bundle_construction(
+            state,
+            rotxn,
+            next_height,
+            &filled_transactions,
+            &body.coinbase,
+            coinbase_txid,
+        )?;
     // Check root consistency without committing to DB
     let () = accumulator.apply_diff(accumulator_diff.clone())?;
+    let () = accumulator.apply_diff(construction_diff)?;
     let roots: Vec<UtreexoNodeHash> = accumulator.get_roots();
     if roots != header.roots {
         return Err(Error::UtreexoRootsMismatch);
@@ -257,19 +270,8 @@ pub fn connect_prevalidated(
         }
     }
 
-    // Update tip/height
-    let block_hash = header.hash();
-    state
-        .tip
-        .put(rwtxn, &(), &block_hash)
-        .map_err(DbError::from)?;
-    state
-        .coinbase_height
-        .put(rwtxn, &coinbase_txid, &pre.next_height)?;
-    state
-        .height
-        .put(rwtxn, &(), &pre.next_height)
-        .map_err(DbError::from)?;
+    // NOTE: the tip, height, and coinbase height are NOT updated here;
+    // that happens after the block's transactions, in `connect_header`.
 
     // Apply accumulator diff
     let mut accumulator = state
@@ -284,6 +286,24 @@ pub fn connect_prevalidated(
         .map_err(DbError::from)?;
 
     Ok(pre.computed_merkle_root)
+}
+
+/// Connect a block header: update the tip, height, and coinbase
+/// height.
+/// MUST be applied AFTER the block's transactions, and BEFORE
+/// withdrawal bundle construction.
+pub fn connect_header(
+    state: &State,
+    rwtxn: &mut RwTxn,
+    header: &Header,
+) -> Result<(), Error> {
+    let block_hash = header.hash();
+    let height = state.try_get_height(rwtxn)?.map_or(0, |height| height + 1);
+    state.tip.put(rwtxn, &(), &block_hash)?;
+    let coinbase_txid = header.compute_coinbase_txid();
+    state.coinbase_height.put(rwtxn, &coinbase_txid, &height)?;
+    state.height.put(rwtxn, &(), &height)?;
+    Ok(())
 }
 
 pub fn validate(
@@ -528,7 +548,7 @@ pub fn connect(
     Ok(merkle_root)
 }
 
-pub fn disconnect_tip(
+pub fn disconnect_tip_body(
     state: &State,
     rwtxn: &mut RwTxn,
     header: &Header,
@@ -597,7 +617,6 @@ pub fn disconnect_tip(
     })?;
     {
         let coinbase_txid = header.compute_coinbase_txid();
-        state.coinbase_height.delete(rwtxn, &coinbase_txid)?;
         // delete coinbase UTXOs, last-to-first
         body.coinbase
             .outputs
@@ -622,6 +641,28 @@ pub fn disconnect_tip(
                 }
             })?;
     }
+    // NOTE: the tip, height, and coinbase height are NOT rolled back
+    // here; that happens after 2WPD is disconnected, in
+    // `disconnect_tip_header`.
+    let () = accumulator.apply_diff(accumulator_diff)?;
+    state
+        .utreexo_accumulator
+        .put(rwtxn, &(), &accumulator)
+        .map_err(DbError::from)?;
+    Ok(())
+}
+
+/// Disconnect the tip block's header: roll back the coinbase height,
+/// tip, and height.
+/// MUST be applied AFTER disconnecting the block's transactions and
+/// 2WPD.
+pub fn disconnect_tip_header(
+    state: &State,
+    rwtxn: &mut RwTxn,
+    header: &Header,
+) -> Result<(), Error> {
+    let coinbase_txid = header.compute_coinbase_txid();
+    state.coinbase_height.delete(rwtxn, &coinbase_txid)?;
     let height = state
         .try_get_height(rwtxn)?
         .expect("Height should not be None");
@@ -642,11 +683,6 @@ pub fn disconnect_tip(
                 .map_err(DbError::from)?;
         }
     }
-    let () = accumulator.apply_diff(accumulator_diff)?;
-    state
-        .utreexo_accumulator
-        .put(rwtxn, &(), &accumulator)
-        .map_err(DbError::from)?;
     Ok(())
 }
 

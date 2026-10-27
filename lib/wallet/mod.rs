@@ -183,7 +183,7 @@ impl Wallet {
                 if db_version
                     < Version {
                         major: 0,
-                        minor: 18,
+                        minor: 19,
                         patch: 0,
                     } =>
             {
@@ -439,7 +439,8 @@ impl Wallet {
                         continue;
                     }
                 }
-                OutPoint::Regular { .. } => (),
+                OutPoint::Regular { .. }
+                | OutPoint::UnsuccessfulWithdrawal { .. } => (),
             }
             if output.content.is_withdrawal() {
                 continue;
@@ -472,7 +473,8 @@ impl Wallet {
                 OutPoint::Deposit(bitcoin::OutPoint { txid, vout: _ }) => {
                     self.deposit_mainchain_height.delete(&mut rwtxn, txid)?;
                 }
-                OutPoint::Regular { .. } => (),
+                OutPoint::Regular { .. }
+                | OutPoint::UnsuccessfulWithdrawal { .. } => (),
             }
         }
         rwtxn.commit().map_err(RwTxnError::from)?;

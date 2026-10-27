@@ -157,7 +157,7 @@ pub mod node {
             use serde::Serialize;
             use thunder_types::{
                 Address, Authorization, Block, BlockHash, Body, Coinbase,
-                CoinbaseTxid, Header, MerkleRoot, Output, OutputContent,
+                CoinbaseTxid, Header, M6id, MerkleRoot, Output, OutputContent,
                 Transaction, Txid, transaction::Outputs,
             };
             use typewit::const_marker::Bool;
@@ -193,7 +193,7 @@ pub mod node {
             /// manually
             #[open_api(ref_schemas[
                 Address, Authorization, Block, BlockHash, BlockVerbose, Body,
-                BodyVerbose, Coinbase, CoinbaseTxid, Header, MerkleRoot,
+                BodyVerbose, Coinbase, CoinbaseTxid, Header, M6id, MerkleRoot,
                 Output, OutputContent, Outputs, Transaction,
                 TransactionVerbose, Txid, schema::BitcoinAddr,
                 schema::BitcoinBlockHash, schema::BitcoinOutPoint,
@@ -409,8 +409,8 @@ pub mod wallet {
     use serde::{Deserialize, Serialize};
     use thunder_types::{
         Address, Authorization, Authorized, Block, BlockHash, Body, Coinbase,
-        Header, MerkleRoot, OutPoint, Output, OutputContent, PointedOutput,
-        Transaction, Txid,
+        CoinbaseTxid, Header, M6id, MerkleRoot, OutPoint, Output,
+        OutputContent, PointedOutput, Transaction, Txid,
         transaction::Outputs,
         wallet::{Balance, TransferDests},
     };
@@ -430,9 +430,9 @@ pub mod wallet {
     }
 
     #[open_api(ref_schemas[
-        Address, Authorization, Block, BlockHash, Body, Coinbase, Header,
-        MerkleRoot, OutPoint, Output, OutputContent, Outputs, Transaction,
-        Txid, schema::BitcoinAddr, schema::BitcoinBlockHash,
+        Address, Authorization, Block, BlockHash, Body, Coinbase, CoinbaseTxid,
+        Header, M6id, MerkleRoot, OutPoint, Output, OutputContent, Outputs,
+        Transaction, Txid, schema::BitcoinAddr, schema::BitcoinBlockHash,
         schema::BitcoinOutPoint, schema::UtreexoNodeHash, schema::UtreexoProof,
     ])]
     #[rpc(client, server, server_bounds(Self: open_api::RpcServer))]
