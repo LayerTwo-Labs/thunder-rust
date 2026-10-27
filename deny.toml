@@ -74,10 +74,20 @@ ignore = [
     #{ id = "RUSTSEC-0000-0000", reason = "you can specify a reason the advisory is ignored" },
     #"a-crate-that-is-yanked@0.1.1", # you can also ignore yanked crate versions if you wish
     #{ crate = "a-crate-that-is-yanked@0.1.1", reason = "you can specify why you are ignoring the yanked crate" },
-    # paste (via aws-lc-rs) is unmaintained
-    # https://github.com/aws/aws-lc-rs/issues/722
-    { id = "RUSTSEC-2024-0436", reason = "Temporary ignore until aws-lc-rs and rustls-webpki get updated" },
     { id = "RUSTSEC-2025-0141", reason = "Temporary ignore until heed migrates to wincode" },
+    { id = "RUSTSEC-2026-0391", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
+    { id = "RUSTSEC-2026-0395", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
+    { id = "RUSTSEC-2026-0396", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
+    { id = "RUSTSEC-2026-0397", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
+    { id = "RUSTSEC-2026-0398", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
+    { id = "RUSTSEC-2026-0399", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
+    { id = "RUSTSEC-2026-0400", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
+    { id = "RUSTSEC-2026-0401", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
+    { id = "RUSTSEC-2026-0402", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
+    { id = "RUSTSEC-2026-0403", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
+    { id = "RUSTSEC-2026-0404", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
+    { id = "RUSTSEC-2026-0405", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
+    { id = "RUSTSEC-2026-0406", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
