@@ -13,12 +13,12 @@ use sneed::{
 
 use crate::{
     types::{
-        Accumulator, Address, AmountOverflowError, AmountUnderflowError,
-        Authorized, AuthorizedTransaction, BlockHash, Body, CoinbaseTxid,
-        FilledTransaction, GetAddress, GetValue, Header, InPoint, M6id,
-        MerkleRoot, OutPoint, OutPointKey, Output, PointedOutput,
-        PointedOutputRef, SpentOutput, Transaction, UtreexoNodeHash,
-        UtreexoProof, VERSION, Version, WithdrawalBundle,
+        Accumulator, AccumulatorDiff, Address, AmountOverflowError,
+        AmountUnderflowError, Authorized, AuthorizedTransaction, BlockHash,
+        Body, Coinbase, CoinbaseTxid, FilledTransaction, GetAddress, GetValue,
+        Header, InPoint, M6id, MerkleRoot, OutPoint, OutPointKey, Output,
+        PointedOutput, PointedOutputRef, SpentOutput, Transaction,
+        UtreexoNodeHash, UtreexoProof, VERSION, Version, WithdrawalBundle,
         WithdrawalBundleStatus,
         authorization::{self, BatchVerificationContext},
         proto::mainchain::TwoWayPegData,
@@ -36,6 +36,10 @@ mod two_way_peg_data;
 pub use error::Error;
 use rollback::RollBack;
 
+/// Gap (in sidechain blocks) between an unsuccessful withdrawal bundle
+/// (one that failed, or a stale pending bundle that was dropped without
+/// being submitted) and the construction of the next bundle.
+/// Also used as the submission timeout for pending bundles.
 pub const WITHDRAWAL_BUNDLE_FAILURE_GAP: u32 = 4;
 
 /// Prevalidated block data containing computed values from validation
@@ -64,6 +68,9 @@ pub struct State {
     /// Mainchain heights for each deposit txid
     pub deposit_mainchain_height:
         DatabaseUnique<SerdeBincode<bitcoin::Txid>, SerdeBincode<u32>>,
+    /// Dropped pending withdrawal bundles (most recent last)
+    dropped_withdrawal_bundles:
+        DatabaseUnique<UnitKey, SerdeBincode<RollBack<M6id>>>,
     /// Current height
     height: DatabaseUnique<UnitKey, SerdeBincode<u32>>,
     /// Latest failed (known) withdrawal bundle
@@ -92,7 +99,7 @@ pub struct State {
 }
 
 impl State {
-    pub const NUM_DBS: u32 = 13;
+    pub const NUM_DBS: u32 = 14;
 
     pub fn new<Tls>(env: &sneed::Env<Tls>) -> Result<Self, Error> {
         let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
@@ -105,6 +112,12 @@ impl State {
         let deposit_mainchain_height =
             DatabaseUnique::create(env, &mut rwtxn, "deposit_mainchain_height")
                 .map_err(EnvError::from)?;
+        let dropped_withdrawal_bundles = DatabaseUnique::create(
+            env,
+            &mut rwtxn,
+            "dropped_withdrawal_bundles",
+        )
+        .map_err(EnvError::from)?;
         let height = DatabaseUnique::create(env, &mut rwtxn, "height")
             .map_err(EnvError::from)?;
         let latest_failed_withdrawal_bundle = DatabaseUnique::create(
@@ -135,7 +148,7 @@ impl State {
                 if db_version
                     < Version {
                         major: 0,
-                        minor: 18,
+                        minor: 19,
                         patch: 0,
                     } =>
             {
@@ -161,6 +174,7 @@ impl State {
             coinbase_height,
             deposit_blocks,
             deposit_mainchain_height,
+            dropped_withdrawal_bundles,
             height,
             latest_failed_withdrawal_bundle,
             pending_withdrawal_bundle,
@@ -429,7 +443,8 @@ impl State {
                     Err(error::ImmatureOutPoint::Deposit.into())
                 }
             }
-            OutPoint::Regular { .. } => Ok(()),
+            OutPoint::Regular { .. }
+            | OutPoint::UnsuccessfulWithdrawal { .. } => Ok(()),
         }
     }
 
@@ -445,13 +460,6 @@ impl State {
         for (outpoint, _, utxo) in transaction.inputs() {
             let () =
                 self.validate_tx_input_maturity(rotxn, main_height, outpoint)?;
-            // a withdrawal output is committed to a bundle and can only be
-            // spent by the bundle, never by a transaction
-            if utxo.content.is_withdrawal() {
-                return Err(Error::SpendWithdrawalOutput {
-                    outpoint: *outpoint,
-                });
-            }
             value_in = value_in
                 .checked_add(utxo.get_value())
                 .ok_or(AmountOverflowError)?;
@@ -561,21 +569,30 @@ impl State {
         &self,
         rotxn: &RoTxn,
     ) -> Result<bitcoin::Amount, Error> {
-        let mut total_deposit_utxo_value = bitcoin::Amount::ZERO;
+        // Outpoints that bring value into the sidechain: mainchain
+        // deposits, and outputs recreated from unsuccessful withdrawal
+        // bundles, which re-enter the sidechain's accounting there.
+        fn is_inflow_outpoint(outpoint: &OutPoint) -> bool {
+            matches!(
+                outpoint,
+                OutPoint::Deposit(_) | OutPoint::UnsuccessfulWithdrawal { .. }
+            )
+        }
+        let mut total_inflow_utxo_value = bitcoin::Amount::ZERO;
         self.utxos
             .iter(rotxn)
             .map_err(DbError::from)?
             .map_err(|err| DbError::from(err).into())
             .for_each(|(outpoint_key, output)| {
                 let outpoint: OutPoint = outpoint_key.into();
-                if let OutPoint::Deposit(_) = outpoint {
-                    total_deposit_utxo_value = total_deposit_utxo_value
+                if is_inflow_outpoint(&outpoint) {
+                    total_inflow_utxo_value = total_inflow_utxo_value
                         .checked_add(output.get_value())
                         .ok_or(AmountOverflowError)?;
                 }
                 Ok::<_, Error>(())
             })?;
-        let mut total_deposit_stxo_value = bitcoin::Amount::ZERO;
+        let mut total_inflow_stxo_value = bitcoin::Amount::ZERO;
         let mut total_withdrawal_stxo_value = bitcoin::Amount::ZERO;
         self.stxos
             .iter(rotxn)
@@ -583,8 +600,8 @@ impl State {
             .map_err(|err| DbError::from(err).into())
             .for_each(|(outpoint_key, spent_output)| {
                 let outpoint: OutPoint = outpoint_key.into();
-                if let OutPoint::Deposit(_) = outpoint {
-                    total_deposit_stxo_value = total_deposit_stxo_value
+                if is_inflow_outpoint(&outpoint) {
+                    total_inflow_stxo_value = total_inflow_stxo_value
                         .checked_add(spent_output.output.get_value())
                         .ok_or(AmountOverflowError)?;
                 }
@@ -596,8 +613,8 @@ impl State {
                 Ok::<_, Error>(())
             })?;
 
-        let total_wealth: bitcoin::Amount = total_deposit_utxo_value
-            .checked_add(total_deposit_stxo_value)
+        let total_wealth: bitcoin::Amount = total_inflow_utxo_value
+            .checked_add(total_inflow_stxo_value)
             .ok_or(AmountOverflowError)?
             .checked_sub(total_withdrawal_stxo_value)
             .ok_or(AmountOverflowError)?;
@@ -665,7 +682,10 @@ impl State {
         block::connect_prevalidated(self, rwtxn, header, body, prevalidated)
     }
 
-    /// Convenience: prevalidate then connect using the same write transaction.
+    /// Convenience: prevalidate then connect using the same write
+    /// transaction, in production order: the block's transactions, then
+    /// the header, then withdrawal bundle construction.
+    /// 2WPD events MUST be connected BEFORE calling this function.
     pub fn apply_block(
         &self,
         rwtxn: &mut RwTxn,
@@ -683,18 +703,50 @@ impl State {
         )?;
         let _: MerkleRoot =
             self.connect_prevalidated_block(rwtxn, header, body, pre)?;
+        let () = self.connect_header(rwtxn, header)?;
+        let () = self.maybe_create_withdrawal_bundle(rwtxn)?;
         Ok(())
     }
 
-    pub fn disconnect_tip(
+    /// Connect a block header: update the tip, height, and coinbase
+    /// height.
+    /// MUST be applied AFTER the block's transactions, and BEFORE
+    /// withdrawal bundle construction.
+    pub fn connect_header(
+        &self,
+        rwtxn: &mut RwTxn,
+        header: &Header,
+    ) -> Result<(), Error> {
+        block::connect_header(self, rwtxn, header)
+    }
+
+    /// Disconnect the tip block's body (txs and coinbase).
+    /// The tip, height, and coinbase height are NOT rolled back here;
+    /// see `disconnect_tip_header`.
+    pub fn disconnect_tip_body(
         &self,
         rwtxn: &mut RwTxn,
         header: &Header,
         body: &Body,
     ) -> Result<(), Error> {
-        block::disconnect_tip(self, rwtxn, header, body)
+        block::disconnect_tip_body(self, rwtxn, header, body)
     }
 
+    /// Disconnect the tip block's header: roll back the coinbase
+    /// height, tip, and height.
+    /// MUST be applied AFTER disconnecting the block's transactions and
+    /// 2WPD.
+    pub fn disconnect_tip_header(
+        &self,
+        rwtxn: &mut RwTxn,
+        header: &Header,
+    ) -> Result<(), Error> {
+        block::disconnect_tip_header(self, rwtxn, header)
+    }
+
+    /// Connect 2WPD events (deposits, withdrawal bundle events, and
+    /// dropping stale pending bundles).
+    /// MUST be applied BEFORE the block's transactions.
     pub fn connect_two_way_peg_data(
         &self,
         rwtxn: &mut RwTxn,
@@ -703,12 +755,73 @@ impl State {
         two_way_peg_data::connect(self, rwtxn, two_way_peg_data)
     }
 
+    /// Disconnect 2WPD events.
+    /// MUST be applied AFTER disconnecting the block's transactions.
     pub fn disconnect_two_way_peg_data(
         &self,
         rwtxn: &mut RwTxn,
         two_way_peg_data: &TwoWayPegData,
     ) -> Result<(), Error> {
         two_way_peg_data::disconnect(self, rwtxn, two_way_peg_data)
+    }
+
+    /// Construct a new pending withdrawal bundle if due, spending the
+    /// selected withdrawal outputs.
+    /// MUST be applied AFTER the block's transactions.
+    pub fn maybe_create_withdrawal_bundle(
+        &self,
+        rwtxn: &mut RwTxn,
+    ) -> Result<(), Error> {
+        two_way_peg_data::maybe_create_withdrawal_bundle(self, rwtxn)
+    }
+
+    /// Undo a withdrawal bundle constructed at the current height,
+    /// unspending its selected outputs.
+    /// MUST be applied BEFORE disconnecting the block's transactions.
+    pub fn disconnect_withdrawal_bundle_creation(
+        &self,
+        rwtxn: &mut RwTxn,
+    ) -> Result<(), Error> {
+        two_way_peg_data::disconnect_withdrawal_bundle_creation(self, rwtxn)
+    }
+
+    /// Simulate withdrawal bundle construction at `block_height`:
+    /// compute the accumulator diff that constructing a new bundle
+    /// would produce, from the current UTXO set, the block's
+    /// transactions, and coinbase.
+    /// Read-only; used to compute header roots, which commit to the
+    /// post-events + post-txs + post-construction accumulator.
+    pub fn simulate_withdrawal_bundle_construction(
+        &self,
+        rotxn: &RoTxn,
+        block_height: u32,
+        filled_transactions: &[FilledTransaction],
+        coinbase: &Coinbase,
+        coinbase_txid: CoinbaseTxid,
+    ) -> Result<AccumulatorDiff, Error> {
+        two_way_peg_data::simulate_withdrawal_bundle_construction(
+            self,
+            rotxn,
+            block_height,
+            filled_transactions,
+            coinbase,
+            coinbase_txid,
+        )
+    }
+
+    /// Check whether a stale pending bundle would be dropped while
+    /// connecting 2WPD events at `block_height`.
+    pub fn stale_pending_bundle_drop_due(
+        &self,
+        rotxn: &RoTxn,
+        block_height: u32,
+    ) -> Result<bool, Error> {
+        let Some((_bundle, pending_height)) =
+            self.try_get_pending_withdrawal_bundle(rotxn)?
+        else {
+            return Ok(false);
+        };
+        Ok(block_height - pending_height >= WITHDRAWAL_BUNDLE_FAILURE_GAP)
     }
 }
 
@@ -723,13 +836,11 @@ impl Watchable<()> for State {
 
 #[cfg(test)]
 mod test {
-    use bitcoin::hashes::Hash as _;
-
     use crate::{
         state::State,
         types::{
-            Address, FilledTransaction, InPoint, OutPoint, OutPointKey, Output,
-            OutputContent, PointedOutputRef, SpentOutput, Transaction, hash,
+            Address, InPoint, OutPoint, OutPointKey, Output, OutputContent,
+            SpentOutput,
         },
     };
 
@@ -769,47 +880,6 @@ mod test {
             address: addr,
             content: OutputContent::Value(bitcoin::Amount::from_sat(sats)),
         }
-    }
-
-    #[test]
-    fn cannot_spend_withdrawal_output() -> anyhow::Result<()> {
-        let (_temp_dir, env, state) =
-            fresh_state("cannot-spend-withdrawal-output")?;
-        let main_address = {
-            let pkh = bitcoin::PubkeyHash::hash(b"test pubkey");
-            bitcoin::Address::p2pkh(pkh, bitcoin::NetworkKind::Test)
-                .into_unchecked()
-        };
-        let withdrawal = Output {
-            address: Address::ALL_ZEROS,
-            content: OutputContent::Withdrawal {
-                value: bitcoin::Amount::from_sat(1000),
-                main_fee: bitcoin::Amount::from_sat(300),
-                main_address,
-            },
-        };
-        let outpoint = OutPoint::Regular {
-            txid: [1; 32].into(),
-            vout: 0,
-        };
-        let utxo_hash = hash(&PointedOutputRef {
-            outpoint,
-            output: &withdrawal,
-        });
-        let tx = FilledTransaction {
-            transaction: Transaction {
-                inputs: vec![(outpoint, utxo_hash)].into(),
-                outputs: vec![value_output(Address::ALL_ZEROS, 1300)].into(),
-                ..Default::default()
-            },
-            spent_utxos: vec![withdrawal],
-        };
-        let rotxn = env.read_txn()?;
-        assert!(matches!(
-            state.validate_filled_transaction(&rotxn, 0, &tx),
-            Err(crate::state::Error::SpendWithdrawalOutput { .. })
-        ));
-        Ok(())
     }
 
     #[test]

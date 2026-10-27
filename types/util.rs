@@ -21,6 +21,17 @@ pub(crate) mod borsh {
                 vout,
             })
         }
+
+        pub fn bitcoin_txid<R>(
+            reader: &mut R,
+        ) -> borsh::io::Result<bitcoin::Txid>
+        where
+            R: borsh::io::Read,
+        {
+            let txid_bytes =
+                <[u8; 32] as BorshDeserialize>::deserialize_reader(reader)?;
+            Ok(bitcoin::Txid::from_byte_array(txid_bytes))
+        }
     }
 
     pub mod serialize {
@@ -77,6 +88,17 @@ pub(crate) mod borsh {
             let bitcoin::OutPoint { txid, vout } = block_hash;
             let txid_bytes: &[u8; 32] = txid.as_ref();
             BorshSerialize::serialize(&(txid_bytes, vout), writer)
+        }
+
+        pub fn bitcoin_txid<W>(
+            txid: &bitcoin::Txid,
+            writer: &mut W,
+        ) -> borsh::io::Result<()>
+        where
+            W: borsh::io::Write,
+        {
+            let bytes: &[u8; 32] = txid.as_ref();
+            BorshSerialize::serialize(bytes, writer)
         }
 
         pub fn signature<W>(

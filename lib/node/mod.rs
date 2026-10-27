@@ -701,6 +701,46 @@ where
         Ok(bundle)
     }
 
+    /// Compute the 2WPD events that a block with the given
+    /// `prev_main_hash` built on the current tip would connect:
+    /// mainchain events in blocks after the tip's `prev_main_hash`, up
+    /// to and including `prev_main_hash`.
+    pub fn get_pending_two_way_peg_data(
+        &self,
+        prev_main_hash: bitcoin::BlockHash,
+    ) -> Result<mainchain::TwoWayPegData, Error> {
+        let rotxn = self.env.read_txn().map_err(EnvError::from)?;
+        let tip_prev_main_hash = self
+            .state
+            .try_get_tip(&rotxn)?
+            .map(|tip| self.archive.get_header(&rotxn, tip))
+            .transpose()?
+            .map(|header| header.prev_main_hash);
+        let block_infos: Vec<_> = self
+            .archive
+            .main_ancestors(&rotxn, prev_main_hash)
+            .take_while(|ancestor| Ok(Some(*ancestor) != tip_prev_main_hash))
+            .filter_map(|ancestor| {
+                let block_info =
+                    self.archive.get_main_block_info(&rotxn, &ancestor)?;
+                if block_info.events.is_empty() {
+                    Ok(None)
+                } else {
+                    let height =
+                        self.archive.get_main_height(&rotxn, ancestor)?;
+                    let block_info = mainchain::two_way_peg_data::BlockInfo {
+                        height,
+                        inner: block_info,
+                    };
+                    Ok(Some((ancestor, block_info)))
+                }
+            })
+            .collect()?;
+        Ok(mainchain::TwoWayPegData {
+            block_info: block_infos.into_iter().rev().collect(),
+        })
+    }
+
     pub fn remove_from_mempool(&self, txid: Txid) -> Result<(), Error> {
         let mut rwtxn = self.env.write_txn().map_err(EnvError::from)?;
         let () = self.mempool.delete(&mut rwtxn, txid)?;

@@ -100,6 +100,9 @@ fn connect_tip_(
     let block_hash = header.hash();
     let prev_main_height =
         archive.get_main_height(rwtxn, header.prev_main_hash)?;
+    // 2WPD events are connected BEFORE the block's transactions, so
+    // that txs can spend eg. recreated unsuccessful-withdrawal outputs.
+    let () = state.connect_two_way_peg_data(rwtxn, two_way_peg_data)?;
     let prevalidated = state.prevalidate_block(
         rwtxn,
         batch_verification_ctxt,
@@ -124,7 +127,11 @@ fn connect_tip_(
             prevalidated,
         )?;
     }
-    let () = state.connect_two_way_peg_data(rwtxn, two_way_peg_data)?;
+    let () = state.connect_header(rwtxn, header)?;
+    // Withdrawal bundles are constructed AFTER the block's
+    // transactions, so that txs in this block can still cancel
+    // withdrawal outputs before they are selected.
+    let () = state.maybe_create_withdrawal_bundle(rwtxn)?;
     let accumulator = state.get_accumulator(rwtxn)?;
     // TODO: are these needed?
     {
@@ -238,8 +245,10 @@ pub(in crate::node) fn disconnect_tip_(
             block_info: block_infos.into_iter().rev().collect(),
         }
     };
+    let () = state.disconnect_withdrawal_bundle_creation(rwtxn)?;
+    let () = state.disconnect_tip_body(rwtxn, &tip_header, &tip_body)?;
     let () = state.disconnect_two_way_peg_data(rwtxn, &two_way_peg_data)?;
-    let () = state.disconnect_tip(rwtxn, &tip_header, &tip_body)?;
+    let () = state.disconnect_tip_header(rwtxn, &tip_header)?;
     // TODO: revert accumulator only necessary because rustreexo does not
     // support undo yet
     {
