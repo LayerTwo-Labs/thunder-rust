@@ -562,9 +562,9 @@ pub struct Tip {
     strum(serialize_all = "lowercase")
 )]
 pub enum Network {
-    #[default]
-    Betanet,
     Forknet,
+    #[default]
+    Mainnet,
     Regtest,
     Signet,
 }
