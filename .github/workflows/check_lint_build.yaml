@@ -310,6 +310,10 @@ jobs:
             jq -er '.packages | map(select(.name == "thunder_app") | .version) | .[0]')
           THUNDER_APP_FILENAME="thunder-${THUNDER_APP_VERSION}-${{ matrix.name }}${{ matrix.binary-suffix }}"
           THUNDER_CLI_FILENAME="thunder-cli-${THUNDER_APP_VERSION}-${{ matrix.name }}${{ matrix.binary-suffix }}"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$THUNDER_APP_VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $THUNDER_APP_VERSION"
+            exit 1
+          fi
           echo "THUNDER_APP_VERSION=$THUNDER_APP_VERSION" >> "$GITHUB_ENV"
           echo "THUNDER_APP_FILENAME=$THUNDER_APP_FILENAME" >> "$GITHUB_ENV"
           echo "THUNDER_CLI_FILENAME=$THUNDER_CLI_FILENAME" >> "$GITHUB_ENV"
@@ -329,6 +333,29 @@ jobs:
           path: |
             target/${{ matrix.name }}/release/${{ env.THUNDER_APP_FILENAME }}
             target/${{ matrix.name }}/release/${{ env.THUNDER_CLI_FILENAME }}
+
+      # Input for the releases.ecash.com publisher: plain binary names plus a
+      # VERSION file. Named publish-thunder-* so it can't match the artifact
+      # above (thunder-<version>-<target>).
+      - name: 'Stage binaries for releases.ecash.com'
+        run: |
+          mkdir -p publish
+          cp "target/${{ matrix.name }}/release/thunder_app${{ matrix.binary-suffix }}" \
+            "publish/thunder${{ matrix.binary-suffix }}"
+          cp "target/${{ matrix.name }}/release/thunder_app_cli${{ matrix.binary-suffix }}" \
+            "publish/thunder-cli${{ matrix.binary-suffix }}"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            printf '%s\n' "$THUNDER_APP_VERSION" > publish/VERSION
+          else
+            printf '%s-nightly.%s\n' "$THUNDER_APP_VERSION" "${GITHUB_SHA:0:12}" > publish/VERSION
+          fi
+
+      - name: 'Upload Artifacts (releases.ecash.com)'
+        uses: actions/upload-artifact@v7
+        with:
+          name: publish-thunder-${{ matrix.name }}
+          if-no-files-found: error
+          path: publish
 
       - name: Extract Git tag name
         id: git-tag-name
@@ -352,6 +379,95 @@ jobs:
             target/${{ matrix.name }}/release/${{ env.THUNDER_CLI_FILENAME }}
           fail_on_unmatched_files: true
           prerelease: ${{ steps.parse-git-tag-name-semver.outputs.prerelease != '' }}
+
+  # Signed, immutable builds on releases.ecash.com. Pin the publisher to a
+  # commit SHA and bump it through a reviewed PR: the pinned revision decides
+  # what gets signed under this repository's identity. Needs a `releases`
+  # environment (deployment branches: master) holding the R2_* secrets.
+  publish-releases-ecash-com:
+    name: Publish to releases.ecash.com
+    needs: [test-build-release]
+    if: >-
+      github.repository_owner == 'LayerTwo-Labs' &&
+      github.ref_type == 'branch' && github.ref_name == 'master' &&
+      contains(fromJSON('["push", "workflow_dispatch"]'), github.event_name)
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ecash-com/releases/.github/workflows/publish.yml@a00ddba7a20020ef0a80219c9f63c6b1a8ddfd74
+    with:
+      project: L2-S9-Thunder
+      channel: nightly
+      zip-naming: versioned
+      artifact-pattern: publish-thunder-*
+      targets: |
+        x86_64-unknown-linux-gnu
+        x86_64-apple-darwin
+        aarch64-apple-darwin
+        x86_64-pc-windows-gnu
+    # By name, not `inherit`: the values live in the `releases` environment,
+    # which the publisher attaches to its own job, and it only resolves
+    # secrets the caller passes.
+    secrets:
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+
+  # Release directory and channel for a tag: the tag without its `v`, and
+  # `rc` for pre-releases (v1.0.0-rc.1) so they never move stable/latest.
+  # test-build-release has already checked the tag against Cargo.toml.
+  tagged-release-version:
+    name: Tagged release version
+    runs-on: ubuntu-latest
+    if: github.ref_type == 'tag'
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      channel: ${{ steps.version.outputs.channel }}
+    steps:
+      - id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          case "$version" in
+            *-*) channel=rc ;;
+            *) channel=stable ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+  # Tagged releases go to the stable (or rc) channel, in a directory named
+  # after the version. The `releases` environment must also allow tag
+  # `v*.*.*`.
+  publish-releases-ecash-com-tagged:
+    name: Publish tagged release to releases.ecash.com
+    needs: [test-build-release, tagged-release-version]
+    if: >-
+      github.repository_owner == 'LayerTwo-Labs' && github.ref_type == 'tag' &&
+      github.event_name == 'push'
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ecash-com/releases/.github/workflows/publish.yml@a00ddba7a20020ef0a80219c9f63c6b1a8ddfd74
+    with:
+      project: L2-S9-Thunder
+      channel: ${{ needs.tagged-release-version.outputs.channel }}
+      release-id: ${{ needs.tagged-release-version.outputs.version }}
+      zip-naming: versioned
+      artifact-pattern: publish-thunder-*
+      targets: |
+        x86_64-unknown-linux-gnu
+        x86_64-apple-darwin
+        aarch64-apple-darwin
+        x86_64-pc-windows-gnu
+    secrets:
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
 
   parse-semver:
     name: Parse version info
