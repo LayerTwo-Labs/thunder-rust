@@ -502,7 +502,7 @@ dependencies = [
 
 [[package]]
 name = "bip300301_enforcer_integration_tests"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "bdk_wallet",
@@ -536,7 +536,7 @@ dependencies = [
 
 [[package]]
 name = "bip300301_enforcer_lib"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -679,7 +679,7 @@ dependencies = [
 [[package]]
 name = "bitcoin-jsonrpsee"
 version = "0.1.1"
-source = "git+https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git?rev=3ca15900bef3c9a2fd83003f71480a738411f35e#3ca15900bef3c9a2fd83003f71480a738411f35e"
+source = "git+https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git?rev=2ec731f3edcbc8fe290060bb9bac760256e03306#2ec731f3edcbc8fe290060bb9bac760256e03306"
 dependencies = [
  "base64 0.23.0",
  "bitcoin",
@@ -688,10 +688,9 @@ dependencies = [
  "hex",
  "http",
  "jsonrpsee",
- "monostate",
+ "jsonrpsee-http-client",
  "serde",
  "serde_json",
- "serde_with",
  "thiserror 2.0.19",
  "tracing",
 ]
@@ -1434,7 +1433,7 @@ dependencies = [
 [[package]]
 name = "cusf-enforcer-mempool"
 version = "0.4.0"
-source = "git+https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git?rev=0150caafb9491703a227dc48d527b73b2defdc46#0150caafb9491703a227dc48d527b73b2defdc46"
+source = "git+https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git?rev=698c6e3899b931fc55d724f8def49f4b5102307a#698c6e3899b931fc55d724f8def49f4b5102307a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4028,28 +4027,6 @@ dependencies = [
  "smallvec",
  "tagptr",
  "uuid",
-]
-
-[[package]]
-name = "monostate"
-version = "1.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdc4dfdf312bb1b22fce127237589f4ee31652bc479f3d208332f32132aaccc9"
-dependencies = [
- "monostate-impl",
- "serde",
- "serde_core",
-]
-
-[[package]]
-name = "monostate-impl"
-version = "1.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a656449eeb444c77364a3033f013c51869eee320c0dff805eb53024c0dfd435b"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 3.0.3",
 ]
 
 [[package]]
