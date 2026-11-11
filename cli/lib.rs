@@ -97,6 +97,11 @@ pub enum Command {
     /// Get the block hash at the specified height in the active chain, if it
     /// exists
     GetBlockHash { height: u32 },
+    /// Get the transaction facts of a block in the active chain, with the
+    /// outputs that the block created or spent outside its body
+    GetBlockIndex {
+        block_hash: thunder_types::BlockHash,
+    },
     /// Assemble a block to blind merge mine, without requesting BMM for it
     GetBlockTemplate,
     /// Get mainchain blocks that commit to a specified block hash
@@ -132,6 +137,8 @@ pub enum Command {
     LatestFailedWithdrawalBundleHeight,
     /// List peers
     ListPeers,
+    /// List the transactions that the mempool holds
+    ListMempool,
     /// List all UTXOs
     ListUtxos,
     /// Attempt to mine a sidechain block
@@ -210,6 +217,10 @@ where
         Command::GetBlockHash { height } => {
             let block_hash = rpc_client.get_block_hash(height).await?;
             serde_json::to_string_pretty(&block_hash)?
+        }
+        Command::GetBlockIndex { block_hash } => {
+            let block_index = rpc_client.get_block_index(block_hash).await?;
+            serde_json::to_string_pretty(&block_index)?
         }
         Command::ConnectPeer { addr } => {
             let () = rpc_client.connect_peer(addr).await?;
@@ -342,6 +353,10 @@ where
         Command::ListPeers => {
             let peers = rpc_client.list_peers().await?;
             serde_json::to_string_pretty(&peers)?
+        }
+        Command::ListMempool => {
+            let txs = rpc_client.list_mempool().await?;
+            serde_json::to_string_pretty(&txs)?
         }
         Command::ListUtxos => {
             let utxos = rpc_client.list_utxos().await?;

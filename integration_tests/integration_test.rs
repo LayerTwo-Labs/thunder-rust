@@ -13,6 +13,7 @@ use thunder::types::transaction::outpoint::DEPOSIT_MATURITY;
 use thunder_app_rpc_api::node::RpcClient as _;
 
 use crate::{
+    block_index::block_index_trial,
     block_template::block_template_trial,
     ibd::{ibd_trial, reorg_across_deposit_trial},
     mainchain_tls::mainchain_tls_trial,
@@ -177,6 +178,11 @@ pub fn tests(
     failure_collector: TestFailureCollector,
 ) -> Vec<AsyncTrial<BoxFuture<'static, anyhow::Result<()>>>> {
     vec![
+        block_index_trial(
+            bin_paths.clone(),
+            file_registry.clone(),
+            failure_collector.clone(),
+        ),
         block_template_trial(
             bin_paths.clone(),
             file_registry.clone(),

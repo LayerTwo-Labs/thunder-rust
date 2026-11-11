@@ -17,6 +17,11 @@ pub mod authorization;
 pub use authorization::Authorization;
 pub mod block;
 pub use block::{Block, Body, Coinbase, Header};
+pub mod block_index;
+pub use block_index::{
+    BlockIndex, BlockIndexEvents, BlockIndexOutput, BlockIndexSpend,
+    BlockIndexTx, MempoolTx,
+};
 pub mod error;
 pub use error::{
     AmountOverflow as AmountOverflowError,
