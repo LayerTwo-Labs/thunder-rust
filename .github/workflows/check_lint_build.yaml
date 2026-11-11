@@ -89,6 +89,10 @@ jobs:
 
       - name: Build electrs
         if: steps.check-cache.outputs.cache-hit != 'true'
+        # The rocksdb source in electrs uses uint64_t without <cstdint>, which
+        # GCC 13 and later reject.
+        env:
+          CXXFLAGS: -include cstdint
         run: |
           git clone --branch ${{ env.ELECTRS_VERSION }} --depth 1 https://github.com/mempool/electrs.git ${{ runner.temp }}/electrs
           pushd ${{ runner.temp }}/electrs
