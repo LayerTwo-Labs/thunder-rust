@@ -711,6 +711,7 @@ pub mod mainchain {
             let generated::BlockInfo {
                 bmm_commitment,
                 events,
+                ..
             } = block_info;
             let bmm_commitment = bmm_commitment
                 .map(|bmm_commitment| {

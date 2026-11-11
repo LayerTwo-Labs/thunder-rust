@@ -7,8 +7,9 @@ use sneed::{RoTxn, RwTxn, db::error::Error as DbError};
 
 use crate::{
     state::{
-        Error, State, WITHDRAWAL_BUNDLE_FAILURE_GAP, WithdrawalBundleInfo,
-        error, rollback::RollBack,
+        Error, MAX_WITHDRAWAL_BUNDLE_PAYOUT_OUTPUTS, State,
+        WITHDRAWAL_BUNDLE_FAILURE_GAP, WithdrawalBundleInfo,
+        WithdrawalBundleScheme, error, rollback::RollBack,
     },
     types::{
         AccumulatorDiff, AggregatedWithdrawal, AmountOverflowError, Coinbase,
@@ -50,6 +51,83 @@ pub(crate) fn withdrawal_bundle_creation_due(
     )
 }
 
+fn min_mainchain_fee_rate(
+    state: &State,
+    rotxn: &RoTxn,
+) -> Result<bitcoin::FeeRate, DbError> {
+    Ok(state
+        .withdrawal_bundle_min_mainchain_fee_rate
+        .last(rotxn)?
+        .map(|(_, (_height, fee_rate))| fee_rate)
+        .unwrap_or(bitcoin::FeeRate::ZERO))
+}
+
+/// Record a changed adaptive fee-rate floor at `block_height`.
+fn set_min_mainchain_fee_rate(
+    state: &State,
+    rwtxn: &mut RwTxn,
+    block_height: u32,
+    updated: bitcoin::FeeRate,
+) -> Result<(), DbError> {
+    let current = min_mainchain_fee_rate(state, rwtxn)?;
+    if updated == current {
+        return Ok(());
+    }
+    let sequence = state
+        .withdrawal_bundle_min_mainchain_fee_rate
+        .last(rwtxn)?
+        .map_or(0, |(sequence, _)| {
+            sequence.checked_add(1).expect("sequence overflow")
+        });
+    Ok(state.withdrawal_bundle_min_mainchain_fee_rate.put(
+        rwtxn,
+        &sequence,
+        &(block_height, updated),
+    )?)
+}
+
+/// Reset the floor to zero after a timely submission (`proposed`), or
+/// double it after a timeout, raising zero to 1 sat/kwu. Construction
+/// stores the applied floor so timeouts double the rate actually used.
+fn update_min_mainchain_fee_rate(
+    state: &State,
+    rwtxn: &mut RwTxn,
+    block_height: u32,
+    proposed: bool,
+) -> Result<(), DbError> {
+    let current = min_mainchain_fee_rate(state, rwtxn)?;
+    let updated = if proposed {
+        bitcoin::FeeRate::ZERO
+    } else if current == bitcoin::FeeRate::ZERO {
+        bitcoin::FeeRate::from_sat_per_kwu(1)
+    } else {
+        current
+            .to_sat_per_kwu()
+            .checked_mul(2)
+            .map_or(bitcoin::FeeRate::MAX, bitcoin::FeeRate::from_sat_per_kwu)
+    };
+    set_min_mainchain_fee_rate(state, rwtxn, block_height, updated)
+}
+
+/// Undo a fee-floor update made at `block_height`, if there was one.
+fn rollback_min_mainchain_fee_rate(
+    state: &State,
+    rwtxn: &mut RwTxn,
+    block_height: u32,
+) -> Result<(), DbError> {
+    let Some((sequence, (height, _))) =
+        state.withdrawal_bundle_min_mainchain_fee_rate.last(rwtxn)?
+    else {
+        return Ok(());
+    };
+    if height == block_height {
+        state
+            .withdrawal_bundle_min_mainchain_fee_rate
+            .delete(rwtxn, &sequence)?;
+    }
+    Ok(())
+}
+
 /// Aggregate one candidate withdrawal output by destination:
 /// destination -> (value, mainchain fee, spent_utxos)
 pub(crate) fn aggregate_withdrawal(
@@ -88,21 +166,43 @@ pub(crate) fn aggregate_withdrawal(
     Ok(())
 }
 
-/// Select and build a withdrawal bundle from withdrawals aggregated by
-/// destination, ordered by fee density (highest first).
+/// Build a bundle from withdrawals aggregated by destination, using the
+/// selected ordering and fee-rate floor. Returns the bundle and applied floor.
 pub(crate) fn bundle_from_aggregated(
     address_to_aggregated_withdrawal: HashMap<
         bitcoin::Address<bitcoin::address::NetworkUnchecked>,
         AggregatedWithdrawal,
     >,
     block_height: u32,
-) -> Result<Option<WithdrawalBundle>, Error> {
+    scheme: WithdrawalBundleScheme,
+    min_mainchain_fee_rate: bitcoin::FeeRate,
+) -> Result<Option<(WithdrawalBundle, bitcoin::FeeRate)>, Error> {
     if address_to_aggregated_withdrawal.is_empty() {
         return Ok(None);
     }
+    let adaptive = scheme == WithdrawalBundleScheme::Adaptive;
     let mut aggregated_withdrawals: Vec<_> =
         address_to_aggregated_withdrawal.into_values().collect();
-    aggregated_withdrawals.sort_by_key(|a| std::cmp::Reverse(a.clone()));
+    match scheme {
+        // Preserve pre-activation payout order exactly: it determines the M6ID.
+        WithdrawalBundleScheme::Legacy => {
+            aggregated_withdrawals.sort_by(|a, b| b.legacy_cmp(a));
+        }
+        WithdrawalBundleScheme::Adaptive => {
+            aggregated_withdrawals.sort_by(|a, b| b.fee_rate_cmp(a));
+        }
+    }
+    // Cap the floor at the best available payout rate so construction is
+    // never suppressed.
+    let min_mainchain_fee_rate = if adaptive {
+        let max_payout_fee_rate = aggregated_withdrawals
+            .first()
+            .and_then(AggregatedWithdrawal::payout_fee_rate)
+            .unwrap_or(bitcoin::FeeRate::ZERO);
+        min_mainchain_fee_rate.min(max_payout_fee_rate)
+    } else {
+        min_mainchain_fee_rate
+    };
     let mut fee = bitcoin::Amount::ZERO;
     let mut spend_utxos = BTreeMap::<OutPoint, Output>::new();
     let mut bundle_outputs = Vec::new();
@@ -113,6 +213,9 @@ pub(crate) fn bundle_from_aggregated(
         let Ok(n_outputs) = u32::try_from(bundle_outputs.len() + 1) else {
             break;
         };
+        if adaptive && n_outputs > MAX_WITHDRAWAL_BUNDLE_PAYOUT_OUTPUTS {
+            break;
+        }
         let Ok(spk_size) = u32::try_from(script_pubkey.len()) else {
             // This SPK is invalid, but others might be ok
             continue;
@@ -121,6 +224,20 @@ pub(crate) fn bundle_from_aggregated(
             // This SPK is invalid, but others might be ok
             continue;
         };
+        if adaptive {
+            let txout_weight = bitcoin::Weight::from_wu(
+                u64::from(txout_size) * bitcoin::Weight::WITNESS_SCALE_FACTOR,
+            );
+            let Some(min_mainchain_fee) =
+                min_mainchain_fee_rate.fee_wu(txout_weight)
+            else {
+                // An overflowing fee requirement cannot be satisfied.
+                continue;
+            };
+            if aggregated.main_fee < min_mainchain_fee {
+                continue;
+            }
+        }
         if let Some(sum_txout_sizes) =
             bundle_txouts_size.checked_add(txout_size)
         {
@@ -141,18 +258,22 @@ pub(crate) fn bundle_from_aggregated(
         bundle_outputs.push(bundle_output);
         fee += aggregated.main_fee;
     }
+    if adaptive && bundle_outputs.is_empty() {
+        // No candidate has a valid payout output.
+        return Ok(None);
+    }
     let bundle =
         WithdrawalBundle::new(block_height, fee, spend_utxos, bundle_outputs)?;
-    Ok(Some(bundle))
+    Ok(Some((bundle, min_mainchain_fee_rate)))
 }
 
-/// Collect the withdrawal outputs that a new bundle would spend,
-/// aggregating while iterating over the DB entries.
+/// Collect a withdrawal bundle and its applied fee-rate floor.
 fn collect_withdrawal_bundle(
     state: &State,
     rotxn: &RoTxn,
     block_height: u32,
-) -> Result<Option<WithdrawalBundle>, Error> {
+    scheme: WithdrawalBundleScheme,
+) -> Result<Option<(WithdrawalBundle, bitcoin::FeeRate)>, Error> {
     let mut aggregated = HashMap::new();
     let mut candidates = state.utxos.iter(rotxn).map_err(DbError::from)?;
     while let Some((outpoint_key, output)) =
@@ -160,7 +281,13 @@ fn collect_withdrawal_bundle(
     {
         aggregate_withdrawal(&mut aggregated, outpoint_key.into(), output)?;
     }
-    bundle_from_aggregated(aggregated, block_height)
+    let min_mainchain_fee_rate = min_mainchain_fee_rate(state, rotxn)?;
+    bundle_from_aggregated(
+        aggregated,
+        block_height,
+        scheme,
+        min_mainchain_fee_rate,
+    )
 }
 
 /// Simulate withdrawal bundle construction at `block_height`: compute
@@ -172,6 +299,7 @@ pub(crate) fn simulate_withdrawal_bundle_construction(
     state: &State,
     rotxn: &RoTxn,
     block_height: u32,
+    scheme: WithdrawalBundleScheme,
     filled_transactions: &[FilledTransaction],
     coinbase: &Coinbase,
     coinbase_txid: CoinbaseTxid,
@@ -230,7 +358,13 @@ pub(crate) fn simulate_withdrawal_bundle_construction(
             output.clone(),
         )?;
     }
-    if let Some(bundle) = bundle_from_aggregated(aggregated, block_height)? {
+    let min_mainchain_fee_rate = min_mainchain_fee_rate(state, rotxn)?;
+    if let Some((bundle, _applied_fee_rate)) = bundle_from_aggregated(
+        aggregated,
+        block_height,
+        scheme,
+        min_mainchain_fee_rate,
+    )? {
         for (outpoint, output) in bundle.spend_utxos() {
             let utxo_hash = hash(&PointedOutputRef {
                 outpoint: *outpoint,
@@ -240,6 +374,20 @@ pub(crate) fn simulate_withdrawal_bundle_construction(
         }
     }
     Ok(construction_diff)
+}
+
+/// Outpoint for an output refunded by an unsuccessful bundle.
+fn unsuccessful_withdrawal_outpoint(
+    m6id: M6id,
+    block_height: u32,
+    vout: usize,
+) -> OutPoint {
+    let vout = u32::try_from(vout).expect("bundle outputs fit in u32");
+    OutPoint::UnsuccessfulWithdrawal {
+        m6id,
+        height: block_height,
+        vout,
+    }
 }
 
 /// Recreate the outputs spent by an unsuccessful (failed or dropped)
@@ -254,22 +402,14 @@ fn recreate_bundle_outputs(
     m6id: M6id,
     bundle: &WithdrawalBundle,
 ) -> Result<(), Error> {
-    for (vout, (_outpoint, output)) in bundle.spend_utxos().iter().enumerate() {
-        let vout = u32::try_from(vout).expect("bundle outputs fit in u32");
-        let recreated_outpoint = OutPoint::UnsuccessfulWithdrawal {
-            m6id,
-            height: block_height,
-            vout,
-        };
+    for (vout, (_, output)) in bundle.spend_utxos().iter().enumerate() {
+        let outpoint =
+            unsuccessful_withdrawal_outpoint(m6id, block_height, vout);
         state
             .utxos
-            .put(rwtxn, &OutPointKey::from(&recreated_outpoint), output)
-            .map_err(DbError::from)?;
-        let utxo_hash = hash(&PointedOutputRef {
-            outpoint: recreated_outpoint,
-            output,
-        });
-        accumulator_diff.insert(utxo_hash.into());
+            .put(rwtxn, &OutPointKey::from(&outpoint), output)?;
+        accumulator_diff
+            .insert(hash(&PointedOutputRef { outpoint, output }).into());
     }
     Ok(())
 }
@@ -285,26 +425,14 @@ fn delete_recreated_outputs(
     m6id: M6id,
     bundle: &WithdrawalBundle,
 ) -> Result<(), Error> {
-    for (vout, (_outpoint, output)) in
-        bundle.spend_utxos().iter().enumerate().rev()
-    {
-        let recreated_outpoint = OutPoint::UnsuccessfulWithdrawal {
-            m6id,
-            height: block_height,
-            vout: vout as u32,
-        };
-        let recreated_key = OutPointKey::from(&recreated_outpoint);
-        if !state.utxos.delete(rwtxn, &recreated_key)? {
-            return Err(error::NoUtxo {
-                outpoint: recreated_outpoint,
-            }
-            .into());
+    for (vout, (_, output)) in bundle.spend_utxos().iter().enumerate().rev() {
+        let outpoint =
+            unsuccessful_withdrawal_outpoint(m6id, block_height, vout);
+        if !state.utxos.delete(rwtxn, &OutPointKey::from(&outpoint))? {
+            return Err(error::NoUtxo { outpoint }.into());
         }
-        let utxo_hash = hash(&PointedOutputRef {
-            outpoint: recreated_outpoint,
-            output,
-        });
-        accumulator_diff.remove(utxo_hash.into());
+        accumulator_diff
+            .remove(hash(&PointedOutputRef { outpoint, output }).into());
     }
     Ok(())
 }
@@ -326,6 +454,8 @@ fn maybe_drop_stale_pending_bundle(
     };
     let (bundle, mut bundle_status) =
         state.withdrawal_bundles.get(rwtxn, &m6id)?;
+    let pending_scheme =
+        state.withdrawal_bundle_scheme(bundle_status.latest().height);
     debug_assert_eq!(
         bundle_status.latest().value,
         WithdrawalBundleStatus::Pending
@@ -370,6 +500,9 @@ fn maybe_drop_stale_pending_bundle(
         RollBack::new(m6id, block_height)
     };
     state.dropped_withdrawal_bundles.put(rwtxn, &(), &dropped)?;
+    if pending_scheme == WithdrawalBundleScheme::Adaptive {
+        update_min_mainchain_fee_rate(state, rwtxn, block_height, false)?;
+    }
     tracing::warn!(
         %block_height,
         %m6id,
@@ -424,6 +557,8 @@ fn disconnect_dropped_bundle(
             return Err(error::PendingWithdrawalBundleUnknown(m6id).into());
         }
     };
+    let pending_scheme =
+        state.withdrawal_bundle_scheme(prev_bundle_status.latest().height);
     delete_recreated_outputs(
         state,
         rwtxn,
@@ -438,6 +573,9 @@ fn disconnect_dropped_bundle(
         &m6id,
         &(WithdrawalBundleInfo::Known(bundle), prev_bundle_status),
     )?;
+    if pending_scheme == WithdrawalBundleScheme::Adaptive {
+        rollback_min_mainchain_fee_rate(state, rwtxn, block_height)?;
+    }
     Ok(())
 }
 
@@ -469,6 +607,8 @@ fn connect_withdrawal_bundle_submitted(
                 return Err(err.into());
             }
         };
+        let pending_scheme =
+            state.withdrawal_bundle_scheme(bundle_status.latest().height);
         // The bundle's spend_utxos were already spent when the bundle
         // was created; only the status changes here.
         for outpoint in bundle.spend_utxos().keys() {
@@ -493,6 +633,9 @@ fn connect_withdrawal_bundle_submitted(
             &(WithdrawalBundleInfo::Known(bundle), bundle_status),
         )?;
         state.pending_withdrawal_bundle.delete(rwtxn, &())?;
+        if pending_scheme == WithdrawalBundleScheme::Adaptive {
+            update_min_mainchain_fee_rate(state, rwtxn, block_height, true)?;
+        }
     } else if let Some((bundle, mut bundle_status)) =
         state.withdrawal_bundles.try_get(rwtxn, &m6id)?
     {
@@ -958,10 +1101,21 @@ pub fn maybe_create_withdrawal_bundle(
     if !withdrawal_bundle_creation_due(state, rwtxn, block_height)? {
         return Ok(());
     }
-    let Some(bundle) = collect_withdrawal_bundle(state, rwtxn, block_height)?
+    let scheme = state.withdrawal_bundle_scheme(block_height);
+    let Some((bundle, applied_fee_rate)) =
+        collect_withdrawal_bundle(state, rwtxn, block_height, scheme)?
     else {
         return Ok(());
     };
+    if scheme == WithdrawalBundleScheme::Adaptive {
+        // Persist the applied floor so timeouts double the rate actually used.
+        set_min_mainchain_fee_rate(
+            state,
+            rwtxn,
+            block_height,
+            applied_fee_rate,
+        )?;
+    }
     let m6id = bundle.compute_m6id();
     let mut accumulator = state
         .utreexo_accumulator
@@ -1043,6 +1197,7 @@ fn disconnect_withdrawal_bundle_submitted(
             | WithdrawalBundleStatus::SubmittedUnexpected
     ));
     assert_eq!(latest_bundle_status.height, block_height);
+    let mut submitted_scheme = None;
     match &bundle {
         WithdrawalBundleInfo::Unknown
         | WithdrawalBundleInfo::UnknownConfirmed { .. } => (),
@@ -1051,6 +1206,10 @@ fn disconnect_withdrawal_bundle_submitted(
                 && bundle_status.latest().value
                     == WithdrawalBundleStatus::Pending
             {
+                submitted_scheme =
+                    Some(state.withdrawal_bundle_scheme(
+                        bundle_status.latest().height,
+                    ));
                 // The bundle's outputs remain spent; only the pending
                 // marker is restored.
                 state.pending_withdrawal_bundle.put(rwtxn, &(), &m6id)?;
@@ -1063,6 +1222,9 @@ fn disconnect_withdrawal_bundle_submitted(
             .put(rwtxn, &m6id, &(bundle, bundle_status))?;
     } else {
         state.withdrawal_bundles.delete(rwtxn, &m6id)?;
+    }
+    if submitted_scheme == Some(WithdrawalBundleScheme::Adaptive) {
+        rollback_min_mainchain_fee_rate(state, rwtxn, block_height)?;
     }
     Ok(())
 }
@@ -1448,6 +1610,9 @@ pub fn disconnect_withdrawal_bundle_creation(
         accumulator_diff.insert(utxo_hash.into());
     }
     state.pending_withdrawal_bundle.delete(rwtxn, &())?;
+    // Each block connects at most one floor update, so this rolls back only
+    // the construction's own update, if any.
+    rollback_min_mainchain_fee_rate(state, rwtxn, block_height)?;
     if let (Some(bundle_status), _latest_bundle_status) = bundle_status.pop() {
         state.withdrawal_bundles.put(
             rwtxn,
@@ -1464,7 +1629,7 @@ pub fn disconnect_withdrawal_bundle_creation(
 
 #[cfg(test)]
 mod test {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashMap};
 
     use bitcoin::{
         Network,
@@ -1475,125 +1640,131 @@ mod test {
 
     use crate::{
         state::{
-            State, WITHDRAWAL_BUNDLE_FAILURE_GAP, WithdrawalBundleInfo,
+            MAX_WITHDRAWAL_BUNDLE_PAYOUT_OUTPUTS, State,
+            WITHDRAWAL_BUNDLE_FAILURE_GAP, WithdrawalBundleInfo,
+            WithdrawalBundleScheme,
             rollback::RollBack,
-            test::{fresh_state, value_output},
+            test::{fresh_state, fresh_state_on_network, value_output},
             two_way_peg_data::{
-                collect_withdrawal_bundle, connect,
+                bundle_from_aggregated, collect_withdrawal_bundle, connect,
                 connect_withdrawal_bundle_confirmed,
                 connect_withdrawal_bundle_failed,
                 connect_withdrawal_bundle_submitted, disconnect,
                 disconnect_withdrawal_bundle_failed,
-                maybe_create_withdrawal_bundle,
+                maybe_create_withdrawal_bundle, min_mainchain_fee_rate,
+                simulate_withdrawal_bundle_construction,
+                unsuccessful_withdrawal_outpoint,
             },
         },
         types::{
-            AccumulatorDiff, Address, Coinbase, FilledTransaction, InPoint,
-            M6id, OutPoint, OutPointKey, Output, OutputContent,
-            PointedOutputRef, SpentOutput, Transaction, Txid, WithdrawalBundle,
-            WithdrawalBundleEvent, WithdrawalBundleEventStatus,
-            WithdrawalBundleStatus, hash,
+            AccumulatorDiff, Address, AggregatedWithdrawal, Body, Coinbase,
+            FilledTransaction, Header, InPoint, M6id, OutPoint, OutPointKey,
+            Output, OutputContent, PointedOutputRef, Transaction, Txid,
+            WithdrawalBundle, WithdrawalBundleEvent,
+            WithdrawalBundleEventStatus, WithdrawalBundleStatus,
+            authorization::BatchVerificationContext,
+            hash,
             proto::mainchain::{
                 BlockEvent, BlockInfo, Deposit, TwoWayPegData, two_way_peg_data,
             },
         },
     };
 
-    // a failed known bundle recreates its outputs at
-    // `OutPoint::UnsuccessfulWithdrawal` outpoints, so disconnecting the
-    // failure must delete the recreations; the original STXO record
-    // remains untouched
+    // A pre-activation bundle failed after activation must refund under its
+    // legacy M6ID; disconnecting the failure must undo those refunds.
     #[test]
-    fn disconnect_failed_bundle_removes_recreated_utxo() -> anyhow::Result<()> {
-        let (_temp_dir, env, state) =
-            fresh_state("disconnect_failed_bundle_removes_recreated_utxo")?;
-        let outpoint = OutPoint::Regular {
-            txid: Txid::from([1; 32]),
-            vout: 0,
-        };
-        let output = value_output(Address::ALL_ZEROS, 1000);
-        let key = OutPointKey::from(&outpoint);
-        let bundle = {
-            let mut spend_utxos = BTreeMap::new();
-            spend_utxos.insert(outpoint, output.clone());
-            WithdrawalBundle::new(
-                1,
-                bitcoin::Amount::ZERO,
-                spend_utxos,
-                Vec::new(),
-            )?
-        };
-        let m6id = bundle.compute_m6id();
-        let recreated_outpoint = OutPoint::UnsuccessfulWithdrawal {
-            m6id,
-            height: 1,
-            vout: 0,
-        };
+    fn legacy_failure_refunds_under_legacy_m6id() -> anyhow::Result<()> {
+        let (_temp_dir, env, state) = fresh_state_on_network(
+            "legacy_failure_refunds_under_legacy_m6id",
+            crate::types::Network::Mainnet,
+        )?;
+        let mut rwtxn = env.write_txn()?;
+        let created_height = crate::types::Network::Mainnet
+            .adaptive_bundle_construction_activation_height()
+            - 1;
+        state.height.put(&mut rwtxn, &(), &created_height)?;
+        state.withdrawal_bundle_min_mainchain_fee_rate.put(
+            &mut rwtxn,
+            &0,
+            &(0, bitcoin::FeeRate::BROADCAST_MIN),
+        )?;
+        for (idx, main_fee) in [(1_u8, 30), (2, 200)] {
+            insert_withdrawal_utxo(&state, &mut rwtxn, idx, main_fee)?;
+        }
+        maybe_create_withdrawal_bundle(&state, &mut rwtxn)?;
+        let legacy_m6id = pending_m6id(&state, &rwtxn)?;
+        let (legacy_bundle, _) = state
+            .try_get_pending_withdrawal_bundle(&rwtxn)?
+            .expect("pending legacy bundle should exist");
+
+        let submission_height = created_height + 1;
+        submit_bundle(&state, &mut rwtxn, submission_height, legacy_m6id)?;
+        let failed_height = submission_height + 1;
+        connect_withdrawal_bundle_failed(
+            &state,
+            &mut rwtxn,
+            failed_height,
+            &mut AccumulatorDiff::default(),
+            legacy_m6id,
+        )?;
+        for (vout, (outpoint, output)) in
+            legacy_bundle.spend_utxos().iter().enumerate()
         {
-            let mut bundle_status =
-                RollBack::new(WithdrawalBundleStatus::Submitted, 0);
-            bundle_status
-                .push(WithdrawalBundleStatus::Failed, 1)
-                .unwrap();
-            let mut rwtxn = env.write_txn()?;
-            state.withdrawal_bundles.put(
-                &mut rwtxn,
-                &m6id,
-                &(WithdrawalBundleInfo::Known(bundle), bundle_status),
-            )?;
-            state.latest_failed_withdrawal_bundle.put(
-                &mut rwtxn,
-                &(),
-                &RollBack::new(m6id, 1),
-            )?;
-            // the bundle spent the original output at creation...
-            let spent_output = SpentOutput {
-                output: output.clone(),
-                inpoint: InPoint::Withdrawal { m6id },
-            };
-            state.stxos.put(&mut rwtxn, &key, &spent_output)?;
-            // ...and the failure recreated it at a new outpoint
-            state.utxos.put(
-                &mut rwtxn,
-                &OutPointKey::from(&recreated_outpoint),
-                &output,
-            )?;
-            rwtxn.commit()?;
+            let refunded_outpoint = unsuccessful_withdrawal_outpoint(
+                legacy_m6id,
+                failed_height,
+                vout,
+            );
+            let refunded = state
+                .utxos
+                .get(&rwtxn, &OutPointKey::from(&refunded_outpoint))?;
+            anyhow::ensure!(&refunded == output);
+            let stxo = state.stxos.get(&rwtxn, &OutPointKey::from(outpoint))?;
+            anyhow::ensure!(
+                stxo.inpoint == InPoint::Withdrawal { m6id: legacy_m6id }
+            );
         }
 
-        let mut rwtxn = env.write_txn()?;
-        let mut accumulator_diff = AccumulatorDiff::default();
         disconnect_withdrawal_bundle_failed(
             &state,
             &mut rwtxn,
-            1,
-            &mut accumulator_diff,
-            m6id,
+            failed_height,
+            &mut AccumulatorDiff::default(),
+            legacy_m6id,
         )?;
-        // the recreated output is deleted...
-        anyhow::ensure!(
-            state
-                .utxos
-                .try_get(&rwtxn, &OutPointKey::from(&recreated_outpoint))?
-                .is_none()
-        );
-        // ...while the original STXO record remains untouched
-        let stxo = state.stxos.get(&rwtxn, &key)?;
-        anyhow::ensure!(stxo.inpoint == InPoint::Withdrawal { m6id });
+        for (vout, outpoint) in legacy_bundle.spend_utxos().keys().enumerate() {
+            let refunded_outpoint = unsuccessful_withdrawal_outpoint(
+                legacy_m6id,
+                failed_height,
+                vout,
+            );
+            anyhow::ensure!(!utxo_exists(&state, &rwtxn, &refunded_outpoint)?);
+            let stxo = state.stxos.get(&rwtxn, &OutPointKey::from(outpoint))?;
+            anyhow::ensure!(
+                stxo.inpoint == InPoint::Withdrawal { m6id: legacy_m6id }
+            );
+        }
         Ok(())
     }
 
-    fn withdrawal_output(
+    fn withdrawal_output_with_fee(
         main_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
+        main_fee: bitcoin::Amount,
     ) -> Output {
         Output {
             address: Address::ALL_ZEROS,
             content: OutputContent::Withdrawal {
                 value: bitcoin::Amount::from_sat(1000),
-                main_fee: bitcoin::Amount::from_sat(300),
+                main_fee,
                 main_address,
             },
         }
+    }
+
+    fn withdrawal_output(
+        main_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
+    ) -> Output {
+        withdrawal_output_with_fee(main_address, bitcoin::Amount::from_sat(300))
     }
 
     /// Put a UTXO and insert its leaf into the utreexo accumulator.
@@ -1618,6 +1789,71 @@ mod test {
         Ok(())
     }
 
+    fn insert_withdrawal_utxo(
+        state: &State,
+        rwtxn: &mut sneed::RwTxn,
+        idx: u8,
+        main_fee: u64,
+    ) -> anyhow::Result<()> {
+        insert_utxo(
+            state,
+            rwtxn,
+            regular_outpoint(idx, u32::from(idx)),
+            &withdrawal_output_with_fee(
+                regtest_p2wpkh_address(u32::from(idx)),
+                bitcoin::Amount::from_sat(main_fee),
+            ),
+        )
+    }
+
+    fn regular_outpoint(idx: u8, vout: u32) -> OutPoint {
+        OutPoint::Regular {
+            txid: Txid::from([idx; 32]),
+            vout,
+        }
+    }
+
+    fn utxo_exists(
+        state: &State,
+        rotxn: &sneed::RoTxn,
+        outpoint: &OutPoint,
+    ) -> anyhow::Result<bool> {
+        Ok(state
+            .utxos
+            .try_get(rotxn, &OutPointKey::from(outpoint))?
+            .is_some())
+    }
+
+    fn try_pending_m6id(
+        state: &State,
+        rwtxn: &sneed::RoTxn,
+    ) -> anyhow::Result<Option<M6id>> {
+        Ok(state.pending_withdrawal_bundle.try_get(rwtxn, &())?)
+    }
+
+    fn pending_m6id(
+        state: &State,
+        rwtxn: &sneed::RoTxn,
+    ) -> anyhow::Result<M6id> {
+        Ok(try_pending_m6id(state, rwtxn)?
+            .expect("pending bundle should exist"))
+    }
+
+    fn submit_bundle(
+        state: &State,
+        rwtxn: &mut sneed::RwTxn,
+        block_height: u32,
+        m6id: M6id,
+    ) -> anyhow::Result<()> {
+        Ok(connect_withdrawal_bundle_submitted(
+            state,
+            rwtxn,
+            block_height,
+            &bitcoin::BlockHash::from_byte_array([9; 32]),
+            m6id,
+        )?)
+    }
+
     // constructing a withdrawal bundle spends the selected outputs
     #[test]
     fn maybe_create_withdrawal_bundle_spends_outputs() -> anyhow::Result<()> {
@@ -1627,15 +1863,9 @@ mod test {
         state
             .height
             .put(&mut rwtxn, &(), &WITHDRAWAL_BUNDLE_FAILURE_GAP)?;
-        let withdrawal_outpoint = OutPoint::Regular {
-            txid: Txid::from([1; 32]),
-            vout: 0,
-        };
+        let withdrawal_outpoint = regular_outpoint(1, 0);
         let withdrawal_output = withdrawal_output(regtest_p2wpkh_address(1));
-        let value_outpoint = OutPoint::Regular {
-            txid: Txid::from([2; 32]),
-            vout: 0,
-        };
+        let value_outpoint = regular_outpoint(2, 0);
         insert_utxo(
             &state,
             &mut rwtxn,
@@ -1650,16 +1880,9 @@ mod test {
         )?;
         maybe_create_withdrawal_bundle(&state, &mut rwtxn)?;
         // the withdrawal output is spent by the bundle...
-        anyhow::ensure!(
-            state
-                .utxos
-                .try_get(&rwtxn, &OutPointKey::from(&withdrawal_outpoint))?
-                .is_none()
-        );
-        let pending_m6id = state
-            .pending_withdrawal_bundle
-            .try_get(&rwtxn, &())?
-            .expect("pending bundle should exist");
+        anyhow::ensure!(!utxo_exists(&state, &rwtxn, &withdrawal_outpoint)?);
+        let pending_m6id = pending_m6id(&state, &rwtxn)?;
+        anyhow::ensure!(state.withdrawal_bundles.len(&rwtxn)? == 1);
         let stxo = state
             .stxos
             .get(&rwtxn, &OutPointKey::from(&withdrawal_outpoint))?;
@@ -1667,12 +1890,7 @@ mod test {
             stxo.inpoint == InPoint::Withdrawal { m6id: pending_m6id }
         );
         // ...while the value output is untouched
-        anyhow::ensure!(
-            state
-                .utxos
-                .try_get(&rwtxn, &OutPointKey::from(&value_outpoint))?
-                .is_some()
-        );
+        anyhow::ensure!(utxo_exists(&state, &rwtxn, &value_outpoint)?);
         // the pending bundle is well-formed and spends the output
         let (bundle, height) =
             state.try_get_pending_withdrawal_bundle(&rwtxn)?.unwrap();
@@ -1696,10 +1914,7 @@ mod test {
         state
             .height
             .put(&mut rwtxn, &(), &WITHDRAWAL_BUNDLE_FAILURE_GAP)?;
-        let withdrawal_outpoint = OutPoint::Regular {
-            txid: Txid::from([1; 32]),
-            vout: 0,
-        };
+        let withdrawal_outpoint = regular_outpoint(1, 0);
         let withdrawal_output = withdrawal_output(regtest_p2wpkh_address(1));
         insert_utxo(
             &state,
@@ -1708,18 +1923,9 @@ mod test {
             &withdrawal_output,
         )?;
         maybe_create_withdrawal_bundle(&state, &mut rwtxn)?;
-        let m6id = state
-            .pending_withdrawal_bundle
-            .try_get(&rwtxn, &())?
-            .unwrap();
+        let m6id = pending_m6id(&state, &rwtxn)?;
         // submit the bundle
-        connect_withdrawal_bundle_submitted(
-            &state,
-            &mut rwtxn,
-            WITHDRAWAL_BUNDLE_FAILURE_GAP,
-            &bitcoin::BlockHash::from_byte_array([9; 32]),
-            m6id,
-        )?;
+        submit_bundle(&state, &mut rwtxn, WITHDRAWAL_BUNDLE_FAILURE_GAP, m6id)?;
         // fail the bundle at the next height
         let failed_height = WITHDRAWAL_BUNDLE_FAILURE_GAP + 1;
         let mut accumulator_diff = AccumulatorDiff::default();
@@ -1731,11 +1937,8 @@ mod test {
             m6id,
         )?;
         // the recreated output exists, with identical content
-        let recreated_outpoint = OutPoint::UnsuccessfulWithdrawal {
-            m6id,
-            height: failed_height,
-            vout: 0,
-        };
+        let recreated_outpoint =
+            unsuccessful_withdrawal_outpoint(m6id, failed_height, 0);
         let recreated = state
             .utxos
             .get(&rwtxn, &OutPointKey::from(&recreated_outpoint))?;
@@ -1774,10 +1977,7 @@ mod test {
         let mut rwtxn = env.write_txn()?;
         let created_height = WITHDRAWAL_BUNDLE_FAILURE_GAP;
         state.height.put(&mut rwtxn, &(), &created_height)?;
-        let withdrawal_outpoint = OutPoint::Regular {
-            txid: Txid::from([1; 32]),
-            vout: 0,
-        };
+        let withdrawal_outpoint = regular_outpoint(1, 0);
         let withdrawal_output = withdrawal_output(regtest_p2wpkh_address(1));
         insert_utxo(
             &state,
@@ -1786,10 +1986,7 @@ mod test {
             &withdrawal_output,
         )?;
         maybe_create_withdrawal_bundle(&state, &mut rwtxn)?;
-        let stale_m6id = state
-            .pending_withdrawal_bundle
-            .try_get(&rwtxn, &())?
-            .unwrap();
+        let stale_m6id = pending_m6id(&state, &rwtxn)?;
         // connect 2WPD for a block GAP heights later: the stale bundle
         // is dropped before the block's txs
         let drop_height = created_height + WITHDRAWAL_BUNDLE_FAILURE_GAP;
@@ -1799,32 +1996,14 @@ mod test {
             .try_get_withdrawal_bundle(&rwtxn, &stale_m6id)?
             .unwrap();
         anyhow::ensure!(status == WithdrawalBundleStatus::Dropped);
-        anyhow::ensure!(
-            state
-                .pending_withdrawal_bundle
-                .try_get(&rwtxn, &())?
-                .is_none()
-        );
-        let recreated_outpoint = OutPoint::UnsuccessfulWithdrawal {
-            m6id: stale_m6id,
-            height: drop_height,
-            vout: 0,
-        };
-        anyhow::ensure!(
-            state
-                .utxos
-                .try_get(&rwtxn, &OutPointKey::from(&recreated_outpoint))?
-                .is_some()
-        );
+        anyhow::ensure!(try_pending_m6id(&state, &rwtxn)?.is_none());
+        let recreated_outpoint =
+            unsuccessful_withdrawal_outpoint(stale_m6id, drop_height, 0);
+        anyhow::ensure!(utxo_exists(&state, &rwtxn, &recreated_outpoint)?);
         // no fresh bundle yet: the failure gap applies after a drop
         state.height.put(&mut rwtxn, &(), &drop_height)?;
         maybe_create_withdrawal_bundle(&state, &mut rwtxn)?;
-        anyhow::ensure!(
-            state
-                .pending_withdrawal_bundle
-                .try_get(&rwtxn, &())?
-                .is_none()
-        );
+        anyhow::ensure!(try_pending_m6id(&state, &rwtxn)?.is_none());
         // the recreated output is spendable in the meantime (covered
         // by failed_bundle_recreates_spendable_outputs), and is
         // included in the fresh bundle once the gap passes
@@ -1853,10 +2032,7 @@ mod test {
             .height
             .put(&mut rwtxn, &(), &WITHDRAWAL_BUNDLE_FAILURE_GAP)?;
         // seed a known bundle with status SubmittedUnexpected
-        let outpoint = OutPoint::Regular {
-            txid: Txid::from([1; 32]),
-            vout: 0,
-        };
+        let outpoint = regular_outpoint(1, 0);
         let output = value_output(Address::ALL_ZEROS, 1000);
         let mut spend_utxos = BTreeMap::new();
         spend_utxos.insert(outpoint, output);
@@ -1983,6 +2159,72 @@ mod test {
         bitcoin::Address::p2wpkh(&public_key, Network::Regtest).into_unchecked()
     }
 
+    fn regtest_p2tr_address(
+        idx: u32,
+    ) -> bitcoin::Address<bitcoin::address::NetworkUnchecked> {
+        let (x_only_public_key, _parity) =
+            seeded_public_key(idx).0.x_only_public_key();
+        bitcoin::Address::p2tr(
+            &Secp256k1::new(),
+            x_only_public_key,
+            None,
+            Network::Regtest,
+        )
+        .into_unchecked()
+    }
+
+    fn aggregated_withdrawal(
+        idx: u32,
+        main_address: bitcoin::Address<bitcoin::address::NetworkUnchecked>,
+        main_fee: u64,
+    ) -> AggregatedWithdrawal {
+        let outpoint = regular_outpoint(idx as u8, idx);
+        let output = withdrawal_output_with_fee(
+            main_address.clone(),
+            bitcoin::Amount::from_sat(main_fee),
+        );
+        AggregatedWithdrawal {
+            spend_utxos: HashMap::from([(outpoint, output)]),
+            main_address,
+            value: bitcoin::Amount::from_sat(1_000),
+            main_fee: bitcoin::Amount::from_sat(main_fee),
+        }
+    }
+
+    fn header_with_bundle_scheme(
+        state: &State,
+        rotxn: &sneed::RoTxn,
+        block_height: u32,
+        body: &Body,
+        scheme: WithdrawalBundleScheme,
+    ) -> Result<Header, crate::state::Error> {
+        let no_txs: &[FilledTransaction] = &[];
+        let merkle_root = Body::compute_merkle_root(
+            &body.coinbase,
+            no_txs,
+            &body.authorizations,
+        )?;
+        let mut header = Header {
+            merkle_root,
+            prev_side_hash: None,
+            prev_main_hash: bitcoin::BlockHash::from_byte_array([99; 32]),
+            roots: Vec::new(),
+        };
+        let construction_diff = simulate_withdrawal_bundle_construction(
+            state,
+            rotxn,
+            block_height,
+            scheme,
+            no_txs,
+            &body.coinbase,
+            header.compute_coinbase_txid(),
+        )?;
+        let mut accumulator = state.get_accumulator(rotxn)?;
+        accumulator.apply_diff(construction_diff)?;
+        header.roots = accumulator.get_roots();
+        Ok(header)
+    }
+
     fn with_state_with_withdrawals<R>(
         test_name: &str,
         count: u32,
@@ -2042,10 +2284,17 @@ mod test {
             "collect_withdrawal_bundle_p2wpkh_off_by_one",
             CLAIMED_MAX_BUNDLE_OUTPUTS + 1,
             regtest_p2wpkh_address,
-            |state, rwtxn| collect_withdrawal_bundle(state, rwtxn, 42),
+            |state, rwtxn| {
+                collect_withdrawal_bundle(
+                    state,
+                    rwtxn,
+                    42,
+                    WithdrawalBundleScheme::Legacy,
+                )
+            },
         )?;
         let bundle = match bundle {
-            Ok(Some(bundle)) => bundle,
+            Ok(Some((bundle, _applied_fee_rate))) => bundle,
             Ok(None) => anyhow::bail!("expected a withdrawal bundle"),
             Err(err) => anyhow::bail!("unexpected collection error: {err:?}"),
         };
@@ -2060,6 +2309,381 @@ mod test {
         anyhow::ensure!(
             weight <= bitcoin::policy::MAX_STANDARD_TX_WEIGHT as u64,
             "unexpected overweight P2WPKH bundle: {weight} wu"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn adaptive_bundle_enforces_payout_output_limit() -> anyhow::Result<()> {
+        let (bundle, _applied_fee_rate) = with_state_with_withdrawals(
+            "adaptive_bundle_enforces_payout_output_limit",
+            MAX_WITHDRAWAL_BUNDLE_PAYOUT_OUTPUTS + 1,
+            regtest_p2wpkh_address,
+            |state, rwtxn| {
+                collect_withdrawal_bundle(
+                    state,
+                    rwtxn,
+                    42,
+                    WithdrawalBundleScheme::Adaptive,
+                )
+            },
+        )?
+        .expect("adaptive bundle should be constructed")
+        .expect("payout candidates should produce a bundle");
+        anyhow::ensure!(
+            bundle.tx().output.len()
+                == MAX_WITHDRAWAL_BUNDLE_PAYOUT_OUTPUTS as usize + 2
+        );
+        anyhow::ensure!(
+            bundle.spend_utxos().len()
+                == MAX_WITHDRAWAL_BUNDLE_PAYOUT_OUTPUTS as usize
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn adaptive_bundle_filters_by_payout_output_weight() -> anyhow::Result<()> {
+        let candidates = vec![
+            // P2WPKH payout weight is 124 WU: 30 sats is below 1 sat/vB.
+            aggregated_withdrawal(1, regtest_p2wpkh_address(1), 30),
+            // 31 sats exactly covers 124 WU at 1 sat/vB.
+            aggregated_withdrawal(2, regtest_p2wpkh_address(2), 31),
+            // P2TR payout weight is 172 WU: 42 sats is below 1 sat/vB.
+            aggregated_withdrawal(3, regtest_p2tr_address(3), 42),
+            // 43 sats exactly covers 172 WU at 1 sat/vB.
+            aggregated_withdrawal(4, regtest_p2tr_address(4), 43),
+        ];
+        let aggregated = candidates
+            .into_iter()
+            .map(|aggregated| (aggregated.main_address.clone(), aggregated))
+            .collect::<HashMap<_, _>>();
+        // Excessive floors are capped; MAX also exercises overflow avoidance.
+        for min_mainchain_fee_rate in [
+            bitcoin::FeeRate::BROADCAST_MIN,
+            bitcoin::FeeRate::from_sat_per_vb_u32(2),
+            bitcoin::FeeRate::MAX,
+        ] {
+            let (adaptive, applied_fee_rate) = bundle_from_aggregated(
+                aggregated.clone(),
+                42,
+                WithdrawalBundleScheme::Adaptive,
+                min_mainchain_fee_rate,
+            )?
+            .expect("two payout outputs should pass the fee-rate filter");
+            anyhow::ensure!(
+                applied_fee_rate == bitcoin::FeeRate::BROADCAST_MIN
+            );
+            let selected =
+                adaptive.spend_utxos().keys().copied().collect::<Vec<_>>();
+            anyhow::ensure!(selected.len() == 2);
+            anyhow::ensure!(selected.contains(&regular_outpoint(2, 2)));
+            anyhow::ensure!(selected.contains(&regular_outpoint(4, 4)));
+        }
+
+        // Legacy construction ignores the adaptive fee-rate floor.
+        let (legacy, _) = bundle_from_aggregated(
+            aggregated,
+            42,
+            WithdrawalBundleScheme::Legacy,
+            bitcoin::FeeRate::MAX,
+        )?
+        .expect("legacy construction should retain every payout");
+        anyhow::ensure!(legacy.spend_utxos().len() == 4);
+        Ok(())
+    }
+
+    #[test]
+    fn adaptive_fee_rate_doubles_resets_and_rolls_back() -> anyhow::Result<()> {
+        let (_temp_dir, env, state) =
+            fresh_state("adaptive_fee_rate_doubles_resets_and_rolls_back")?;
+        let mut rwtxn = env.write_txn()?;
+        let created_height = WITHDRAWAL_BUNDLE_FAILURE_GAP;
+        state.height.put(&mut rwtxn, &(), &created_height)?;
+        for (idx, main_fee) in [(1_u8, 30), (2, 200)] {
+            insert_withdrawal_utxo(&state, &mut rwtxn, idx, main_fee)?;
+        }
+        maybe_create_withdrawal_bundle(&state, &mut rwtxn)?;
+        let stale_m6id = pending_m6id(&state, &rwtxn)?;
+        anyhow::ensure!(
+            min_mainchain_fee_rate(&state, &rwtxn)? == bitcoin::FeeRate::ZERO
+        );
+
+        // Timing out raises the floor from zero to 1 sat/kwu.
+        let drop_height = created_height + WITHDRAWAL_BUNDLE_FAILURE_GAP;
+        state.height.put(&mut rwtxn, &(), &(drop_height - 1))?;
+        connect(&state, &mut rwtxn, &TwoWayPegData::default())?;
+        anyhow::ensure!(
+            min_mainchain_fee_rate(&state, &rwtxn)?
+                == bitcoin::FeeRate::from_sat_per_kwu(1)
+        );
+        anyhow::ensure!(try_pending_m6id(&state, &rwtxn)?.is_none());
+
+        // Rebundle after the gap, then time out again: the floor doubles.
+        let rebundle_height = drop_height + WITHDRAWAL_BUNDLE_FAILURE_GAP;
+        state.height.put(&mut rwtxn, &(), &rebundle_height)?;
+        maybe_create_withdrawal_bundle(&state, &mut rwtxn)?;
+        let rebundled_m6id = pending_m6id(&state, &rwtxn)?;
+        anyhow::ensure!(rebundled_m6id != stale_m6id);
+        let second_drop_height =
+            rebundle_height + WITHDRAWAL_BUNDLE_FAILURE_GAP;
+        state
+            .height
+            .put(&mut rwtxn, &(), &(second_drop_height - 1))?;
+        let second_drop_data = TwoWayPegData::default();
+        connect(&state, &mut rwtxn, &second_drop_data)?;
+        anyhow::ensure!(
+            min_mainchain_fee_rate(&state, &rwtxn)?
+                == bitcoin::FeeRate::from_sat_per_kwu(2)
+        );
+
+        // Rebundle and submit: the floor resets to zero.
+        let final_bundle_height =
+            second_drop_height + WITHDRAWAL_BUNDLE_FAILURE_GAP;
+        state.height.put(&mut rwtxn, &(), &final_bundle_height)?;
+        maybe_create_withdrawal_bundle(&state, &mut rwtxn)?;
+        let final_m6id = pending_m6id(&state, &rwtxn)?;
+        anyhow::ensure!(final_m6id != rebundled_m6id);
+        let submission_height = final_bundle_height + 1;
+        let submission_hash = bitcoin::BlockHash::from_byte_array([3; 32]);
+        let submission_data = {
+            let mut block_info = LinkedHashMap::new();
+            block_info.insert(
+                submission_hash,
+                two_way_peg_data::BlockInfo {
+                    height: 3,
+                    inner: BlockInfo {
+                        bmm_commitment: None,
+                        events: vec![BlockEvent::WithdrawalBundle(
+                            WithdrawalBundleEvent {
+                                m6id: final_m6id,
+                                status: WithdrawalBundleEventStatus::Submitted,
+                            },
+                        )],
+                    },
+                },
+            );
+            TwoWayPegData { block_info }
+        };
+        connect(&state, &mut rwtxn, &submission_data)?;
+        anyhow::ensure!(
+            min_mainchain_fee_rate(&state, &rwtxn)? == bitcoin::FeeRate::ZERO
+        );
+        anyhow::ensure!(try_pending_m6id(&state, &rwtxn)?.is_none());
+
+        // Disconnecting the submission restores both the pending bundle and
+        // the pre-submission fee-rate floor.
+        state.height.put(&mut rwtxn, &(), &submission_height)?;
+        disconnect(&state, &mut rwtxn, &submission_data)?;
+        anyhow::ensure!(
+            min_mainchain_fee_rate(&state, &rwtxn)?
+                == bitcoin::FeeRate::from_sat_per_kwu(2)
+        );
+        anyhow::ensure!(try_pending_m6id(&state, &rwtxn)? == Some(final_m6id));
+
+        // Unwinding the final bundle's creation and then the second timeout
+        // restores the earlier floor and the rebundled pending bundle.
+        state.height.put(&mut rwtxn, &(), &final_bundle_height)?;
+        state.disconnect_withdrawal_bundle_creation(&mut rwtxn)?;
+        state.height.put(&mut rwtxn, &(), &second_drop_height)?;
+        disconnect(&state, &mut rwtxn, &second_drop_data)?;
+        anyhow::ensure!(
+            min_mainchain_fee_rate(&state, &rwtxn)?
+                == bitcoin::FeeRate::from_sat_per_kwu(1)
+        );
+        anyhow::ensure!(
+            try_pending_m6id(&state, &rwtxn)? == Some(rebundled_m6id)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn adaptive_construction_activates_at_mainnet_height() -> anyhow::Result<()>
+    {
+        let (_temp_dir, env, state) = fresh_state_on_network(
+            "adaptive_construction_activates_at_mainnet_height",
+            crate::types::Network::Mainnet,
+        )?;
+        let activation_height = crate::types::Network::Mainnet
+            .adaptive_bundle_construction_activation_height();
+        let mut rwtxn = env.write_txn()?;
+        state
+            .height
+            .put(&mut rwtxn, &(), &(activation_height - 2))?;
+        state.withdrawal_bundle_min_mainchain_fee_rate.put(
+            &mut rwtxn,
+            &0,
+            &(0, bitcoin::FeeRate::BROADCAST_MIN),
+        )?;
+        for (idx, main_fee) in [(1_u8, 30), (2, 200)] {
+            insert_withdrawal_utxo(&state, &mut rwtxn, idx, main_fee)?;
+        }
+        let body = Body::new(vec![], Coinbase::default());
+        let batch_verification_ctxt =
+            BatchVerificationContext::new(&mut rand::rng());
+        let prevalidate_with_scheme =
+            |rotxn: &sneed::RoTxn,
+             block_height: u32,
+             scheme: WithdrawalBundleScheme|
+             -> Result<(), crate::state::Error> {
+                let header = header_with_bundle_scheme(
+                    &state,
+                    rotxn,
+                    block_height,
+                    &body,
+                    scheme,
+                )?;
+                state.prevalidate_block(
+                    rotxn,
+                    &batch_verification_ctxt,
+                    &header,
+                    0,
+                    &body,
+                )?;
+                Ok(())
+            };
+        prevalidate_with_scheme(
+            &rwtxn,
+            activation_height - 1,
+            WithdrawalBundleScheme::Legacy,
+        )?;
+        anyhow::ensure!(matches!(
+            prevalidate_with_scheme(
+                &rwtxn,
+                activation_height - 1,
+                WithdrawalBundleScheme::Adaptive,
+            ),
+            Err(crate::state::Error::UtreexoRootsMismatch)
+        ));
+
+        state
+            .height
+            .put(&mut rwtxn, &(), &(activation_height - 1))?;
+        maybe_create_withdrawal_bundle(&state, &mut rwtxn)?;
+        let (legacy, legacy_height) = state
+            .try_get_pending_withdrawal_bundle(&rwtxn)?
+            .expect("legacy bundle should be constructed below activation");
+        let legacy_m6id = legacy.compute_m6id();
+        anyhow::ensure!(legacy_height == activation_height - 1);
+        anyhow::ensure!(legacy.spend_utxos().len() == 2);
+        anyhow::ensure!(state.withdrawal_bundles.len(&rwtxn)? == 1);
+        submit_bundle(&state, &mut rwtxn, activation_height - 1, legacy_m6id)?;
+
+        for (idx, main_fee) in [(3_u8, 30), (4, 200)] {
+            insert_withdrawal_utxo(&state, &mut rwtxn, idx, main_fee)?;
+        }
+        anyhow::ensure!(matches!(
+            prevalidate_with_scheme(
+                &rwtxn,
+                activation_height,
+                WithdrawalBundleScheme::Legacy,
+            ),
+            Err(crate::state::Error::UtreexoRootsMismatch)
+        ));
+        prevalidate_with_scheme(
+            &rwtxn,
+            activation_height,
+            WithdrawalBundleScheme::Adaptive,
+        )?;
+
+        state.height.put(&mut rwtxn, &(), &activation_height)?;
+        maybe_create_withdrawal_bundle(&state, &mut rwtxn)?;
+        let (adaptive, adaptive_height) = state
+            .try_get_pending_withdrawal_bundle(&rwtxn)?
+            .expect("adaptive bundle should be constructed at activation");
+        let adaptive_m6id = adaptive.compute_m6id();
+        anyhow::ensure!(adaptive_height == activation_height);
+        anyhow::ensure!(adaptive_m6id != legacy_m6id);
+        anyhow::ensure!(adaptive.spend_utxos().len() == 1);
+        anyhow::ensure!(
+            adaptive.spend_utxos().contains_key(&regular_outpoint(4, 4))
+        );
+        anyhow::ensure!(utxo_exists(&state, &rwtxn, &regular_outpoint(3, 3))?);
+        let adaptive_stxo = state
+            .stxos
+            .get(&rwtxn, &OutPointKey::from(&regular_outpoint(4, 4)))?;
+        anyhow::ensure!(
+            adaptive_stxo.inpoint
+                == InPoint::Withdrawal {
+                    m6id: adaptive_m6id
+                }
+        );
+        anyhow::ensure!(state.withdrawal_bundles.len(&rwtxn)? == 2);
+        Ok(())
+    }
+
+    #[test]
+    fn mainnet_timeout_restores_legacy_bundle() -> anyhow::Result<()> {
+        let (_temp_dir, env, state) = fresh_state_on_network(
+            "mainnet_timeout_restores_legacy_bundle",
+            crate::types::Network::Mainnet,
+        )?;
+        let mut rwtxn = env.write_txn()?;
+        let created_height = WITHDRAWAL_BUNDLE_FAILURE_GAP;
+        state.height.put(&mut rwtxn, &(), &created_height)?;
+        state.withdrawal_bundle_min_mainchain_fee_rate.put(
+            &mut rwtxn,
+            &0,
+            &(0, bitcoin::FeeRate::BROADCAST_MIN),
+        )?;
+        for (idx, main_fee) in [(1_u8, 30), (2, 200)] {
+            insert_withdrawal_utxo(&state, &mut rwtxn, idx, main_fee)?;
+        }
+        maybe_create_withdrawal_bundle(&state, &mut rwtxn)?;
+        let legacy_m6id = pending_m6id(&state, &rwtxn)?;
+
+        // Creation disconnect restores every output spent by the legacy bundle.
+        state.disconnect_withdrawal_bundle_creation(&mut rwtxn)?;
+        for idx in [1_u8, 2] {
+            anyhow::ensure!(utxo_exists(
+                &state,
+                &rwtxn,
+                &regular_outpoint(idx, u32::from(idx))
+            )?);
+        }
+        maybe_create_withdrawal_bundle(&state, &mut rwtxn)?;
+
+        let drop_height = created_height + WITHDRAWAL_BUNDLE_FAILURE_GAP;
+        state.height.put(&mut rwtxn, &(), &(drop_height - 1))?;
+        let drop_data = TwoWayPegData::default();
+        connect(&state, &mut rwtxn, &drop_data)?;
+        let (_, status) = state
+            .try_get_withdrawal_bundle(&rwtxn, &legacy_m6id)?
+            .unwrap();
+        anyhow::ensure!(status == WithdrawalBundleStatus::Dropped);
+        for vout in [0_usize, 1] {
+            anyhow::ensure!(utxo_exists(
+                &state,
+                &rwtxn,
+                &unsuccessful_withdrawal_outpoint(
+                    legacy_m6id,
+                    drop_height,
+                    vout
+                )
+            )?);
+        }
+        // Legacy bundles do not affect the adaptive fee-rate floor.
+        anyhow::ensure!(
+            min_mainchain_fee_rate(&state, &rwtxn)?
+                == bitcoin::FeeRate::BROADCAST_MIN
+        );
+
+        state.height.put(&mut rwtxn, &(), &drop_height)?;
+        disconnect(&state, &mut rwtxn, &drop_data)?;
+        anyhow::ensure!(try_pending_m6id(&state, &rwtxn)? == Some(legacy_m6id));
+        for vout in [0_usize, 1] {
+            anyhow::ensure!(!utxo_exists(
+                &state,
+                &rwtxn,
+                &unsuccessful_withdrawal_outpoint(
+                    legacy_m6id,
+                    drop_height,
+                    vout
+                )
+            )?);
+        }
+        anyhow::ensure!(
+            min_mainchain_fee_rate(&state, &rwtxn)?
+                == bitcoin::FeeRate::BROADCAST_MIN
         );
         Ok(())
     }
