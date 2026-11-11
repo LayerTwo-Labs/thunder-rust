@@ -108,50 +108,35 @@ jobs:
     runs-on: ubuntu-latest
     needs: [cache-electrs, check-lint]
     steps:
-      # The `-latest-` artifacts are republished in place, so there is no
-      # version to key a cache on. Key on the server's ETag instead: a hit means
-      # the build is byte-identical, and a new release invalidates the cache by
-      # itself. Falls back to a per-run key so a failed HEAD downloads fresh.
-      - name: Resolve dependency cache keys
-        id: dep-keys
-        run: |
-          etag() {
-            curl -fsSLI "$1" \
-              | tr -d '\r' \
-              | awk 'tolower($1) == "etag:" { gsub(/"/, "", $2); print $2 }' \
-              | tail -1
-          }
-          for dep in patched:"$BITCOIN_PATCHED_URL" enforcer:"$ENFORCER_URL"; do
-            name="${dep%%:*}"
-            tag="$(etag "${dep#*:}" || true)"
-            if [ -z "$tag" ]; then
-              tag="unknown-${{ github.run_id }}-${{ github.run_attempt }}"
-              echo "::warning::Could not read ETag for $name; skipping its cache"
-            fi
-            echo "$name=$tag" >> "$GITHUB_OUTPUT"
-          done
-        env:
-          BITCOIN_PATCHED_URL: https://releases.drivechain.info/L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
-          ENFORCER_URL: https://releases.drivechain.info/bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip
-
-      - name: Cache bitcoin-patched
-        id: cache-bitcoin-patched
-        uses: actions/cache@v6
+      - uses: actions/checkout@v6
         with:
-          path: ${{ runner.temp }}/deps/bitcoin-patched
-          key: bitcoin-patched-x86_64-linux-${{ steps.dep-keys.outputs.patched }}
+          submodules: "recursive"
 
-      - name: Download bitcoin-patched
-        if: steps.cache-bitcoin-patched.outputs.cache-hit != 'true'
+      # The enforcer scripts hold the eCash channel and its regtest
+      # parameters, so they move with the submodule.
+      - name: Read ecash-com/bitcoin parameters
+        id: ecash
         run: |
-          cd "${{ runner.temp }}"
-          wget -q https://releases.drivechain.info/L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
-          unzip -q L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
-          rm L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu.zip
-          mkdir -p deps
-          rm -rf deps/bitcoin-patched
-          mv L1-bitcoin-patched-latest-x86_64-unknown-linux-gnu deps/bitcoin-patched
-          chmod +x deps/bitcoin-patched/bitcoind deps/bitcoin-patched/bitcoin-cli
+          setup=bip300301_enforcer/scripts/setup_integration_tests.sh
+          channels="$("$setup" --print-channels)"
+          if [ "$(printf '%s\n' "$channels" | grep -c .)" -ne 1 ]; then
+            echo "::error::expected one ecash channel, got: $channels"
+            exit 1
+          fi
+          {
+            echo "channel=$channels"
+            echo "regtest_magic=$("$setup" --print-regtest-magic "$channels")"
+            echo "op_drivechain=$("$setup" --print-op-drivechain "$channels")"
+            echo "fork=$("$setup" --print-fork "$channels")"
+            echo "replay_protection_lock_time=$("$setup" --print-replay-protection-lock-time "$channels")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download ecash-com/bitcoin (${{ steps.ecash.outputs.channel }})
+        run: |
+          bip300301_enforcer/scripts/fetch_ecash_bitcoin.sh \
+            '${{ steps.ecash.outputs.channel }}' \
+            x86_64-unknown-linux-gnu \
+            '${{ runner.temp }}/deps/bitcoin-ecash'
 
       - name: Cache bitcoin unpatched
         id: cache-bitcoin-unpatched
@@ -166,33 +151,53 @@ jobs:
           cd "${{ runner.temp }}"
           VERSION='${{ env.BITCOIND_UNPATCHED_VERSION }}'
           TARBALL="bitcoin-${VERSION}-x86_64-linux-gnu.tar.gz"
-          wget -q "https://bitcoincore.org/bin/bitcoin-core-${VERSION}/${TARBALL}"
+          wget -q "https://bitcoincore.org/bin/bitcoin-core-${VERSION}/${TARBALL}" \
+            "https://bitcoincore.org/bin/bitcoin-core-${VERSION}/SHA256SUMS"
+          sha256sum --ignore-missing --check SHA256SUMS
           tar -xf "${TARBALL}"
-          rm "${TARBALL}"
+          rm "${TARBALL}" SHA256SUMS
           mkdir -p deps
           rm -rf deps/bitcoin-unpatched
           mv "bitcoin-${VERSION}/bin" deps/bitcoin-unpatched
           rm -r "bitcoin-${VERSION}"
+
+      # Use the enforcer release that the submodule pins, not the moving
+      # `latest` build.
+      - name: Find the enforcer release tag of the submodule
+        id: enforcer
+        run: |
+          sha="$(git rev-parse HEAD:bip300301_enforcer)"
+          tag="$(git ls-remote --tags https://github.com/LayerTwo-Labs/bip300301_enforcer.git \
+            | awk -v sha="$sha" '$1 == sha { sub("refs/tags/", "", $2); sub("\\^\\{\\}$", "", $2); print $2 }' \
+            | sort -u)"
+          if [ "$(printf '%s\n' "$tag" | grep -c .)" -ne 1 ]; then
+            echo "::error::expected one enforcer release tag at $sha, got: $tag"
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Cache bip300301_enforcer
         id: cache-enforcer
         uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/deps/bip300301-enforcer
-          key: bip300301-enforcer-x86_64-linux-${{ steps.dep-keys.outputs.enforcer }}
+          key: bip300301-enforcer-x86_64-linux-${{ steps.enforcer.outputs.tag }}-${{ steps.enforcer.outputs.sha }}
 
-      - name: Download bip300301_enforcer
+      - name: Download bip300301_enforcer ${{ steps.enforcer.outputs.tag }}
         if: steps.cache-enforcer.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          cd "${{ runner.temp }}"
-          wget -q https://releases.drivechain.info/bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip
-          unzip -q bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip
-          rm bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip
-          mkdir -p deps
-          rm -f deps/bip300301-enforcer
-          mv bip300301-enforcer-latest-x86_64-unknown-linux-gnu/bip300301-enforcer-*-x86_64-unknown-linux-gnu deps/bip300301-enforcer
-          rm -r bip300301-enforcer-latest-x86_64-unknown-linux-gnu
-          chmod +x deps/bip300301-enforcer
+          mkdir -p "${{ runner.temp }}/deps/enforcer-download"
+          gh release download '${{ steps.enforcer.outputs.tag }}' \
+            --repo LayerTwo-Labs/bip300301_enforcer \
+            --pattern 'bip300301-enforcer-*-x86_64-unknown-linux-gnu' \
+            --dir "${{ runner.temp }}/deps/enforcer-download"
+          mv "${{ runner.temp }}"/deps/enforcer-download/bip300301-enforcer-*-x86_64-unknown-linux-gnu \
+            "${{ runner.temp }}/deps/bip300301-enforcer"
+          rmdir "${{ runner.temp }}/deps/enforcer-download"
+          chmod +x "${{ runner.temp }}/deps/bip300301-enforcer"
 
       - name: Restore electrs from cache
         uses: actions/cache/restore@v6
@@ -200,10 +205,6 @@ jobs:
           fail-on-cache-miss: true
           path: ${{ runner.temp }}/electrs/target/release/electrs
           key: electrs-${{ env.ELECTRS_VERSION }}
-
-      - uses: actions/checkout@v6
-        with:
-          submodules: "recursive"
 
       - name: Install pinned Rust toolchain
         # Channel comes from rust-toolchain.toml.
@@ -222,7 +223,11 @@ jobs:
         id: runIntegrationTests
         run: |
           export BIP300301_ENFORCER='${{ runner.temp }}/deps/bip300301-enforcer'
-          export BITCOIND='${{ runner.temp }}/deps/bitcoin-patched/bitcoind'
+          export BITCOIND='${{ runner.temp }}/deps/bitcoin-ecash/bitcoind'
+          export BITCOIND_REGTEST_MAGIC='${{ steps.ecash.outputs.regtest_magic }}'
+          export BITCOIND_OP_DRIVECHAIN='${{ steps.ecash.outputs.op_drivechain }}'
+          export BITCOIND_FORK='${{ steps.ecash.outputs.fork }}'
+          export BITCOIND_REPLAY_PROTECTION_LOCK_TIME='${{ steps.ecash.outputs.replay_protection_lock_time }}'
           export BITCOIND_UNPATCHED='${{ runner.temp }}/deps/bitcoin-unpatched/bitcoind'
           export ELECTRS='${{ runner.temp }}/electrs/target/release/electrs'
           export THUNDER_APP='target/debug/thunder_app'
