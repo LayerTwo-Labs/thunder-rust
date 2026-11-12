@@ -442,7 +442,10 @@ where
                 let parent_info = if header_info.prev_block_hash
                     != bitcoin::BlockHash::all_zeros()
                 {
-                    Some(archive.get_main_header_info(&rwtxn, &block_hash)?)
+                    Some(archive.get_main_header_info(
+                        &rwtxn,
+                        &header_info.prev_block_hash,
+                    )?)
                 } else {
                     None
                 };
