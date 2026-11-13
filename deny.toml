@@ -75,12 +75,8 @@ ignore = [
     #"a-crate-that-is-yanked@0.1.1", # you can also ignore yanked crate versions if you wish
     #{ crate = "a-crate-that-is-yanked@0.1.1", reason = "you can specify why you are ignoring the yanked crate" },
     { id = "RUSTSEC-2025-0141", reason = "Temporary ignore until heed migrates to wincode" },
-    { id = "RUSTSEC-2026-0391", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
-    { id = "RUSTSEC-2026-0398", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
-    { id = "RUSTSEC-2026-0403", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
-    { id = "RUSTSEC-2026-0441", reason = "pin-utils is unmaintained, via hyper; no safe upgrade" },
-    { id = "RUSTSEC-2026-0459", reason = "Integration tests only; the enforcer pins rusqlite 0.31 (libsqlite3-sys 0.28)" },
-    { id = "RUSTSEC-2026-0543", reason = "Integration tests only; chrono is unmaintained, via cusf-enforcer-mempool" },
+    { id = "RUSTSEC-2026-0459", reason = "Temporary ignore until bdk_chain updates rusqlite to >= 0.39.0" },
+    { id = "RUSTSEC-2026-0543", reason = "Temporary ignore until cusf-enforcer-mempool migrates to jiff" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
@@ -123,7 +119,6 @@ exceptions = [
     { allow = ["MPL-2.0"], name = "imbl", version = "7.0.2" },
     { allow = ["MPL-2.0"], name = "imbl-sized-chunks", version = "0.2.0" },
     { allow = ["MPL-2.0"], name = "option-ext", version = "0.2.0" },
-    { allow = ["MPL-2.0"], name = "webpki-roots", version = "0.25.4" },
     { allow = ["Zlib"], crate = "foldhash" },
     { allow = ["Zlib"], name = "slotmap", version = "1.1.1" },
     { allow = ["Zlib"], name = "typewit", version = "1.11.0" },
@@ -274,7 +269,6 @@ allow-git = [
     "https://github.com/Ash-L2L/l2l-openapi.git",
     "https://gitlab.com/A-Manning/leonhard-llc-ops",
     "https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git",
-    "https://github.com/LayerTwo-Labs/bip300301_enforcer.git",
     "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git",
     "https://github.com/mit-dci/rustreexo.git",
     "https://github.com/torkelrogstad/tokio-tracing.git?branch=log-rotation-size",
