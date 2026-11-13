@@ -319,16 +319,29 @@ pub struct AggregatedWithdrawal {
 }
 
 impl AggregatedWithdrawal {
-    /// Size in bytes of the mainchain output script paying to
-    /// `main_address`; the denominator of the fee-density sort key.
+    /// Length of the mainchain payout script.
     fn main_spk_len(&self) -> usize {
         self.main_address.assume_checked_ref().script_pubkey().len()
     }
-}
 
-impl Ord for AggregatedWithdrawal {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // Sort by mainchain fee density: main_fee / len(main output script).
+    /// Greatest fee rate whose rounded-up `FeeRate::fee_wu` for this payout
+    /// output does not exceed `main_fee`; `None` if the output is invalid.
+    pub fn payout_fee_rate(&self) -> Option<bitcoin::FeeRate> {
+        let spk_size = u32::try_from(self.main_spk_len()).ok()?;
+        let txout_size = WithdrawalBundle::txout_size(spk_size)?;
+        let txout_weight =
+            u64::from(txout_size) * bitcoin::Weight::WITNESS_SCALE_FACTOR;
+        let sat_per_kwu = u64::try_from(
+            u128::from(self.main_fee.to_sat()) * 1_000
+                / u128::from(txout_weight),
+        )
+        .unwrap_or(u64::MAX);
+        Some(bitcoin::FeeRate::from_sat_per_kwu(sat_per_kwu))
+    }
+
+    /// Legacy fee-density ordering. A deterministic tie-break makes this a
+    /// total order, so the bundle M6ID is independent of aggregation order.
+    pub fn legacy_cmp(&self, other: &Self) -> Ordering {
         // Compare without floating point:
         //   self.fee/self.len  vs  other.fee/other.len
         //   <=>  self.fee*other.len  vs  other.fee*self.len
@@ -336,10 +349,6 @@ impl Ord for AggregatedWithdrawal {
             (self.main_fee.to_sat() as u128) * (other.main_spk_len() as u128);
         let rhs =
             (other.main_fee.to_sat() as u128) * (self.main_spk_len() as u128);
-        // A *total* order: tie-break lexicographically by
-        // (main_fee, value, main_address), so the withdrawal-bundle output
-        // order (and hence compute_m6id) is canonical regardless of
-        // aggregation order.
         lhs.cmp(&rhs).then_with(|| {
             (self.main_fee, self.value, &self.main_address).cmp(&(
                 other.main_fee,
@@ -348,11 +357,19 @@ impl Ord for AggregatedWithdrawal {
             ))
         })
     }
-}
 
-impl PartialOrd for AggregatedWithdrawal {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
+    /// Adaptive payout fee-rate ordering. Invalid outputs sort first; a
+    /// deterministic tie-break makes the M6ID aggregation-order independent.
+    pub fn fee_rate_cmp(&self, other: &Self) -> Ordering {
+        self.payout_fee_rate()
+            .cmp(&other.payout_fee_rate())
+            .then_with(|| {
+                (self.main_fee, self.value, &self.main_address).cmp(&(
+                    other.main_fee,
+                    other.value,
+                    &other.main_address,
+                ))
+            })
     }
 }
 
@@ -569,6 +586,16 @@ pub enum Network {
     Signet,
 }
 
+impl Network {
+    /// Activation height for adaptive withdrawal-bundle construction.
+    pub const fn adaptive_bundle_construction_activation_height(&self) -> u32 {
+        match self {
+            Self::Mainnet => 1_000,
+            Self::Forknet | Self::Regtest | Self::Signet => 0,
+        }
+    }
+}
+
 /// Semver-compatible version
 #[derive(
     BorshSerialize,
@@ -633,10 +660,12 @@ mod withdrawal_bundle_order_regression {
         }
     }
 
-    // Build the bundle m6id exactly as `collect_withdrawal_bundle` does, for a given
-    // (HashMap-determined) input order.
-    fn bundle_m6id(mut aggregated: Vec<AggregatedWithdrawal>) -> M6id {
-        aggregated.sort_by_key(|a| std::cmp::Reverse(a.clone()));
+    // Compute a bundle M6ID using the supplied ordering.
+    fn bundle_m6id(
+        mut aggregated: Vec<AggregatedWithdrawal>,
+        cmp: fn(&AggregatedWithdrawal, &AggregatedWithdrawal) -> Ordering,
+    ) -> M6id {
+        aggregated.sort_by(|a, b| cmp(a, b).reverse());
         let outputs: Vec<bitcoin::TxOut> = aggregated
             .iter()
             .map(|a| bitcoin::TxOut {
@@ -660,17 +689,22 @@ mod withdrawal_bundle_order_regression {
         let a = aw(1, 3);
         let b = aw(3, 2);
         let c = aw(2, 1);
-        let m = bundle_m6id(vec![a.clone(), b.clone(), c.clone()]);
-        for perm in [
-            vec![c.clone(), b.clone(), a.clone()],
-            vec![b.clone(), a.clone(), c.clone()],
-            vec![a.clone(), c.clone(), b.clone()],
+        for cmp in [
+            AggregatedWithdrawal::legacy_cmp,
+            AggregatedWithdrawal::fee_rate_cmp,
         ] {
-            assert_eq!(
-                m,
-                bundle_m6id(perm),
-                "m6id must not depend on aggregation order"
-            );
+            let m = bundle_m6id(vec![a.clone(), b.clone(), c.clone()], cmp);
+            for perm in [
+                vec![c.clone(), b.clone(), a.clone()],
+                vec![b.clone(), a.clone(), c.clone()],
+                vec![a.clone(), c.clone(), b.clone()],
+            ] {
+                assert_eq!(
+                    m,
+                    bundle_m6id(perm, cmp),
+                    "m6id must not depend on aggregation order"
+                );
+            }
         }
     }
 }

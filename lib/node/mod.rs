@@ -205,7 +205,7 @@ where
             unsafe { Env::open(&env_open_opts, &env_path) }
                 .map_err(EnvError::from)?
         };
-        let state = State::new(&env)?;
+        let state = State::new(&env, network)?;
         let archive = Archive::new(&env)?;
         let mempool = MemPool::new(&env)?;
         let (mainchain_task_handle, mainchain_task_event_rx) =

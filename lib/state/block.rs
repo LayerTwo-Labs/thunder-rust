@@ -164,23 +164,20 @@ pub fn prevalidate(
     }
     let () =
         authorization::verify_authorizations(batch_verification_ctxt, body)?;
-    // Withdrawal bundles are constructed after the block's
-    // transactions, and the header roots commit to the
-    // post-construction accumulator: simulate the construction here.
+    let spending_scheme = state.withdrawal_bundle_scheme(next_height);
     let construction_diff =
         two_way_peg_data::simulate_withdrawal_bundle_construction(
             state,
             rotxn,
             next_height,
+            spending_scheme,
             &filled_transactions,
             &body.coinbase,
             coinbase_txid,
         )?;
-    // Check root consistency without committing to DB
     let () = accumulator.apply_diff(accumulator_diff.clone())?;
     let () = accumulator.apply_diff(construction_diff)?;
-    let roots: Vec<UtreexoNodeHash> = accumulator.get_roots();
-    if roots != header.roots {
+    if accumulator.get_roots() != header.roots {
         return Err(Error::UtreexoRootsMismatch);
     }
 

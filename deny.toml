@@ -88,6 +88,7 @@ ignore = [
     { id = "RUSTSEC-2026-0404", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
     { id = "RUSTSEC-2026-0405", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
     { id = "RUSTSEC-2026-0406", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
+    { id = "RUSTSEC-2026-0459", reason = "Temporary ignore until bdk_chain updates rusqlite to >= 0.39.0" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
@@ -130,7 +131,6 @@ exceptions = [
     { allow = ["MPL-2.0"], name = "imbl", version = "7.0.2" },
     { allow = ["MPL-2.0"], name = "imbl-sized-chunks", version = "0.2.0" },
     { allow = ["MPL-2.0"], name = "option-ext", version = "0.2.0" },
-    { allow = ["MPL-2.0"], name = "webpki-roots", version = "0.25.4" },
     { allow = ["Zlib"], crate = "foldhash" },
     { allow = ["Zlib"], name = "slotmap", version = "1.1.1" },
     { allow = ["Zlib"], name = "typewit", version = "1.11.0" },
@@ -281,7 +281,6 @@ allow-git = [
     "https://github.com/Ash-L2L/l2l-openapi.git",
     "https://gitlab.com/A-Manning/leonhard-llc-ops",
     "https://github.com/LayerTwo-Labs/bitcoin-jsonrpsee.git",
-    "https://github.com/LayerTwo-Labs/bip300301_enforcer.git",
     "https://github.com/LayerTwo-Labs/cusf-enforcer-mempool.git",
     "https://github.com/mit-dci/rustreexo.git",
     "https://github.com/torkelrogstad/tokio-tracing.git?branch=log-rotation-size",

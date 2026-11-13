@@ -2,8 +2,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+use byteorder::BigEndian;
 use fallible_iterator::FallibleIterator as _;
-use heed::types::SerdeBincode;
+use heed::types::{SerdeBincode, U32};
 use sneed::{
     DatabaseUnique, RoTxn, RwTxn, UnitKey,
     db::error::{self as db_error, Error as DbError},
@@ -16,8 +17,8 @@ use crate::{
         Accumulator, AccumulatorDiff, Address, AmountOverflowError,
         AmountUnderflowError, Authorized, AuthorizedTransaction, BlockHash,
         Body, Coinbase, CoinbaseTxid, FilledTransaction, GetAddress, GetValue,
-        Header, InPoint, M6id, MerkleRoot, OutPoint, OutPointKey, Output,
-        PointedOutput, PointedOutputRef, SpentOutput, Transaction,
+        Header, InPoint, M6id, MerkleRoot, Network, OutPoint, OutPointKey,
+        Output, PointedOutput, PointedOutputRef, SpentOutput, Transaction,
         UtreexoNodeHash, UtreexoProof, VERSION, Version, WithdrawalBundle,
         WithdrawalBundleStatus,
         authorization::{self, BatchVerificationContext},
@@ -42,6 +43,16 @@ use rollback::RollBack;
 /// Also used as the submission timeout for pending bundles.
 pub const WITHDRAWAL_BUNDLE_FAILURE_GAP: u32 = 4;
 
+/// Maximum payout outputs, excluding fee and commitment outputs.
+pub const MAX_WITHDRAWAL_BUNDLE_PAYOUT_OUTPUTS: u32 = 1_000;
+
+/// Withdrawal-bundle construction rules, selected by construction height.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WithdrawalBundleScheme {
+    Legacy,
+    Adaptive,
+}
+
 /// Prevalidated block data containing computed values from validation
 /// to avoid redundant computation during connection
 #[derive(Clone, Debug)]
@@ -57,6 +68,7 @@ pub struct PrevalidatedBlock {
 
 #[derive(Clone)]
 pub struct State {
+    network: Network,
     /// Sidechain heights for each coinbase txid
     pub coinbase_height:
         DatabaseUnique<SerdeBincode<CoinbaseTxid>, SerdeBincode<u32>>,
@@ -78,6 +90,9 @@ pub struct State {
         DatabaseUnique<UnitKey, SerdeBincode<RollBack<M6id>>>,
     /// Pending withdrawal bundle. MUST exist in withdrawal_bundles
     pub pending_withdrawal_bundle: DatabaseUnique<UnitKey, SerdeBincode<M6id>>,
+    /// Sequential (sidechain height, adaptive fee-rate floor) updates.
+    withdrawal_bundle_min_mainchain_fee_rate:
+        DatabaseUnique<U32<BigEndian>, SerdeBincode<(u32, bitcoin::FeeRate)>>,
     pub stxos: DatabaseUnique<OutPointKey, SerdeBincode<SpentOutput>>,
     /// Current tip
     tip: DatabaseUnique<UnitKey, SerdeBincode<BlockHash>>,
@@ -99,9 +114,12 @@ pub struct State {
 }
 
 impl State {
-    pub const NUM_DBS: u32 = 14;
+    pub const NUM_DBS: u32 = 15;
 
-    pub fn new<Tls>(env: &sneed::Env<Tls>) -> Result<Self, Error> {
+    pub fn new<Tls>(
+        env: &sneed::Env<Tls>,
+        network: Network,
+    ) -> Result<Self, Error> {
         let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
         let coinbase_height =
             DatabaseUnique::create(env, &mut rwtxn, "coinbase_height")
@@ -132,6 +150,12 @@ impl State {
             "pending_withdrawal_bundle",
         )
         .map_err(EnvError::from)?;
+        let withdrawal_bundle_min_mainchain_fee_rate = DatabaseUnique::create(
+            env,
+            &mut rwtxn,
+            "withdrawal_bundle_min_mainchain_fee_rate",
+        )
+        .map_err(EnvError::from)?;
         let stxos = DatabaseUnique::create(env, &mut rwtxn, "stxos")
             .map_err(EnvError::from)?;
         let tip = DatabaseUnique::create(env, &mut rwtxn, "tip")
@@ -144,11 +168,12 @@ impl State {
         let version = DatabaseUnique::create(env, &mut rwtxn, "state_version")
             .map_err(EnvError::from)?;
         match version.try_get(&rwtxn, &())? {
+            // Adding fee-rate history in 0.20.0 requires a resync.
             Some(db_version)
                 if db_version
                     < Version {
                         major: 0,
-                        minor: 19,
+                        minor: 20,
                         patch: 0,
                     } =>
             {
@@ -171,6 +196,7 @@ impl State {
                 .map_err(EnvError::from)?;
         rwtxn.commit().map_err(RwTxnError::from)?;
         Ok(Self {
+            network,
             coinbase_height,
             deposit_blocks,
             deposit_mainchain_height,
@@ -178,6 +204,7 @@ impl State {
             height,
             latest_failed_withdrawal_bundle,
             pending_withdrawal_bundle,
+            withdrawal_bundle_min_mainchain_fee_rate,
             stxos,
             tip,
             utreexo_accumulator,
@@ -390,6 +417,21 @@ impl State {
         };
         let height = bundle_status.latest().height;
         Ok(Some((bundle, height)))
+    }
+
+    pub(crate) fn withdrawal_bundle_scheme(
+        &self,
+        block_height: u32,
+    ) -> WithdrawalBundleScheme {
+        if block_height
+            >= self
+                .network
+                .adaptive_bundle_construction_activation_height()
+        {
+            WithdrawalBundleScheme::Adaptive
+        } else {
+            WithdrawalBundleScheme::Legacy
+        }
     }
 
     fn validate_utxo_hashes(
@@ -799,10 +841,12 @@ impl State {
         coinbase: &Coinbase,
         coinbase_txid: CoinbaseTxid,
     ) -> Result<AccumulatorDiff, Error> {
+        let scheme = self.withdrawal_bundle_scheme(block_height);
         two_way_peg_data::simulate_withdrawal_bundle_construction(
             self,
             rotxn,
             block_height,
+            scheme,
             filled_transactions,
             coinbase,
             coinbase_txid,
@@ -866,12 +910,19 @@ mod test {
         Ok((temp_dir, env))
     }
 
+    pub fn fresh_state_on_network(
+        test_name: &str,
+        network: crate::types::Network,
+    ) -> anyhow::Result<(temp_dir::TempDir, sneed::Env, State)> {
+        let (temp_dir, env) = temp_env(test_name)?;
+        let state = State::new(&env, network)?;
+        Ok((temp_dir, env, state))
+    }
+
     pub fn fresh_state(
         test_name: &str,
     ) -> anyhow::Result<(temp_dir::TempDir, sneed::Env, State)> {
-        let (temp_dir, env) = temp_env(test_name)?;
-        let state = State::new(&env)?;
-        Ok((temp_dir, env, state))
+        fresh_state_on_network(test_name, crate::types::Network::Regtest)
     }
 
     /// Create a value output
