@@ -7,6 +7,7 @@ use tracing_subscriber::{filter as tracing_filter, layer::SubscriberExt};
 mod block_template;
 mod ibd;
 mod integration_test;
+mod list_mempool;
 mod mainchain_tls;
 mod setup;
 mod unknown_withdrawal;

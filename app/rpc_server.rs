@@ -337,6 +337,21 @@ impl<const ENABLE_PRIVATE_API: bool> rpc_api::node::RpcServer
         Ok(peers)
     }
 
+    async fn list_mempool(&self) -> RpcResult<Vec<rpc_api::node::MempoolTx>> {
+        let txs = self.app.node.get_all_transactions().map_err(custom_err)?;
+        txs.into_iter()
+            .map(|authorized| {
+                let tx = authorized.transaction;
+                let size = tx.canonical_size().map_err(custom_err)?;
+                Ok(rpc_api::node::MempoolTx {
+                    txid: tx.txid(),
+                    size,
+                    tx,
+                })
+            })
+            .collect()
+    }
+
     async fn list_utxos(&self) -> RpcResult<Vec<PointedOutput>> {
         let utxos = self.app.node.get_all_utxos().map_err(custom_err)?;
         let res = utxos
