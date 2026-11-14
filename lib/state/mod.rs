@@ -15,11 +15,11 @@ use crate::{
     types::{
         Accumulator, AccumulatorDiff, Address, AmountOverflowError,
         AmountUnderflowError, Authorized, AuthorizedTransaction, BlockHash,
-        Body, Coinbase, CoinbaseTxid, FilledTransaction, GetAddress, GetValue,
-        Header, InPoint, M6id, MerkleRoot, OutPoint, OutPointKey, Output,
-        PointedOutput, PointedOutputRef, SpentOutput, Transaction,
-        UtreexoNodeHash, UtreexoProof, VERSION, Version, WithdrawalBundle,
-        WithdrawalBundleStatus,
+        BlockIndexEvents, Body, Coinbase, CoinbaseTxid, FilledTransaction,
+        GetAddress, GetValue, Header, InPoint, M6id, MerkleRoot, OutPoint,
+        OutPointKey, Output, PointedOutput, PointedOutputRef, SpentOutput,
+        Transaction, UtreexoNodeHash, UtreexoProof, VERSION, Version,
+        WithdrawalBundle, WithdrawalBundleStatus,
         authorization::{self, BatchVerificationContext},
         proto::mainchain::TwoWayPegData,
         state::WithdrawalBundleInfo,
@@ -57,6 +57,10 @@ pub struct PrevalidatedBlock {
 
 #[derive(Clone)]
 pub struct State {
+    /// Coin movements that no block body carries, keyed by the height of the
+    /// block that applied them
+    block_index_events:
+        DatabaseUnique<SerdeBincode<u32>, SerdeBincode<BlockIndexEvents>>,
     /// Sidechain heights for each coinbase txid
     pub coinbase_height:
         DatabaseUnique<SerdeBincode<CoinbaseTxid>, SerdeBincode<u32>>,
@@ -99,10 +103,13 @@ pub struct State {
 }
 
 impl State {
-    pub const NUM_DBS: u32 = 14;
+    pub const NUM_DBS: u32 = 15;
 
     pub fn new<Tls>(env: &sneed::Env<Tls>) -> Result<Self, Error> {
         let mut rwtxn = env.write_txn().map_err(EnvError::from)?;
+        let block_index_events =
+            DatabaseUnique::create(env, &mut rwtxn, "block_index_events")
+                .map_err(EnvError::from)?;
         let coinbase_height =
             DatabaseUnique::create(env, &mut rwtxn, "coinbase_height")
                 .map_err(EnvError::from)?;
@@ -171,6 +178,7 @@ impl State {
                 .map_err(EnvError::from)?;
         rwtxn.commit().map_err(RwTxnError::from)?;
         Ok(Self {
+            block_index_events,
             coinbase_height,
             deposit_blocks,
             deposit_mainchain_height,
@@ -186,6 +194,46 @@ impl State {
             withdrawal_bundle_event_blocks,
             withdrawal_bundles,
         })
+    }
+
+    /// Coin movements that the block at `height` applied outside its body
+    pub fn get_block_index_events(
+        &self,
+        rotxn: &RoTxn,
+        height: u32,
+    ) -> Result<BlockIndexEvents, Error> {
+        let events = self
+            .block_index_events
+            .try_get(rotxn, &height)?
+            .unwrap_or_default();
+        Ok(events)
+    }
+
+    /// Add `events` after the events already stored for the block at
+    /// `height`
+    pub(crate) fn record_block_index_events(
+        &self,
+        rwtxn: &mut RwTxn,
+        height: u32,
+        events: BlockIndexEvents,
+    ) -> Result<(), Error> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let mut stored = self.get_block_index_events(rwtxn, height)?;
+        stored.extend(events);
+        self.block_index_events.put(rwtxn, &height, &stored)?;
+        Ok(())
+    }
+
+    /// Delete the events stored for the block at `height`
+    pub(crate) fn delete_block_index_events(
+        &self,
+        rwtxn: &mut RwTxn,
+        height: u32,
+    ) -> Result<(), Error> {
+        self.block_index_events.delete(rwtxn, &height)?;
+        Ok(())
     }
 
     pub fn try_get_tip(
