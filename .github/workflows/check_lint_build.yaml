@@ -257,7 +257,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             name: x86_64-unknown-linux-gnu
             binary-suffix: ""
             rustflags: ""
