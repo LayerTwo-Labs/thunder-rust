@@ -561,8 +561,8 @@ impl rpc_api::wallet::RpcServer for RpcServerImpl<true> {
     }
 
     async fn get_wallet_addresses(&self) -> RpcResult<Vec<Address>> {
-        let addrs = self.app.wallet.get_addresses().map_err(custom_err)?;
-        let mut res: Vec<_> = addrs.into_iter().collect();
+        let mut res =
+            self.app.wallet.get_issued_addresses().map_err(custom_err)?;
         res.sort_by_key(|addr| addr.as_base58());
         Ok(res)
     }
