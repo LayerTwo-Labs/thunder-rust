@@ -299,6 +299,7 @@ jobs:
         with:
           cache-all-crates: "true"
           shared-key: ${{ matrix.name }}
+          key: ${{ matrix.os }}
 
       - name: Test
         run: cargo test --tests
