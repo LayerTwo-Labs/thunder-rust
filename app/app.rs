@@ -76,6 +76,18 @@ fn update_wallet(
     wallet: &Wallet,
 ) -> Result<(), Error> {
     tracing::trace!("starting wallet update");
+    // Coins on a lookahead address move the lookahead, and the new addresses
+    // can hold coins too.
+    while scan_wallet_addresses(node, wallet)? {}
+    tracing::debug!("finished wallet update");
+    Ok(())
+}
+
+/// Returns true if the wallet derived new addresses to scan.
+fn scan_wallet_addresses(
+    node: &Node<MainchainTransport>,
+    wallet: &Wallet,
+) -> Result<bool, Error> {
     let addresses = wallet.get_addresses()?;
     let utxos = node.get_utxos_by_addresses(&addresses)?;
     let mut coinbase_heights = HashMap::new();
@@ -115,11 +127,10 @@ fn update_wallet(
         .into_iter()
         .map(|(outpoint, spent_output)| (outpoint, spent_output.inpoint))
         .collect();
-    wallet.put_utxos(&coinbase_heights, &deposit_main_heights, &utxos)?;
+    let derived_new =
+        wallet.put_utxos(&coinbase_heights, &deposit_main_heights, &utxos)?;
     wallet.spend_utxos(&spent)?;
-
-    tracing::debug!("finished wallet update");
-    Ok(())
+    Ok(derived_new)
 }
 
 /// Update utxos & wallet

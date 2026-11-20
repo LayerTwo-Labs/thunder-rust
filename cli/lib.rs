@@ -117,7 +117,7 @@ pub enum Command {
         #[arg(required = true)]
         addresses: Vec<Address>,
     },
-    /// Get wallet addresses, sorted by base58 encoding
+    /// Get the issued wallet addresses, sorted by base58 encoding
     GetWalletAddresses,
     /// Get wallet UTXOs
     GetWalletUtxos,

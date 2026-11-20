@@ -512,7 +512,7 @@ pub mod wallet {
         #[method(name = "get_new_address")]
         async fn get_new_address(&self) -> RpcResult<Address>;
 
-        /// Get wallet addresses, sorted by base58 encoding
+        /// Get the issued wallet addresses, sorted by base58 encoding
         #[method(name = "get_wallet_addresses")]
         async fn get_wallet_addresses(&self) -> RpcResult<Vec<Address>>;
 
