@@ -116,6 +116,101 @@ enum SyncerStart {
 /// Number of blocks the syncer holds under [`SyncerStart::OwnChainWithDeposit`]
 const OWN_CHAIN_BLOCKS: u32 = 3;
 
+/// Poll until the syncer holds the sender's tip
+async fn wait_for_syncer_tip(
+    thunder_nodes: &ThunderNodes,
+) -> anyhow::Result<()> {
+    const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+    loop {
+        let sender_tip = thunder_nodes
+            .sender
+            .rpc_client
+            .get_best_sidechain_block_hash()
+            .await?;
+        let syncer_tip = thunder_nodes
+            .syncer
+            .rpc_client
+            .get_best_sidechain_block_hash()
+            .await?;
+        if syncer_tip == sender_tip {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let sender_blocks =
+                thunder_nodes.sender.rpc_client.getblockcount().await?;
+            let syncer_blocks =
+                thunder_nodes.syncer.rpc_client.getblockcount().await?;
+            anyhow::bail!(
+                "syncer still answers RPC but is stuck at {syncer_blocks} \
+                 blocks ({syncer_tip:?}), sender at {sender_blocks} \
+                 ({sender_tip:?})"
+            );
+        }
+        sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
+/// The syncer receives the same transaction twice from the sender, then must
+/// still follow the sender's next block.
+///
+/// A peer relaying a transaction the node already holds is ordinary gossip.
+/// It ended the betanet seed's net task on 2026-10-09 (`UtxoDoubleSpent` from
+/// `MemPool::put`), after which the node kept answering RPC for three days
+/// with its tip frozen. The sender re-relays by dropping the transaction from
+/// its own mempool and submitting it again.
+async fn relay_transaction_twice(
+    enforcer_post_setup: &mut EnforcerPostSetup,
+    thunder_nodes: &mut ThunderNodes,
+) -> anyhow::Result<()> {
+    use bip300301_enforcer_integration_tests::integration_test::wait_for_wallet_sync;
+    use bitcoin::Amount;
+    use thunder_app_rpc_api::wallet::RpcClient as _;
+    const DEPOSIT_AMOUNT: Amount = Amount::from_sat(21_000_000);
+    const DEPOSIT_FEE: Amount = Amount::from_sat(1_000_000);
+
+    let () = wait_for_wallet_sync(enforcer_post_setup).await?;
+    let deposit_address = thunder_nodes.sender.get_deposit_address().await?;
+    let () = deposit(
+        enforcer_post_setup,
+        &mut thunder_nodes.sender,
+        &deposit_address,
+        DEPOSIT_AMOUNT,
+        DEPOSIT_FEE,
+    )
+    .await?;
+    // A transfer spending a deposit the syncer has not connected yet is
+    // invalid there, and drops the peer connection instead.
+    let () = wait_for_syncer_tip(thunder_nodes).await?;
+    let sender = &thunder_nodes.sender;
+    let syncer = &thunder_nodes.syncer;
+    let dest = sender.rpc_client.get_new_address().await?;
+    let txid = sender
+        .rpc_client
+        .create_transfer(dest, 1_000_000, 1_000)
+        .await?;
+    tracing::info!(%txid, "Sender relayed a transfer");
+    sleep(std::time::Duration::from_secs(1)).await;
+    anyhow::ensure!(
+        syncer.rpc_client.get_transaction(txid).await?.is_some(),
+        "syncer never received {txid}"
+    );
+    let tx = sender
+        .rpc_client
+        .get_transaction(txid)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("sender lost {txid}"))?
+        .tx;
+    let authorized =
+        sender.rpc_client.sign_transaction(tx, Some(false)).await?;
+    let () = sender.rpc_client.remove_from_mempool(txid).await?;
+    let _txid = sender.rpc_client.submit_transaction(authorized).await?;
+    tracing::info!(%txid, "Sender relayed the same transfer again");
+    sleep(std::time::Duration::from_secs(1)).await;
+    let () = sender.bmm_single(enforcer_post_setup).await?;
+    wait_for_syncer_tip(thunder_nodes).await
+}
+
 async fn initial_block_download_task(
     bin_paths: BinPaths,
     res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
@@ -238,6 +333,9 @@ async fn initial_block_download_task(
             "syncer tip {syncer_tip:?} != sender tip {sender_tip:?}"
         );
     }
+    let () =
+        relay_transaction_twice(&mut enforcer_post_setup, &mut thunder_nodes)
+            .await?;
     drop(thunder_nodes.syncer);
     drop(thunder_nodes.sender);
     tracing::info!(
