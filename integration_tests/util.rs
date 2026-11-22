@@ -13,12 +13,19 @@ use thunder::types::Network;
 #[derive(Clone, Debug, Default)]
 pub struct BinPaths {
     thunder: OnceLock<PathBuf>,
+    /// Last release before [`thunder::net::MIN_PEER_VERSION`]
+    thunder_0_18: OnceLock<PathBuf>,
     pub others: EnforcerBinPaths,
 }
 
 impl BinPaths {
     pub fn thunder(&self) -> Result<&PathBuf, VarError> {
         self.thunder.get_or_try_init_from_env("THUNDER_APP")
+    }
+
+    pub fn thunder_0_18(&self) -> Result<&PathBuf, VarError> {
+        self.thunder_0_18
+            .get_or_try_init_from_env("THUNDER_APP_0_18")
     }
 }
 

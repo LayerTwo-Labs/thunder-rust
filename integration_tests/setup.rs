@@ -110,6 +110,8 @@ pub struct PostSetup {
     pub rpc_client: jsonrpsee::http_client::HttpClient,
     /// Address for receiving deposits
     pub deposit_address: thunder::types::Address,
+    /// Data directory, which also holds the node's `stdout.txt`
+    pub data_dir: PathBuf,
     // MUST occur after tasks in order to ensure that tasks are dropped
     // before reserved ports are freed
     pub reserved_ports: ReservedPorts,
@@ -190,7 +192,7 @@ impl Sidechain for PostSetup {
             .map_err(Self::SetupError::CreateThunderDir)?;
         let thunder_app = ThunderApp {
             path: init.thunder_app,
-            data_dir: thunder_dir,
+            data_dir: thunder_dir.clone(),
             log_level: Some(tracing::Level::TRACE),
             mainchain_grpc_url: match &init.mainchain_tls {
                 Some(tls) => tls.url.clone(),
@@ -228,6 +230,7 @@ impl Sidechain for PostSetup {
             _thunder_app_task: thunder_app_task,
             rpc_client,
             deposit_address,
+            data_dir: thunder_dir,
             reserved_ports,
         })
     }

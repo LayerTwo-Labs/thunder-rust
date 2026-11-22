@@ -549,6 +549,11 @@ pub enum Error {
     Connection(#[from] quinn::ConnectionError),
     #[error("Database env error")]
     DbEnv(#[from] sneed::env::Error),
+    #[error(
+        "peer version {version} is older than the minimum compatible version {}",
+        crate::net::peer::MIN_PEER_VERSION
+    )]
+    IncompatibleVersion { version: crate::types::Version },
     #[error(transparent)]
     Mailbox(#[from] mailbox::Error),
     #[error("missing peer state for id {0}")]
@@ -578,6 +583,7 @@ impl Recoverable for Error {
             | Self::SendBlockingTask
             | Self::SendInfo
             | Self::State(_) => true,
+            Self::IncompatibleVersion { .. } => false,
             Self::Connection(err) => err.may_reconnect(),
             Self::Mailbox(err) => err.may_reconnect(),
             Self::ReceiveResponse(err) => err.may_reconnect(),

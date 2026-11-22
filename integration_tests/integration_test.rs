@@ -16,6 +16,7 @@ use crate::{
     block_template::block_template_trial,
     ibd::{ibd_trial, reorg_across_deposit_trial},
     mainchain_tls::mainchain_tls_trial,
+    old_peer::refuse_old_peer_trial,
     setup::{Init, PostSetup},
     unknown_withdrawal::unknown_withdrawal_trial,
     util::BinPaths,
@@ -198,6 +199,11 @@ pub fn tests(
             failure_collector.clone(),
         ),
         reorg_across_deposit_trial(
+            bin_paths.clone(),
+            file_registry.clone(),
+            failure_collector.clone(),
+        ),
+        refuse_old_peer_trial(
             bin_paths.clone(),
             file_registry.clone(),
             failure_collector.clone(),

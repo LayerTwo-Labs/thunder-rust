@@ -74,6 +74,18 @@ cargo build --manifest-path "$ENFORCER_DIR/Cargo.toml" --bin bip300301_enforcer
 echo "Building thunder_app..."
 cargo build --manifest-path "$REPO_ROOT/Cargo.toml" --bin thunder_app
 
+# --- Old release, for testing that old peers are refused ---
+OLD_THUNDER_VERSION='0.18.3'
+case "$(uname -s)/$(uname -m)" in
+    Linux/x86_64) HOST_TARGET='x86_64-unknown-linux-gnu' ;;
+    Darwin/x86_64) HOST_TARGET='x86_64-apple-darwin' ;;
+    Darwin/arm64) HOST_TARGET='aarch64-apple-darwin' ;;
+    *) echo "No thunder release build for $(uname -s)/$(uname -m)" >&2; exit 1 ;;
+esac
+THUNDER_APP_0_18="$REPO_ROOT/target/thunder-release/$OLD_THUNDER_VERSION/thunder_app"
+"$REPO_ROOT/scripts/fetch_thunder_release.sh" \
+    "$OLD_THUNDER_VERSION" "$HOST_TARGET" "$THUNDER_APP_0_18"
+
 # --- Env file ---
 # Every path is absolute, so the tests do not care what the working directory
 # is. The binaries under test are per-checkout. The dependencies may be shared.
@@ -88,6 +100,7 @@ BITCOIND_UNPATCHED='$BITCOIND_UNPATCHED'
 ELECTRS='$ELECTRS'
 SIGNET_CHAIN_DIR='$SIGNET_CHAIN_DIR'
 THUNDER_APP='$REPO_ROOT/target/debug/thunder_app'
+THUNDER_APP_0_18='$THUNDER_APP_0_18'
 EOF
 
 echo "Wrote $ENV_FILE"

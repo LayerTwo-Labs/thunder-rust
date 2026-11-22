@@ -27,6 +27,9 @@ env:
   CARGO_TERM_COLOR: always
   ELECTRS_VERSION: v3.2.0
   BITCOIND_UNPATCHED_VERSION: "30.2"
+  # Last release before MIN_PEER_VERSION, run as an old peer in the
+  # integration tests
+  OLD_THUNDER_VERSION: "0.18.3"
 
 jobs:
   check-lint:
@@ -186,6 +189,21 @@ jobs:
             x86_64-unknown-linux-gnu \
             '${{ runner.temp }}/deps/bip300301-enforcer'
 
+      - name: Restore thunder ${{ env.OLD_THUNDER_VERSION }} from cache
+        id: cache-old-thunder
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/deps/thunder-${{ env.OLD_THUNDER_VERSION }}
+          key: thunder-x86_64-linux-${{ env.OLD_THUNDER_VERSION }}
+
+      - name: Download thunder ${{ env.OLD_THUNDER_VERSION }}
+        if: steps.cache-old-thunder.outputs.cache-hit != 'true'
+        run: |
+          scripts/fetch_thunder_release.sh \
+            '${{ env.OLD_THUNDER_VERSION }}' \
+            x86_64-unknown-linux-gnu \
+            '${{ runner.temp }}/deps/thunder-${{ env.OLD_THUNDER_VERSION }}'
+
       - name: Restore electrs from cache
         uses: actions/cache/restore@v6
         with:
@@ -218,6 +236,7 @@ jobs:
           export BITCOIND_UNPATCHED='${{ runner.temp }}/deps/bitcoin-unpatched/bitcoind'
           export ELECTRS='${{ runner.temp }}/electrs/target/release/electrs'
           export THUNDER_APP='target/debug/thunder_app'
+          export THUNDER_APP_0_18='${{ runner.temp }}/deps/thunder-${{ env.OLD_THUNDER_VERSION }}'
           # Each test leaks a TempDir holding per-component stdout/stderr
           # (thunder and the enforcer run at trace level). Point TMPDIR at a
           # known directory so the "Upload integration test logs" step can
