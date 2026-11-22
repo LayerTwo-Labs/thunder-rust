@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use bip300301_enforcer_integration_tests::{
     integration_test::{
         activate_sidechain, deposit, fund_enforcer, propose_sidechain,
+        withdraw_succeed,
     },
     setup::{
         Mode, Network, PostSetup as EnforcerPostSetup,
@@ -14,6 +15,7 @@ use bip300301_enforcer_integration_tests::{
     util::{AbortOnDrop, AsyncTrial, TestFailureCollector, TestFileRegistry},
 };
 use futures::{FutureExt, StreamExt as _, channel::mpsc, future::BoxFuture};
+use thunder::types::transaction::outpoint::DEPOSIT_MATURITY;
 use thunder_app_rpc_api::node::{PrivateRpcClient as _, RpcClient as _};
 use tokio::time::sleep;
 use tracing::Instrument as _;
@@ -111,10 +113,20 @@ enum SyncerStart {
     /// seed in `State::disconnect` (`two_way_peg_data.rs`, deposit-height
     /// assert) on 2026-09-09.
     OwnChainWithDeposit,
+    /// The sender deposits, withdraws and deposits again, then the syncer
+    /// BMMs two blocks of its own: the first applies all of that peg
+    /// history, the second applies nothing. Adopting the sender's chain
+    /// then has to disconnect the second block. This panicked the signet
+    /// node in `State::disconnect` (deposit-height assert) on 2026-11-22.
+    OwnChainOnPegHistory,
 }
 
 /// Number of blocks the syncer holds under [`SyncerStart::OwnChainWithDeposit`]
 const OWN_CHAIN_BLOCKS: u32 = 3;
+
+/// Number of blocks the syncer holds under
+/// [`SyncerStart::OwnChainOnPegHistory`]
+const OWN_CHAIN_ON_PEG_HISTORY_BLOCKS: u32 = 2;
 
 async fn initial_block_download_task(
     bin_paths: BinPaths,
@@ -124,6 +136,9 @@ async fn initial_block_download_task(
     use bitcoin::Amount;
     const DEPOSIT_AMOUNT: Amount = Amount::from_sat(21_000_000);
     const DEPOSIT_FEE: Amount = Amount::from_sat(1_000_000);
+    const WITHDRAW_AMOUNT: Amount = Amount::from_sat(18_000_000);
+    const WITHDRAW_FEE: Amount = Amount::from_sat(1_000_000);
+    const BMM_BLOCKS: u32 = 16;
 
     let (mut enforcer_post_setup, mut thunder_nodes) =
         setup(bin_paths, res_tx).await?;
@@ -161,8 +176,63 @@ async fn initial_block_download_task(
             );
             OWN_CHAIN_BLOCKS
         }
+        SyncerStart::OwnChainOnPegHistory => {
+            let deposit_address =
+                thunder_nodes.sender.get_deposit_address().await?;
+            tracing::info!("Sender: deposit");
+            let () = deposit(
+                &mut enforcer_post_setup,
+                &mut thunder_nodes.sender,
+                &deposit_address,
+                DEPOSIT_AMOUNT,
+                DEPOSIT_FEE,
+            )
+            .await?;
+            thunder_nodes
+                .sender
+                .bmm(&mut enforcer_post_setup, DEPOSIT_MATURITY)
+                .await?;
+            tracing::info!("Sender: withdraw");
+            let () = withdraw_succeed(
+                &mut enforcer_post_setup,
+                &mut thunder_nodes.sender,
+                WITHDRAW_AMOUNT,
+                WITHDRAW_FEE,
+                Amount::ZERO,
+            )
+            .await?;
+            // As on signet: the last deposit comes after the last withdrawal.
+            tracing::info!("Sender: deposit again");
+            let () = deposit(
+                &mut enforcer_post_setup,
+                &mut thunder_nodes.sender,
+                &deposit_address,
+                DEPOSIT_AMOUNT,
+                DEPOSIT_FEE,
+            )
+            .await?;
+            tracing::info!("Syncer: BMM block 1 (applies all peg history)");
+            thunder_nodes
+                .syncer
+                .bmm(&mut enforcer_post_setup, 1)
+                .await?;
+            tracing::info!("Syncer: BMM block 2 (applies nothing)");
+            thunder_nodes
+                .syncer
+                .bmm(&mut enforcer_post_setup, 1)
+                .await?;
+            let syncer_blocks =
+                thunder_nodes.syncer.rpc_client.getblockcount().await?;
+            anyhow::ensure!(
+                syncer_blocks == OWN_CHAIN_ON_PEG_HISTORY_BLOCKS,
+                "syncer should hold {OWN_CHAIN_ON_PEG_HISTORY_BLOCKS} blocks, has {syncer_blocks}"
+            );
+            OWN_CHAIN_ON_PEG_HISTORY_BLOCKS
+        }
     };
-    const BMM_BLOCKS: u32 = 16;
+    // The sender may already hold blocks of its own by now.
+    let expected_sender_blocks =
+        thunder_nodes.sender.rpc_client.getblockcount().await? + BMM_BLOCKS;
     tracing::info!(blocks = %BMM_BLOCKS, "Attempting BMM");
     thunder_nodes
         .sender
@@ -172,7 +242,7 @@ async fn initial_block_download_task(
     {
         let sender_blocks =
             thunder_nodes.sender.rpc_client.getblockcount().await?;
-        anyhow::ensure!(sender_blocks == BMM_BLOCKS);
+        anyhow::ensure!(sender_blocks == expected_sender_blocks);
         let syncer_blocks =
             thunder_nodes.syncer.rpc_client.getblockcount().await?;
         anyhow::ensure!(syncer_blocks == expected_syncer_blocks);
@@ -216,11 +286,11 @@ async fn initial_block_download_task(
     {
         let sender_blocks =
             thunder_nodes.sender.rpc_client.getblockcount().await?;
-        anyhow::ensure!(sender_blocks == BMM_BLOCKS);
+        anyhow::ensure!(sender_blocks == expected_sender_blocks);
         let syncer_blocks =
             thunder_nodes.syncer.rpc_client.getblockcount().await?;
         anyhow::ensure!(
-            syncer_blocks == BMM_BLOCKS,
+            syncer_blocks == expected_sender_blocks,
             "syncer stuck at {syncer_blocks} blocks, sender at {sender_blocks}"
         );
         let sender_tip = thunder_nodes
@@ -236,6 +306,40 @@ async fn initial_block_download_task(
         anyhow::ensure!(
             sender_tip == syncer_tip,
             "syncer tip {syncer_tip:?} != sender tip {sender_tip:?}"
+        );
+    }
+    // Check that the syncer, which reorged its own chain away, ends up with
+    // the same state as the sender, which never reorged
+    {
+        let sender = &thunder_nodes.sender.rpc_client;
+        let syncer = &thunder_nodes.syncer.rpc_client;
+        let mut sender_utxos = sender.list_utxos().await?;
+        let mut syncer_utxos = syncer.list_utxos().await?;
+        sender_utxos.sort_by_key(|utxo| utxo.outpoint);
+        syncer_utxos.sort_by_key(|utxo| utxo.outpoint);
+        anyhow::ensure!(
+            syncer_utxos == sender_utxos,
+            "syncer UTXOs {syncer_utxos:?} != sender UTXOs {sender_utxos:?}"
+        );
+        let sender_wealth = sender.sidechain_wealth_sats().await?;
+        let syncer_wealth = syncer.sidechain_wealth_sats().await?;
+        anyhow::ensure!(
+            syncer_wealth == sender_wealth,
+            "syncer wealth {syncer_wealth} != sender wealth {sender_wealth}"
+        );
+        let sender_bundle = sender.pending_withdrawal_bundle().await?;
+        let syncer_bundle = syncer.pending_withdrawal_bundle().await?;
+        anyhow::ensure!(
+            syncer_bundle == sender_bundle,
+            "syncer pending bundle {syncer_bundle:?} != sender pending bundle {sender_bundle:?}"
+        );
+        let sender_failed =
+            sender.latest_failed_withdrawal_bundle_height().await?;
+        let syncer_failed =
+            syncer.latest_failed_withdrawal_bundle_height().await?;
+        anyhow::ensure!(
+            syncer_failed == sender_failed,
+            "syncer latest failed bundle height {syncer_failed:?} != sender {sender_failed:?}"
         );
     }
     drop(thunder_nodes.syncer);
@@ -298,6 +402,21 @@ pub fn reorg_across_deposit_trial(
     AsyncTrial::new(
         "reorg_across_deposit",
         ibd(bin_paths, SyncerStart::OwnChainWithDeposit).boxed(),
+        file_registry,
+        failure_collector,
+    )
+}
+
+/// IBD onto a node that must first reorg away its own chain, whose tip's
+/// parent applied a deposit and an earlier withdrawal.
+pub fn reorg_across_peg_history_trial(
+    bin_paths: BinPaths,
+    file_registry: TestFileRegistry,
+    failure_collector: TestFailureCollector,
+) -> AsyncTrial<BoxFuture<'static, anyhow::Result<()>>> {
+    AsyncTrial::new(
+        "reorg_across_peg_history",
+        ibd(bin_paths, SyncerStart::OwnChainOnPegHistory).boxed(),
         file_registry,
         failure_collector,
     )
