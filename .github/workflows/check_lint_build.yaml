@@ -165,43 +165,26 @@ jobs:
           mv "bitcoin-${VERSION}/bin" deps/bitcoin-unpatched
           rm -r "bitcoin-${VERSION}"
 
-      # Use the enforcer release that the submodule pins, not the moving
-      # `latest` build.
-      - name: Find the enforcer release tag of the submodule
+      # Use the enforcer build of the commit the submodule pins, not the
+      # moving `latest` build. Any commit on enforcer master has one.
+      - name: Read the enforcer submodule commit
         id: enforcer
-        run: |
-          sha="$(git rev-parse HEAD:bip300301_enforcer)"
-          tag="$(git ls-remote --tags https://github.com/LayerTwo-Labs/bip300301_enforcer.git \
-            | awk -v sha="$sha" '$1 == sha { sub("refs/tags/", "", $2); sub("\\^\\{\\}$", "", $2); print $2 }' \
-            | sort -u)"
-          if [ "$(printf '%s\n' "$tag" | grep -c .)" -ne 1 ]; then
-            echo "::error::expected one enforcer release tag at $sha, got: $tag"
-            exit 1
-          fi
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+        run: echo "sha=$(git rev-parse HEAD:bip300301_enforcer)" >> "$GITHUB_OUTPUT"
 
       - name: Cache bip300301_enforcer
         id: cache-enforcer
         uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/deps/bip300301-enforcer
-          key: bip300301-enforcer-x86_64-linux-${{ steps.enforcer.outputs.tag }}-${{ steps.enforcer.outputs.sha }}
+          key: bip300301-enforcer-x86_64-linux-${{ steps.enforcer.outputs.sha }}
 
-      - name: Download bip300301_enforcer ${{ steps.enforcer.outputs.tag }}
+      - name: Download bip300301_enforcer ${{ steps.enforcer.outputs.sha }}
         if: steps.cache-enforcer.outputs.cache-hit != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p "${{ runner.temp }}/deps/enforcer-download"
-          gh release download '${{ steps.enforcer.outputs.tag }}' \
-            --repo LayerTwo-Labs/bip300301_enforcer \
-            --pattern 'bip300301-enforcer-*-x86_64-unknown-linux-gnu' \
-            --dir "${{ runner.temp }}/deps/enforcer-download"
-          mv "${{ runner.temp }}"/deps/enforcer-download/bip300301-enforcer-*-x86_64-unknown-linux-gnu \
-            "${{ runner.temp }}/deps/bip300301-enforcer"
-          rmdir "${{ runner.temp }}/deps/enforcer-download"
-          chmod +x "${{ runner.temp }}/deps/bip300301-enforcer"
+          scripts/fetch_enforcer.sh \
+            '${{ steps.enforcer.outputs.sha }}' \
+            x86_64-unknown-linux-gnu \
+            '${{ runner.temp }}/deps/bip300301-enforcer'
 
       - name: Restore electrs from cache
         uses: actions/cache/restore@v6
