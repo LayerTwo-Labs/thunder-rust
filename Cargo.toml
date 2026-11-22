@@ -43,7 +43,7 @@ jsonrpsee = { version = "0.26.0", features = ["tracing"] }
 libtest-mimic = "0.8.1"
 merkle-cbt = "0.3.2"
 mimalloc = "0.1.48"
-nonempty = "0.11.0"
+nonempty = "0.12.0"
 parking_lot = "0.12.1"
 poll-promise = "0.3.0"
 prost = "0.14.1"

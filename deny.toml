@@ -76,18 +76,11 @@ ignore = [
     #{ crate = "a-crate-that-is-yanked@0.1.1", reason = "you can specify why you are ignoring the yanked crate" },
     { id = "RUSTSEC-2025-0141", reason = "Temporary ignore until heed migrates to wincode" },
     { id = "RUSTSEC-2026-0391", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
-    { id = "RUSTSEC-2026-0395", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
-    { id = "RUSTSEC-2026-0396", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
-    { id = "RUSTSEC-2026-0397", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
     { id = "RUSTSEC-2026-0398", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
-    { id = "RUSTSEC-2026-0399", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
-    { id = "RUSTSEC-2026-0400", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
-    { id = "RUSTSEC-2026-0401", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
-    { id = "RUSTSEC-2026-0402", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
     { id = "RUSTSEC-2026-0403", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
-    { id = "RUSTSEC-2026-0404", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
-    { id = "RUSTSEC-2026-0405", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
-    { id = "RUSTSEC-2026-0406", reason = "Temporary ignore until connectrpc updates zstd to >= 0.14.0" },
+    { id = "RUSTSEC-2026-0441", reason = "pin-utils is unmaintained, via hyper; no safe upgrade" },
+    { id = "RUSTSEC-2026-0459", reason = "Integration tests only; the enforcer pins rusqlite 0.31 (libsqlite3-sys 0.28)" },
+    { id = "RUSTSEC-2026-0543", reason = "Integration tests only; chrono is unmaintained, via cusf-enforcer-mempool" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
