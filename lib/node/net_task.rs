@@ -1,7 +1,6 @@
 //! Task to manage peers and their responses
 
 use std::{
-    cmp::Ordering,
     collections::{HashMap, HashSet},
     net::SocketAddr,
     sync::Arc,
@@ -156,75 +155,18 @@ pub(in crate::node) fn disconnect_tip_(
         state.try_get_tip(rwtxn)?.ok_or(state::Error::NoTip)?;
     let tip_header = archive.get_header(rwtxn, tip_block_hash)?;
     let tip_body = archive.get_body(rwtxn, tip_block_hash)?;
-    let height = state.try_get_height(rwtxn)?.ok_or(state::Error::NoTip)?;
+    // The tip connected the mainchain events after its parent's
+    // `prev_main_hash`, up to and including its own, so disconnect those.
     let two_way_peg_data = {
-        let last_applied_deposit_block = state
-            .deposit_blocks
-            .rev_iter(rwtxn)
-            .map_err(DbError::from)?
-            .find_map(|(_, (block_hash, applied_height))| {
-                if applied_height < height {
-                    Ok(Some((block_hash, applied_height)))
-                } else {
-                    Ok(None)
-                }
-            })
-            .map_err(DbError::from)?;
-        let last_applied_withdrawal_bundle_event_block = state
-            .withdrawal_bundle_event_blocks
-            .rev_iter(rwtxn)
-            .map_err(DbError::from)?
-            .find_map(|(_, (block_hash, applied_height))| {
-                if applied_height < height {
-                    Ok(Some((block_hash, applied_height)))
-                } else {
-                    Ok(None)
-                }
-            })
-            .map_err(DbError::from)?;
-        let start_block_hash = match (
-            last_applied_deposit_block,
-            last_applied_withdrawal_bundle_event_block,
-        ) {
-            (None, None) => None,
-            (Some((block_hash, _)), None) | (None, Some((block_hash, _))) => {
-                Some(block_hash)
-            }
-            (
-                Some((deposit_block, deposit_block_applied_height)),
-                Some((
-                    withdrawal_event_block,
-                    withdrawal_event_block_applied_height,
-                )),
-            ) => {
-                match deposit_block_applied_height
-                    .cmp(&withdrawal_event_block_applied_height)
-                {
-                    Ordering::Less => Some(withdrawal_event_block),
-                    Ordering::Greater => Some(deposit_block),
-                    Ordering::Equal => {
-                        if archive.is_main_descendant(
-                            rwtxn,
-                            withdrawal_event_block,
-                            deposit_block,
-                        )? {
-                            Some(withdrawal_event_block)
-                        } else {
-                            assert!(archive.is_main_descendant(
-                                rwtxn,
-                                deposit_block,
-                                withdrawal_event_block
-                            )?);
-                            Some(deposit_block)
-                        }
-                    }
-                }
-            }
-        };
+        let parent_prev_main_hash = tip_header
+            .prev_side_hash
+            .map(|parent| archive.get_header(rwtxn, parent))
+            .transpose()?
+            .map(|header| header.prev_main_hash);
         let block_infos: Vec<_> = archive
             .main_ancestors(rwtxn, tip_header.prev_main_hash)
             .take_while(|ancestor| {
-                Ok(Some(ancestor) != start_block_hash.as_ref())
+                Ok(Some(ancestor) != parent_prev_main_hash.as_ref())
             })
             .filter_map(|ancestor| {
                 let block_info =
