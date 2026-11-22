@@ -4,7 +4,7 @@
 #
 # bitcoind, electrs and the signet miner are the enforcer's dependencies, so
 # they are fetched by its own setup script rather than duplicated here. Set
-# ENFORCER_ENV to an existing enforcer integrationtests.env to reuse ones
+# ENFORCER_ENV to an existing enforcer integrationtests.ecx-<channel>.env to reuse ones
 # another checkout already fetched, skipping the downloads.
 
 set -euo pipefail
@@ -20,6 +20,14 @@ if [ ! -f "$ENFORCER_DIR/Cargo.toml" ]; then
 fi
 
 # --- Dependencies (bitcoind, electrs, signet miner) ---
+# BITCOIND is the ecash-com/bitcoin build from releases.ecash.com, as in the
+# enforcer's own tests. The enforcer scripts name the channel, so it moves
+# with the submodule.
+CHANNELS="$("$ENFORCER_DIR/scripts/setup_integration_tests.sh" --print-channels)"
+if [ "$(printf '%s\n' "$CHANNELS" | grep -c .)" -ne 1 ]; then
+    echo "Expected one ecash channel from the enforcer scripts, got: $CHANNELS" >&2
+    exit 1
+fi
 if [ -n "${ENFORCER_ENV:-}" ]; then
     if [ ! -f "$ENFORCER_ENV" ]; then
         echo "ENFORCER_ENV is set but '$ENFORCER_ENV' does not exist" >&2
@@ -30,7 +38,7 @@ if [ -n "${ENFORCER_ENV:-}" ]; then
 else
     echo "Fetching enforcer dependencies (first run downloads and builds; slow)..."
     "$ENFORCER_DIR/scripts/setup_integration_tests.sh"
-    DEPS_ENV="$ENFORCER_DIR/integrationtests.env"
+    DEPS_ENV="$ENFORCER_DIR/integrationtests.ecx-$CHANNELS.env"
 fi
 
 # Read a single-quoted VAR='value' assignment out of an env file.
@@ -51,6 +59,11 @@ read_env_var() {
 BITCOIND="$(read_env_var "$DEPS_ENV" BITCOIND)"
 BITCOIND_UNPATCHED="$(read_env_var "$DEPS_ENV" BITCOIND_UNPATCHED)"
 ELECTRS="$(read_env_var "$DEPS_ENV" ELECTRS)"
+BITCOIND_REGTEST_MAGIC="$(read_env_var "$DEPS_ENV" BITCOIND_REGTEST_MAGIC)"
+BITCOIND_OP_DRIVECHAIN="$(read_env_var "$DEPS_ENV" BITCOIND_OP_DRIVECHAIN)"
+BITCOIND_FORK="$(read_env_var "$DEPS_ENV" BITCOIND_FORK)"
+BITCOIND_REPLAY_PROTECTION_LOCK_TIME="$(read_env_var "$DEPS_ENV" BITCOIND_REPLAY_PROTECTION_LOCK_TIME)"
+SIGNET_CHAIN_DIR="$(read_env_var "$DEPS_ENV" SIGNET_CHAIN_DIR)"
 
 # --- Binaries under test ---
 # Built from the pinned submodule, so it matches the enforcer library thunder
@@ -67,8 +80,13 @@ cargo build --manifest-path "$REPO_ROOT/Cargo.toml" --bin thunder_app
 cat > "$ENV_FILE" <<EOF
 BIP300301_ENFORCER='$ENFORCER_DIR/target/debug/bip300301_enforcer'
 BITCOIND='$BITCOIND'
+BITCOIND_FORK='$BITCOIND_FORK'
+BITCOIND_OP_DRIVECHAIN='$BITCOIND_OP_DRIVECHAIN'
+BITCOIND_REGTEST_MAGIC='$BITCOIND_REGTEST_MAGIC'
+BITCOIND_REPLAY_PROTECTION_LOCK_TIME='$BITCOIND_REPLAY_PROTECTION_LOCK_TIME'
 BITCOIND_UNPATCHED='$BITCOIND_UNPATCHED'
 ELECTRS='$ELECTRS'
+SIGNET_CHAIN_DIR='$SIGNET_CHAIN_DIR'
 THUNDER_APP='$REPO_ROOT/target/debug/thunder_app'
 EOF
 
