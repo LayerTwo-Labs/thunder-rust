@@ -16,8 +16,8 @@ use thunder_types::Block;
 use crate::{
     archive,
     net::peer::{
-        BanReason, Connection, ConnectionContext, Info, PeerState, PeerStateId,
-        Request, TipInfo,
+        BanReason, Connection, ConnectionContext, Info, MIN_PEER_VERSION,
+        PeerState, PeerStateId, Request, TipInfo,
         error::{Error, blocking_task},
         mailbox::{
             self, BlockingTaskFn, ForwardResponseItem, ForwardResponseResult,
@@ -28,6 +28,7 @@ use crate::{
     },
     types::{
         AuthorizedTransaction, BlockHash, BmmResult, Header, Tip, VERSION,
+        Version,
     },
     util::{ErrorChain, join_set},
 };
@@ -38,6 +39,16 @@ use crate::{
 /// contents of its own heartbeats, so it can produce an unlimited number of
 /// distinct peer states; the cache must therefore be bounded.
 const MAX_PEER_STATES: usize = 256;
+
+/// Refuse peers whose consensus rules differ from ours, before acting on
+/// anything they send. Closes the connection without reconnecting.
+fn check_peer_version(version: Version) -> Result<(), Error> {
+    if version < MIN_PEER_VERSION {
+        Err(Error::IncompatibleVersion { version })
+    } else {
+        Ok(())
+    }
+}
 
 pub(in crate::net::peer) struct ConnectionTask {
     pub connection: Connection,
@@ -771,6 +782,7 @@ impl ConnectionTask {
         match request_msg {
             RequestMessage::Heartbeat(heartbeat) => {
                 let new_peer_state = heartbeat.0;
+                let () = check_peer_version(new_peer_state.version)?;
                 let new_peer_state_id =
                     Self::insert_peer_state(peer_states, new_peer_state);
                 if *peer_state != Some(new_peer_state_id) {
