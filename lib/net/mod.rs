@@ -41,7 +41,7 @@ use peer::{
 };
 pub use peer::{
     ConnectionError as PeerConnectionError, Info as PeerConnectionInfo,
-    InternalMessage as PeerConnectionMessage, PeerStateId,
+    InternalMessage as PeerConnectionMessage, MIN_PEER_VERSION, PeerStateId,
     Request as PeerRequest, ResponseMessage as PeerResponse,
     message as peer_message,
 };

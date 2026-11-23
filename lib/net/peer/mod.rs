@@ -76,6 +76,15 @@ pub struct PeerState {
     version: Version,
 }
 
+/// Oldest peer version that follows the same consensus rules as this node.
+/// 0.19.0 changed consensus (withdrawal bundle output order, and so
+/// M6IDs), so chains from older peers do not validate.
+pub const MIN_PEER_VERSION: Version = Version {
+    major: 0,
+    minor: 19,
+    patch: 0,
+};
+
 /// Unique identifier for a peer state
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 #[repr(transparent)]
