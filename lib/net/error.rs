@@ -53,6 +53,9 @@ pub enum AcceptConnection {
     #[error(transparent)]
     #[fatal(true)]
     Db(#[from] sneed::Error),
+    #[error("handshake timed out (remote address: {remote_address})")]
+    #[fatal(false)]
+    HandshakeTimeout { remote_address: SocketAddr },
     #[error("server endpoint closed")]
     #[fatal(true)]
     ServerEndpointClosed,

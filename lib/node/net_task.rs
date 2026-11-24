@@ -998,37 +998,48 @@ impl NetTask {
             // Signal to reconnect to a peer
             ReconnectPeer(ResolvedPeerAddress),
         }
-        let accept_connections = stream::try_unfold((), |()| {
-            let env = self.ctxt.env.clone();
-            let net = self.ctxt.net.clone();
-            let fut = async move {
-                let maybe_socket_addr =
-                    net.accept_incoming(env).await.into_nested()?;
-
-                // / Return:
-                // - The value to yield (maybe_socket_addr)
-                // - The rng for the next iteration
-                // Wrapped in Result and Option
-                Result::<_, _>::Ok(Some((maybe_socket_addr, ())))
-            };
-            Box::pin(fut)
-        })
-        .filter_map(async |item| match item {
-            Ok(Ok(maybe_socket_addr)) => Some(Ok(maybe_socket_addr)),
-            Ok(Err(non_fatal_err)) => {
-                // type the error explicitly
-                let non_fatal_err:
+        // Handshakes run concurrently: a peer that abandons one must not
+        // keep the others waiting until it times out.
+        let accept_connections =
+            stream::unfold(Some(self.ctxt.net.clone()), |net| async move {
+                let net = net?;
+                match net.next_incoming().await {
+                    Ok(incoming) => {
+                        Some((Ok((net.clone(), incoming)), Some(net)))
+                    }
+                    // The endpoint is gone: report it once, then end.
+                    Err(err) => Some((Err(err), None)),
+                }
+            })
+            .map(|next| {
+                let env = self.ctxt.env.clone();
+                async move {
+                    match next {
+                        Ok((net, incoming)) => {
+                            net.accept_incoming(env, incoming).await
+                        }
+                        Err(err) => Err(err),
+                    }
+                    .into_nested()
+                }
+            })
+            .buffer_unordered(net::MAX_CONCURRENT_HANDSHAKES)
+            .filter_map(async |item| match item {
+                Ok(Ok(maybe_socket_addr)) => Some(Ok(maybe_socket_addr)),
+                Ok(Err(non_fatal_err)) => {
+                    // type the error explicitly
+                    let non_fatal_err:
                     <net::error::AcceptConnection as Split>::Jfyi =
                     non_fatal_err;
-                tracing::error!(
-                    "Failed to accept connection: {:#}",
-                    ErrorChain::new(&non_fatal_err)
-                );
-                None
-            }
-            Err(fatal_err) => Some(Err(fatal_err)),
-        })
-        .map(MailboxItem::AcceptConnection);
+                    tracing::error!(
+                        "Failed to accept connection: {:#}",
+                        ErrorChain::new(&non_fatal_err)
+                    );
+                    None
+                }
+                Err(fatal_err) => Some(Err(fatal_err)),
+            })
+            .map(MailboxItem::AcceptConnection);
         let forward_request_stream = self
             .forward_mainchain_task_request_rx
             .map(|(request, addr, peer_state_id)| {

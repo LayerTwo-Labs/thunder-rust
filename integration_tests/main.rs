@@ -9,6 +9,7 @@ mod ibd;
 mod integration_test;
 mod mainchain_tls;
 mod setup;
+mod stalled_handshake;
 mod unknown_withdrawal;
 mod util;
 
