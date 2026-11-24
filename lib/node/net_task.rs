@@ -29,7 +29,7 @@ use crate::{
     net::{
         self, Net, PeerConnectionInfo, PeerConnectionMessage, PeerInfoRx,
         PeerRequest, PeerResponse, PeerStateId, error::peer::Recoverable as _,
-        peer_message,
+        peer_message, resolve_peer_address,
     },
     node::{
         FatalErrorTx,
@@ -83,6 +83,43 @@ impl ReconnectBackoff {
         self.last_dial = Some(now + delay);
         delay
     }
+}
+
+/// A dial scheduled by the net task: the address to dial, or the peer whose
+/// address could not be looked up.
+type Dial =
+    Result<ResolvedPeerAddress, (PeerAddress, net::error::ResolvePeerAddress)>;
+
+/// Look up a peer after `delay`, so that it can be dialed
+fn spawn_dial(
+    spawner: &join_set::Spawner<Dial>,
+    dns_resolver: Arc<hickory_resolver::TokioResolver>,
+    peer: PeerAddress,
+    delay: Duration,
+) {
+    spawner.spawn(async move {
+        tokio::time::sleep(delay).await;
+        resolve_peer_address(&dns_resolver, peer.clone())
+            .await
+            .map_err(|err| (peer, err))
+    });
+}
+
+/// Dial a peer again after its backoff delay. It is looked up again, as its
+/// addresses may be what changed.
+fn redial(
+    spawner: &join_set::Spawner<Dial>,
+    dns_resolver: Arc<hickory_resolver::TokioResolver>,
+    reconnect_backoff: &mut HashMap<PeerAddress, ReconnectBackoff>,
+    rng: &mut ChaCha20Rng,
+    peer: PeerAddress,
+) {
+    let delay = reconnect_backoff
+        .entry(peer.clone())
+        .or_default()
+        .next_delay(Instant::now(), rng);
+    tracing::info!(%peer, ?delay, "reconnecting to peer after delay");
+    spawn_dial(spawner, dns_resolver, peer, delay);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -971,7 +1008,14 @@ impl NetTask {
         }
     }
 
-    async fn run(mut self) -> Result<(), Error> {
+    /// Dials `seed_peers` and `known_peers` on start. Seeds are the backbone
+    /// of the network, so they are redialed whenever the dial or the
+    /// connection fails, also when they never answered.
+    async fn run(
+        mut self,
+        seed_peers: HashSet<PeerAddress>,
+        known_peers: HashSet<PeerAddress>,
+    ) -> Result<(), Error> {
         tracing::debug!("starting net task");
         #[derive(Debug)]
         enum MailboxItem {
@@ -995,8 +1039,8 @@ impl NetTask {
             // receiver.
             NewTipReady(Tip, Option<SocketAddr>, Option<oneshot::Sender<bool>>),
             PeerInfo(Option<(SocketAddr, Option<PeerConnectionInfo>)>),
-            // Signal to reconnect to a peer
-            ReconnectPeer(ResolvedPeerAddress),
+            // Signal to dial a peer
+            ReconnectPeer(Dial),
         }
         let accept_connections = stream::try_unfold((), |()| {
             let env = self.ctxt.env.clone();
@@ -1049,7 +1093,15 @@ impl NetTask {
             .map(MailboxItem::PeerInfo);
         let (reconnect_peer_spawner, reconnect_peer_rx) = join_set::new();
         let reconnect_peer_stream = reconnect_peer_rx
-            .map(|addr| MailboxItem::ReconnectPeer(addr.unwrap()));
+            .map(|dial| MailboxItem::ReconnectPeer(dial.unwrap()));
+        for peer in seed_peers.union(&known_peers) {
+            spawn_dial(
+                &reconnect_peer_spawner,
+                self.ctxt.net.dns_resolver.clone(),
+                peer.clone(),
+                Duration::ZERO,
+            );
+        }
         let mut mailbox_stream = stream::select_all([
             accept_connections.boxed(),
             forward_request_stream.boxed(),
@@ -1236,34 +1288,30 @@ impl NetTask {
                                 );
                                 continue;
                             }
-                            // Attempt to reconnect if a valid message was
-                            // received successfully
-                            if received_msg_successfully && err.may_reconnect()
-                            {
-                                let delay = reconnect_backoff
-                                    .entry(
-                                        resolved_peer_addr
-                                            .as_peer_address()
-                                            .to_owned(),
-                                    )
-                                    .or_default()
-                                    .next_delay(Instant::now(), &mut self.rng);
-                                tracing::info!(
-                                    %addr,
-                                    ?delay,
-                                    "reconnecting to peer after delay"
-                                );
-                                reconnect_peer_spawner.spawn(async move {
-                                    tokio::time::sleep(delay).await;
-                                    resolved_peer_addr
-                                });
-                            } else if let (_, Some(resolved_peer_addr)) =
-                                resolved_peer_addr.pop_first_ip_addr()
+                            let peer_address =
+                                resolved_peer_addr.as_peer_address().to_owned();
+
+                            // Reconnect if the connection worked
+                            let reconnect = received_msg_successfully
+                                && err.may_reconnect();
+                            if !reconnect
+                                && let (_, Some(next_ip_addr)) =
+                                    resolved_peer_addr.pop_first_ip_addr()
                             {
                                 reconnect_peer_spawner.spawn(async move {
                                     tokio::time::sleep(RECONNECT_DELAY).await;
-                                    resolved_peer_addr
+                                    Ok(next_ip_addr)
                                 });
+                            } else if reconnect
+                                || seed_peers.contains(&peer_address)
+                            {
+                                redial(
+                                    &reconnect_peer_spawner,
+                                    self.ctxt.net.dns_resolver.clone(),
+                                    &mut reconnect_backoff,
+                                    &mut self.rng,
+                                    peer_address,
+                                );
                             }
                         }
                         PeerConnectionInfo::NeedMainchainAncestors {
@@ -1333,7 +1381,23 @@ impl NetTask {
                         }
                     }
                 }
-                MailboxItem::ReconnectPeer(resolved_peer_address) => {
+                MailboxItem::ReconnectPeer(Err((peer_address, err))) => {
+                    tracing::error!(
+                        %peer_address,
+                        "Failed to look up peer: {:#}",
+                        ErrorChain::new(&err)
+                    );
+                    if seed_peers.contains(&peer_address) {
+                        redial(
+                            &reconnect_peer_spawner,
+                            self.ctxt.net.dns_resolver.clone(),
+                            &mut reconnect_backoff,
+                            &mut self.rng,
+                            peer_address,
+                        );
+                    }
+                }
+                MailboxItem::ReconnectPeer(Ok(resolved_peer_address)) => {
                     let peer_address =
                         resolved_peer_address.as_peer_address().to_owned();
                     match self.ctxt.net.connect_peer(
@@ -1381,6 +1445,8 @@ impl NetTaskHandle {
         mempool: MemPool,
         net: Net,
         peer_info_rx: PeerInfoRx,
+        seed_peers: HashSet<PeerAddress>,
+        known_peers: HashSet<PeerAddress>,
         mut rng: R,
         state: State,
         fatal_error_tx: FatalErrorTx,
@@ -1411,7 +1477,11 @@ impl NetTaskHandle {
             peer_info_rx,
             rng: ChaCha20Rng::from_rng(&mut rng),
         };
-        let task = runtime.spawn(supervise("Net", task.run(), fatal_error_tx));
+        let task = runtime.spawn(supervise(
+            "Net",
+            task.run(seed_peers, known_peers),
+            fatal_error_tx,
+        ));
         NetTaskHandle {
             task: Arc::new(task),
             new_tip_ready_tx,

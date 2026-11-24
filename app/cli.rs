@@ -183,8 +183,8 @@ fn parse_network_magic(s: &str) -> Result<[u8; 4], const_hex::FromHexError> {
 #[command(author, version, about, long_about = None)]
 pub(super) struct Cli {
     /// Additional peers to dial on startup, as `host:port`. May be given
-    /// more than once, and is dialed in addition to the network's built-in
-    /// seed peers.
+    /// more than once. These are treated like the network's built-in seed
+    /// peers and are redialed for as long as the node runs.
     #[arg(long = "add-peer")]
     add_peers: Vec<thunder::types::net::PeerAddress>,
     /// Data directory for storing blockchain data.

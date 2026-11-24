@@ -16,7 +16,7 @@ use tonic::transport::Channel;
 use crate::{
     archive::{self, Archive},
     mempool::{self, MemPool},
-    net::{DialKnownPeersHandle, Net},
+    net::Net,
     state::{self, State},
     types::{
         Accumulator, Address, AmountOverflowError, AmountUnderflowError,
@@ -117,7 +117,6 @@ where
 /// Handles for spawned tasks / task sets
 #[derive(Clone)]
 struct TaskHandles {
-    _dial_known_peers: Arc<DialKnownPeersHandle>,
     mainchain: MainchainTaskHandle,
     net: NetTaskHandle,
 }
@@ -216,8 +215,7 @@ where
                 fatal_error_tx.clone(),
             );
         let batch_verification_ctxt = BatchVerificationContext::new(rng);
-        let (net, peer_info_rx, dial_known_peers_handle) = Net::new(
-            runtime.handle(),
+        let (net, peer_info_rx, known_peers) = Net::new(
             &env,
             archive.clone(),
             batch_verification_ctxt,
@@ -225,9 +223,13 @@ where
             network,
             state.clone(),
             bind_addr,
-            add_peers,
             server_names,
         )?;
+        let seed_peers = crate::net::seed_peer_addrs(network)
+            .iter()
+            .map(PeerAddress::to_owned)
+            .chain(add_peers)
+            .collect();
         let net_task_handle = NetTaskHandle::new(
             runtime,
             env.clone(),
@@ -237,12 +239,13 @@ where
             mempool.clone(),
             net.clone(),
             peer_info_rx,
+            seed_peers,
+            known_peers,
             rng,
             state.clone(),
             fatal_error_tx,
         );
         let task_handles = TaskHandles {
-            _dial_known_peers: Arc::new(dial_known_peers_handle),
             mainchain: mainchain_task_handle,
             net: net_task_handle,
         };

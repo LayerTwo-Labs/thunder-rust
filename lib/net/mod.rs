@@ -213,7 +213,7 @@ const FORKNET_SEED_PEER_ADDRS: &[PeerAddress<&'static str>] = {
     ]
 };
 
-const fn seed_peer_addrs(
+pub const fn seed_peer_addrs(
     network: Network,
 ) -> &'static [PeerAddress<&'static str>] {
     match network {
@@ -264,23 +264,6 @@ where
                 Err(error::ResolvePeerAddress::NoIpAddrs { domain })
             }
         }
-    }
-}
-
-/// Handle to tasks that dial known peers. Tasks are aborted on drop.
-#[repr(transparent)]
-pub struct DialKnownPeersHandle(
-    tokio_util::task::JoinMap<PeerAddress, Result<(), error::DialKnownPeer>>,
-);
-
-impl DialKnownPeersHandle {
-    pub async fn join_next(
-        &mut self,
-    ) -> Option<(
-        PeerAddress,
-        Result<Result<(), error::DialKnownPeer>, tokio::task::JoinError>,
-    )> {
-        self.0.join_next().await
     }
 }
 
@@ -456,23 +439,8 @@ impl Net {
             .map_err(|err| DbError::from(err).into())
     }
 
-    async fn dial_known_peer(
-        &self,
-        env: Env<heed::WithoutTls>,
-        peer_addr: PeerAddress,
-    ) -> Result<(), error::DialKnownPeer> {
-        tracing::trace!("connecting to already known peer at {peer_addr}");
-        let resolved_peer_addr =
-            resolve_peer_address(&self.dns_resolver, peer_addr)
-                .await
-                .map_err(error::DialKnownPeer::DnsResolve)?;
-        let () = self.connect_peer(env, resolved_peer_addr)?;
-        Ok(())
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        runtime: &tokio::runtime::Handle,
         env: &Env<heed::WithoutTls>,
         archive: Archive,
         batch_verification_ctxt: BatchVerificationContext,
@@ -480,33 +448,13 @@ impl Net {
         network: Network,
         state: State,
         bind_addr: SocketAddr,
-        add_peers: HashSet<PeerAddress>,
         server_names: HashSet<String>,
-    ) -> Result<(Self, PeerInfoRx, DialKnownPeersHandle), Error> {
+    ) -> Result<(Self, PeerInfoRx, HashSet<PeerAddress>), Error> {
         let (server, _) = make_server_endpoint(bind_addr, server_names)?;
         let active_peers = Arc::new(RwLock::new(HashMap::new()));
         let mut rwtxn = env.write_txn()?;
         let known_peers =
-            match DatabaseUnique::open(env, &rwtxn, "known_peers")? {
-                Some(known_peers) => known_peers,
-                None => {
-                    let known_peers =
-                        DatabaseUnique::create(env, &mut rwtxn, "known_peers")?;
-                    for seed_peer_addr in seed_peer_addrs(network) {
-                        let seed_peer_addr =
-                            PeerAddress::to_owned(seed_peer_addr);
-                        known_peers.put(
-                            &mut rwtxn,
-                            &(seed_peer_addr.to_owned()),
-                            &(),
-                        )?;
-                    }
-                    known_peers
-                }
-            };
-        for peer in add_peers {
-            known_peers.put(&mut rwtxn, &peer, &())?;
-        }
+            DatabaseUnique::create(env, &mut rwtxn, "known_peers")?;
         let version = DatabaseUnique::create(env, &mut rwtxn, "net_version")?;
         if let Some(db_version) = version.try_get(&rwtxn, &())?
             && (db_version
@@ -546,7 +494,7 @@ impl Net {
             known_peers: known_peers.clone(),
             _version: version,
         };
-        let known_peers: Vec<_> = {
+        let known_peers = {
             let rotxn = env.read_txn().map_err(EnvError::from)?;
             known_peers
                 .iter_keys(&rotxn)
@@ -554,24 +502,7 @@ impl Net {
                 .collect()
                 .map_err(DbError::from)?
         };
-        let dial_known_peers_handle = {
-            let mut join_map = tokio_util::task::JoinMap::new();
-            for peer_addr in known_peers {
-                let env = Env::clone(env);
-                let net = net.clone();
-                join_map.spawn_on(
-                    peer_addr.clone(),
-                    async move {
-                        net.dial_known_peer(env, peer_addr)
-                            .await
-                            .inspect_err(|err| tracing::error!(message = %ErrorChain::new(err)))
-                    },
-                    runtime
-                );
-            }
-            DialKnownPeersHandle(join_map)
-        };
-        Ok((net, peer_info_rx, dial_known_peers_handle))
+        Ok((net, peer_info_rx, known_peers))
     }
 
     /// Accept the next incoming connection. Returns Some(addr) if a connection was accepted
