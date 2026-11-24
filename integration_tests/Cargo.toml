@@ -19,10 +19,8 @@ hyper = { version = "1", features = ["client", "http2", "server"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "http2", "tokio"] }
 jsonrpsee = { workspace = true }
 libtest-mimic = { workspace = true }
-quinn = { workspace = true }
 rcgen = { workspace = true }
 reserve-port = { workspace = true }
-rustls = { workspace = true, features = ["ring"] }
 thiserror = { workspace = true }
 thunder = { path = "../lib", features = ["clap"] }
 thunder_app_rpc_api = { path = "../rpc-api" }

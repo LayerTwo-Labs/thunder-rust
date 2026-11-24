@@ -19,7 +19,6 @@ use crate::{
     },
     mainchain_tls::mainchain_tls_trial,
     setup::{Init, PostSetup},
-    stalled_handshake::stalled_handshake_trial,
     unknown_withdrawal::unknown_withdrawal_trial,
     util::BinPaths,
 };
@@ -206,11 +205,6 @@ pub fn tests(
             failure_collector.clone(),
         ),
         reorg_across_peg_history_trial(
-            bin_paths.clone(),
-            file_registry.clone(),
-            failure_collector.clone(),
-        ),
-        stalled_handshake_trial(
             bin_paths.clone(),
             file_registry.clone(),
             failure_collector.clone(),

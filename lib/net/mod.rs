@@ -590,7 +590,7 @@ impl Net {
         &self,
     ) -> Result<quinn::Incoming, error::AcceptConnection> {
         tracing::debug!(
-            "accept incoming: listening for connections on `{}`",
+            "listening for connections on `{}`",
             self.server
                 .local_addr()
                 .map(|socket| socket.to_string())
