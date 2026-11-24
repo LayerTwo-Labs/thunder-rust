@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet, hash_map},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
+    time::Duration,
 };
 
 use fallible_iterator::FallibleIterator;
@@ -160,6 +161,14 @@ pub fn make_server_endpoint(
     endpoint.set_default_client_config(client_cfg);
     Ok((endpoint, server_cert))
 }
+
+/// Incoming handshakes in progress at once. Further connection attempts wait
+/// in quinn's queue until one finishes.
+pub(crate) const MAX_CONCURRENT_HANDSHAKES: usize = 32;
+
+/// A handshake takes a few round trips. One that has not completed by now is
+/// abandoned, rather than held for quinn's 30s idle timeout.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 // None indicates that the stream has ended
 pub type PeerInfoRx =
@@ -574,37 +583,44 @@ impl Net {
         Ok((net, peer_info_rx, dial_known_peers_handle))
     }
 
-    /// Accept the next incoming connection. Returns Some(addr) if a connection was accepted
-    /// and a new peer was added.
-    pub async fn accept_incoming(
+    /// Wait for the next incoming connection attempt. Its handshake is left
+    /// to [`Self::accept_incoming`], so that one slow or abandoned handshake
+    /// does not hold up the attempts behind it.
+    pub async fn next_incoming(
         &self,
-        env: Env<heed::WithoutTls>,
-    ) -> Result<Option<SocketAddr>, error::AcceptConnection> {
+    ) -> Result<quinn::Incoming, error::AcceptConnection> {
         tracing::debug!(
-            "accept incoming: listening for connections on `{}`",
+            "listening for connections on `{}`",
             self.server
                 .local_addr()
                 .map(|socket| socket.to_string())
                 .unwrap_or("unknown address".into())
         );
-        let connection = match self.server.accept().await {
-            Some(conn) => {
-                let remote_address = conn.remote_address();
-                tracing::trace!("accepting connection from {remote_address}",);
+        self.server.accept().await.ok_or_else(|| {
+            tracing::debug!("server endpoint closed");
+            error::AcceptConnection::ServerEndpointClosed
+        })
+    }
 
-                let raw_conn = conn.await.map_err(|error| {
-                    error::AcceptConnection::Connection {
-                        error,
-                        remote_address,
-                    }
-                })?;
-                Connection::new(raw_conn, self.magic_bytes)
-            }
-            None => {
-                tracing::debug!("server endpoint closed");
-                return Err(error::AcceptConnection::ServerEndpointClosed);
-            }
-        };
+    /// Complete the handshake of an incoming connection. Returns Some(addr)
+    /// if the connection was accepted and a new peer was added.
+    pub async fn accept_incoming(
+        &self,
+        env: Env<heed::WithoutTls>,
+        incoming: quinn::Incoming,
+    ) -> Result<Option<SocketAddr>, error::AcceptConnection> {
+        let remote_address = incoming.remote_address();
+        tracing::trace!("accepting connection from {remote_address}",);
+        let raw_conn = tokio::time::timeout(HANDSHAKE_TIMEOUT, incoming)
+            .await
+            .map_err(|_| error::AcceptConnection::HandshakeTimeout {
+                remote_address,
+            })?
+            .map_err(|error| error::AcceptConnection::Connection {
+                error,
+                remote_address,
+            })?;
+        let connection = Connection::new(raw_conn, self.magic_bytes);
         let addr = connection.addr();
 
         tracing::trace!(%addr, "accepted incoming connection");
@@ -630,6 +646,11 @@ impl Net {
         };
         let (connection_handle, info_rx) =
             peer::handle(connection_ctxt, connection);
+        // TODO: is this the right state?
+        // Registered before its info is forwarded: if another handshake from
+        // the same address won the race, this connection's end must not be
+        // reported, or the net task would remove the winner.
+        self.add_active_peer(addr, connection_handle)?;
         tokio::spawn({
             let info_rx = StreamNotifyClose::new(info_rx)
                 .map(move |info| Ok((addr, info)));
@@ -640,8 +661,6 @@ impl Net {
                 }
             }
         });
-        // TODO: is this the right state?
-        self.add_active_peer(addr, connection_handle)?;
         Ok(Some(addr))
     }
 
