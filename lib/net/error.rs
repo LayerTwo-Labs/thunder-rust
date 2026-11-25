@@ -134,14 +134,6 @@ pub enum ResolvePeerAddress {
     NoIpAddrs { domain: String },
 }
 
-#[derive(Debug, Error)]
-pub enum DialKnownPeer {
-    #[error("failed to connect to peer")]
-    ConnectPeer(#[from] ConnectPeer),
-    #[error("DNS resolution for hostname failed")]
-    DnsResolve(#[from] ResolvePeerAddress),
-}
-
 #[allow(clippy::duplicated_attributes)]
 #[derive(Debug, Error, Transitive)]
 #[transitive(from(db::Put, db::Error))]

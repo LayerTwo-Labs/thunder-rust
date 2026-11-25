@@ -8,6 +8,7 @@ mod block_template;
 mod ibd;
 mod integration_test;
 mod mainchain_tls;
+mod peer_redial;
 mod setup;
 mod unknown_withdrawal;
 mod util;

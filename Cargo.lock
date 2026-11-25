@@ -6533,7 +6533,6 @@ dependencies = [
  "tiny-bip39",
  "tokio",
  "tokio-stream",
- "tokio-util",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
@@ -6840,7 +6839,6 @@ dependencies = [
  "futures-io",
  "futures-sink",
  "futures-util",
- "hashbrown 0.15.5",
  "pin-project-lite",
  "tokio",
 ]

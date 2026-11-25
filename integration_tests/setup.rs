@@ -40,6 +40,11 @@ pub struct Init {
     pub data_dir_suffix: Option<String>,
     /// Reach the enforcer over TLS, instead of plain h2c
     pub mainchain_tls: Option<MainchainTls>,
+    /// Peers to dial on startup (`--add-peer`)
+    pub add_peers: Vec<SocketAddrV4>,
+    /// Ports reserved beforehand, so another node can be told this node's
+    /// address before it starts. Fresh random ports if `None`.
+    pub reserved_ports: Option<ReservedPorts>,
 }
 
 impl Init {
@@ -51,6 +56,8 @@ impl Init {
             thunder_app,
             data_dir_suffix: None,
             mainchain_tls: None,
+            add_peers: Vec::new(),
+            reserved_ports: None,
         }
     }
 }
@@ -176,7 +183,10 @@ impl Sidechain for PostSetup {
         post_setup: &EnforcerPostSetup,
         res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
     ) -> Result<Self, Self::SetupError> {
-        let reserved_ports = ReservedPorts::new()?;
+        let reserved_ports = match init.reserved_ports {
+            Some(reserved_ports) => reserved_ports,
+            None => ReservedPorts::new()?,
+        };
         let thunder_dir = if let Some(suffix) = init.data_dir_suffix {
             post_setup
                 .directories
@@ -207,8 +217,12 @@ impl Sidechain for PostSetup {
             network: Network::Regtest,
             rpc_port: reserved_ports.rpc.port(),
         };
+        let args = init
+            .add_peers
+            .iter()
+            .flat_map(|peer| ["--add-peer".to_owned(), peer.to_string()]);
         let thunder_app_task = thunder_app
-            .spawn_command_with_args::<String, String, _, _, _>([], [], {
+            .spawn_command_with_args::<String, String, _, _, _>([], args, {
                 let res_tx = res_tx.clone();
                 move |err| {
                     let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
